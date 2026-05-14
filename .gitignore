@@ -1,0 +1,31 @@
+# Node + frontend
+node_modules/
+dist/
+build/
+.next/
+.vite/
+.npm
+.yarn
+.pnpm-store
+
+# Segredos
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Runtime (containers)
+redis/
+logs/
+*.log
+
+# Pacotes / editor / SO
+*.tar.gz
+*.tgz
+*.zip
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

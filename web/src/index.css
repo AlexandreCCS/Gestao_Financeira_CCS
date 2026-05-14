@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background:#374151; border-radius:4px; }
+}
+
+@layer components {
+  .btn        { @apply inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition; }
+  .btn-prim   { @apply btn bg-prim-600 hover:bg-prim-500 text-white; }
+  .btn-ghost  { @apply btn bg-ink-800 hover:bg-ink-700 text-white; }
+  .input      { @apply w-full bg-ink-900 border border-ink-700 rounded-lg px-3 py-2 text-sm
+                       focus:outline-none focus:border-prim-500; }
+  .card       { @apply bg-ink-800 border border-ink-700 rounded-lg; }
+  .kpi        { @apply card p-4 flex flex-col gap-1; }
+  .kpi-label  { @apply text-xs uppercase tracking-wider text-gray-400; }
+  .kpi-value  { @apply text-2xl font-bold; }
+}

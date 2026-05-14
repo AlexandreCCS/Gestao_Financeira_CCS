@@ -1,0 +1,28 @@
+# [05/05/2026 - Alexandre Carvalho] Bloco Caddy a inserir em /etc/caddy/Caddyfile na VPS
+# Espelha padrao usado em whats.ccstecno.com.br, projetosquality.ccstecno.com.br
+gestorfinanceiro.ccstecno.com.br {
+    encode gzip zstd
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-Frame-Options "DENY"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+
+    # API REST (handle_path strip do /api antes do proxy)
+    handle_path /api/* {
+        reverse_proxy 127.0.0.1:3020 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # SPA estatica (nginx)
+    handle {
+        reverse_proxy 127.0.0.1:3021
+    }
+}

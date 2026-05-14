@@ -1,0 +1,60 @@
+# ============================================================================
+# [05/05/2026 - Alexandre Carvalho] Gestor Financeiro CCS - stack Docker
+# - Sem Postgres (banco eh Oracle Mega Quality OCPDB493 via SOAP apiquality1)
+# - 3 containers: api, web, redis (sem worker na v1)
+# - Rede dedicada gf-net (isolada do bot CCS, Blumi e Projetos Quality)
+# - Todas as portas expostas SO em 127.0.0.1; Caddy do host faz reverse proxy
+# - Subdomain alvo: gestorfinanceiro.ccstecno.com.br
+# ============================================================================
+name: gestor-financeiro
+
+services:
+
+  gf-redis:
+    image: redis:7-alpine
+    container_name: gf-redis
+    restart: unless-stopped
+    networks: [gf-net]
+    # --dir /data: working dir explicito (default da imagem mas garantimos)
+    # --save "": desabilita snapshot RDB (usamos so AOF, evita "stop-writes-on-bgsave-error")
+    command:
+      - "redis-server"
+      - "--dir"
+      - "/data"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "yes"
+      - "--requirepass"
+      - "${REDIS_PASSWORD}"
+    volumes:
+      - ./redis/data:/data
+    user: "${UID:-1001}:${GID:-1001}"
+
+  gf-api:
+    build: ./api
+    container_name: gf-api
+    restart: unless-stopped
+    networks: [gf-net]
+    depends_on: [gf-redis]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://:${REDIS_PASSWORD}@gf-redis:6379
+    ports:
+      - "127.0.0.1:3020:3000"
+    volumes:
+      - ./logs:/app/logs
+
+  gf-web:
+    build: ./web
+    container_name: gf-web
+    restart: unless-stopped
+    networks: [gf-net]
+    depends_on: [gf-api]
+    ports:
+      - "127.0.0.1:3021:80"
+
+networks:
+  gf-net:
+    driver: bridge

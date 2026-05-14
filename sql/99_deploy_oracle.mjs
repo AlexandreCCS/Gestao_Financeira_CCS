@@ -23,7 +23,9 @@ const FILES = [
   { f: '04_pck_fluxo_previo.sql',    mode: 'slash' },
   { f: '05_pck_fluxo_previo_func.sql', mode: 'slash' },
   // [14/05/2026 - Alexandre Carvalho] 06 estava faltando na lista de deploy
-  { f: '06_pck_gfin_docs.sql',       mode: 'slash' }
+  { f: '06_pck_gfin_docs.sql',       mode: 'slash' },
+  // [14/05/2026 - Alexandre Carvalho] admin de permissoes (tabelas + seed)
+  { f: '07_admin_permissoes.sql',    mode: 'slash' }
 ];
 
 function escXml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }

@@ -13,6 +13,7 @@ import saldosBancoRoutes  from './routes/saldosBanco.js';
 import conciliacaoRoutes  from './routes/conciliacao.js';
 import fluxoPrevioRoutes  from './routes/fluxoPrevio.js';
 import fluxoDocsRoutes    from './routes/fluxoDocs.js';
+import adminRoutes        from './routes/admin.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -55,6 +56,7 @@ await app.register(conciliacaoRoutes);
 await app.register(fluxoPrevioRoutes);
 await app.register(fluxoDocsRoutes);
 await app.register(fluxoCaixaRoutes);
+await app.register(adminRoutes);
 
 const port = parseInt(process.env.PORT || '3000', 10);
 app.listen({ host: '0.0.0.0', port })

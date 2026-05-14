@@ -77,5 +77,11 @@ export const api = {
 
   // drilldown de documentos do fluxo (Recebimento ou Pagamento)
   fluxoDocs: (data, tipo, filiais = '0', prev = 'N') =>
-    req(`/fluxo-previo/docs?data=${data}&tipo=${tipo}&filiais=${filiais}&prev=${prev}`)
+    req(`/fluxo-previo/docs?data=${data}&tipo=${tipo}&filiais=${filiais}&prev=${prev}`),
+
+  // [14/05/2026 - Alexandre Carvalho] administracao de usuarios (admin only)
+  adminModulos:  () => req('/admin/modulos'),
+  adminUsuarios: () => req('/admin/usuarios'),
+  adminSalvarUsuario: (gru, perm, modulos) =>
+    req(`/admin/usuarios/${gru}`, { method: 'PUT', body: JSON.stringify({ perm, modulos }) })
 };

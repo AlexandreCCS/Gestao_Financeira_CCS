@@ -1,19 +1,13 @@
 -- ============================================================================
 -- [05/05/2026 - Alexandre Carvalho] KPIs de Conciliacao Bancaria por Conta x Filial
+-- [14/05/2026 - ALTERADO POR ALEXANDRE CARVALHO] Sincronizado com producao:
+--   CCS_F_GFIN_CONCILIACAO V1 -> V2 (filtros de consistencia com Saldos V6:
+--   exclui contas inativas + exige FIN_CONCILIACAO).
 --
 -- Indicadores por (AGN, FIL):
---   QT_MOV       - movimentos no periodo
---   QT_CONC      - conciliados
---   QT_PEND      - pendentes
---   PCT_CONC     - taxa de conciliacao (%)
---   VL_PEND      - valor liquido pendente (DEB - CRE dos pendentes)
---   VL_CONC      - valor liquido conciliado
---   AGING_0_30   - pendentes com vencimento nos ultimos 30 dias
---   AGING_31_60  - pendentes 31-60 dias atras
---   AGING_61_90  - pendentes 61-90 dias atras
---   AGING_90P    - pendentes mais de 90 dias (criticos)
---   DT_ULT_PEND  - data do pendente mais antigo
---   DT_ULT_CONC  - data da ultima conciliacao
+--   QT_MOV / QT_CONC / QT_PEND / PCT_CONC (%) / VL_PEND / VL_CONC
+--   AGING_0_30 / _31_60 / _61_90 / _90P  (idade dos pendentes vs P_DATA_FIM)
+--   DT_ULT_PEND (pendente mais antigo) / DT_ULT_CONC (ultima conciliacao)
 -- ============================================================================
 
 CREATE OR REPLACE TYPE MEGA.CCS_TY_GFIN_CONC_LIN AS OBJECT (
@@ -44,6 +38,12 @@ CREATE OR REPLACE FUNCTION MEGA.CCS_F_GFIN_CONCILIACAO(
     P_DATA_FIM IN DATE,
     P_FIL      IN NUMBER DEFAULT 0
   ) RETURN MEGA.CCS_TY_GFIN_CONC_TBL PIPELINED IS
+    -- ============================================================================
+    -- [08/05/2026 - ALTERADO POR ALEXANDRE CARVALHO]
+    -- V2: ADICIONA FILTROS DE CONSISTENCIA COM SALDOS BANCARIOS V6:
+    --   1) Exclui contas inativas (AGN_CH_STATUS <> 'A')
+    --   2) Exige FIN_CONCILIACAO (banco real, nao caixa interno puro)
+    -- ============================================================================
   BEGIN
     FOR R IN (
       SELECT M.AGN_IN_CODIGO,
@@ -53,12 +53,10 @@ CREATE OR REPLACE FUNCTION MEGA.CCS_F_GFIN_CONCILIACAO(
              COUNT(*)                                                 AS QT_MOV,
              COUNT(CASE WHEN M.MOV_CH_CONCILIADO='S' THEN 1 END)      AS QT_CONC,
              COUNT(CASE WHEN NVL(M.MOV_CH_CONCILIADO,'N')='N' THEN 1 END) AS QT_PEND,
-             -- valor pendente liquido (DEB - CRE)
              SUM(CASE WHEN NVL(M.MOV_CH_CONCILIADO,'N')='N'
                       THEN NVL(M.MOV_RE_VALORDEB,0) - NVL(M.MOV_RE_VALORCRE,0) ELSE 0 END) AS VL_PEND,
              SUM(CASE WHEN M.MOV_CH_CONCILIADO='S'
                       THEN NVL(M.MOV_RE_VALORDEB,0) - NVL(M.MOV_RE_VALORCRE,0) ELSE 0 END) AS VL_CONC,
-             -- aging dos pendentes (idade contada vs P_DATA_FIM)
              COUNT(CASE WHEN NVL(M.MOV_CH_CONCILIADO,'N')='N'
                          AND M.MOV_DT_VENCTO >= P_DATA_FIM - 30 THEN 1 END) AS AGING_0_30,
              COUNT(CASE WHEN NVL(M.MOV_CH_CONCILIADO,'N')='N'
@@ -74,6 +72,7 @@ CREATE OR REPLACE FUNCTION MEGA.CCS_F_GFIN_CONCILIACAO(
              MEGA.GLO_AGENTES         A,
              MEGA.GLO_VW_ORGANIZACAO  O
        WHERE I.AGN_TAU_ST_CODIGO = 'N'
+         AND NVL(I.AGN_CH_STATUS,'A') = 'A'                             -- [V2] so ativos
          AND M.AGN_TAB_IN_CODIGO = I.AGN_TAB_IN_CODIGO
          AND M.AGN_PAD_IN_CODIGO = I.AGN_PAD_IN_CODIGO
          AND M.AGN_IN_CODIGO     = I.AGN_IN_CODIGO
@@ -85,6 +84,10 @@ CREATE OR REPLACE FUNCTION MEGA.CCS_F_GFIN_CONCILIACAO(
          AND M.MOV_DT_VENCTO BETWEEN P_DATA_INI AND P_DATA_FIM
          AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C'
          AND (P_FIL = 0 OR M.FIL_IN_CODIGO = P_FIL)
+         AND EXISTS (SELECT 1 FROM MEGA.FIN_CONCILIACAO FC                -- [V2] so contas com extrato
+                      WHERE FC.AGN_IN_CODIGO     = M.AGN_IN_CODIGO
+                        AND FC.AGN_TAU_ST_CODIGO = 'N'
+                        AND ROWNUM = 1)
        GROUP BY M.AGN_IN_CODIGO, M.FIL_IN_CODIGO
     ) LOOP
       PIPE ROW(MEGA.CCS_TY_GFIN_CONC_LIN(

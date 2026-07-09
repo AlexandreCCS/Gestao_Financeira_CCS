@@ -43,6 +43,34 @@ export default async function fluxoDocsRoutes(app) {
     const view = tipo === 'CR' ? 'FIN_VW_CONTASRECEBER' : 'FIN_VW_CONTASPAGAR';
     const colTpdFatura = tipo === 'CR' ? 'FRE_TPD_ST_CODIGO' : 'FPA_TPD_ST_CODIGO';
 
+    // [09/07/2026 - Alexandre Carvalho] Caixa/conta da baixa do titulo via FIN_REFERENCIAFIN:
+    // o titulo e o REF (BXCPA/BXCRE) e a baixa e o ORI; o agente da baixa e o banco/caixa.
+    // Subquery escalar (nao multiplica linha); titulo sem baixa retorna NULL ("em aberto").
+    // Mesma mecanica (invertida) do drill-down da Conciliacao — ver Conciliacao_Bancaria_Contraparte_FIN_REFERENCIAFIN.md.
+    const refTipo = tipo === 'CR' ? 'BXCRE' : 'BXCPA';
+    const subCaixa = `
+             (SELECT MAX(B.AGN_IN_CODIGO || CHR(167) || AG.AGN_ST_NOME)
+                     KEEP (DENSE_RANK FIRST ORDER BY B.MOV_IN_NUMLANCTO DESC)
+                FROM MEGA.FIN_REFERENCIAFIN R, MEGA.FIN_MOVIMENTO B, MEGA.GLO_AGENTES AG
+               WHERE R.REF_ORG_TAB_IN_CODIGO = M.ORG_TAB_IN_CODIGO
+                 AND R.REF_ORG_PAD_IN_CODIGO = M.ORG_PAD_IN_CODIGO
+                 AND R.REF_ORG_IN_CODIGO     = M.ORG_IN_CODIGO
+                 AND R.REF_ORG_TAU_ST_CODIGO = M.ORG_TAU_ST_CODIGO
+                 AND R.REF_MOV_TAB_IN_CODIGO = M.MOV_TAB_IN_CODIGO
+                 AND R.REF_MOV_SEQ_IN_CODIGO = M.MOV_SEQ_IN_CODIGO
+                 AND R.REF_MOV_IN_NUMLANCTO  = M.MOV_IN_NUMLANCTO
+                 AND R.REF_ST_TIPO           = '${refTipo}'
+                 AND B.ORG_TAB_IN_CODIGO = R.ORI_ORG_TAB_IN_CODIGO
+                 AND B.ORG_PAD_IN_CODIGO = R.ORI_ORG_PAD_IN_CODIGO
+                 AND B.ORG_IN_CODIGO     = R.ORI_ORG_IN_CODIGO
+                 AND B.ORG_TAU_ST_CODIGO = R.ORI_ORG_TAU_ST_CODIGO
+                 AND B.MOV_TAB_IN_CODIGO = R.ORI_MOV_TAB_IN_CODIGO
+                 AND B.MOV_SEQ_IN_CODIGO = R.ORI_MOV_SEQ_IN_CODIGO
+                 AND B.MOV_IN_NUMLANCTO  = R.ORI_MOV_IN_NUMLANCTO
+                 AND AG.AGN_TAB_IN_CODIGO = B.AGN_TAB_IN_CODIGO
+                 AND AG.AGN_PAD_IN_CODIGO = B.AGN_PAD_IN_CODIGO
+                 AND AG.AGN_IN_CODIGO     = B.AGN_IN_CODIGO)`;
+
     const sql = `
       SELECT M.MOV_ST_DOCUMENTO                                AS DOCUMENTO,
              M.MOV_ST_PARCELA                                  AS PARCELA,
@@ -60,7 +88,8 @@ export default async function fluxoDocsRoutes(app) {
              CASE WHEN M.TPD_ST_CODIGO IN ('PDV','PREVPDC')
                   THEN 'PREVISTO' ELSE 'REALIZADO' END         AS STATUS,
              SUBSTR(NVL(M.MOV_ST_COMPLHIST,''), 1, 200)        AS HISTORICO,
-             M.ACAO_IN_CODIGO                                  AS ACAO
+             M.ACAO_IN_CODIGO                                  AS ACAO,
+             ${subCaixa}                                       AS CAIXA
         FROM MEGA.${view} M,
              MEGA.GLO_AGENTES AGN
        WHERE M.AGN_TAB_IN_CODIGO = AGN.AGN_TAB_IN_CODIGO(+)
@@ -73,6 +102,7 @@ export default async function fluxoDocsRoutes(app) {
        ORDER BY M.FIL_IN_CODIGO, M.MOV_ST_DOCUMENTO, M.MOV_ST_PARCELA`;
 
     const rows = await megaQuery(sql);
+    const SEP = String.fromCharCode(167); // § do CHR(167)
     const docs = rows.map(r => ({
       documento:    r.DOCUMENTO || '',
       parcela:      r.PARCELA || '',
@@ -89,7 +119,9 @@ export default async function fluxoDocsRoutes(app) {
       tipo_fatura:  r.TIPO_FATURA || '',
       status:       r.STATUS || '',
       historico:    r.HISTORICO || '',
-      acao:         Number(r.ACAO || 0)
+      acao:         Number(r.ACAO || 0),
+      caixa_id:     r.CAIXA ? Number(String(r.CAIXA).split(SEP)[0] || 0) : null,
+      caixa_nome:   r.CAIXA ? (String(r.CAIXA).split(SEP)[1] || '') : ''
     }));
 
     const totais = {

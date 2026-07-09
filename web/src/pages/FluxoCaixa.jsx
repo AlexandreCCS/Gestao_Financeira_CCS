@@ -543,7 +543,9 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
         d.cgc.toLowerCase().includes(q) ||
         String(d.cod_agente).includes(q) ||
         d.tipo_doc.toLowerCase().includes(q) ||
-        d.historico.toLowerCase().includes(q)
+        d.historico.toLowerCase().includes(q) ||
+        (d.caixa_nome || '').toLowerCase().includes(q) ||
+        String(d.caixa_id || '').includes(q)
       );
     });
   }, [docs, busca, statusFiltro]);
@@ -564,6 +566,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
       'Tipo Doc':   d.tipo_doc,
       'Tipo Fat':   d.tipo_fatura,
       Status:       d.status,
+      Caixa:        d.caixa_nome ? `${d.caixa_id} - ${d.caixa_nome}` : '',
       Acao:         d.acao,
       Historico:    d.historico
     }));
@@ -573,7 +576,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
     const ws = XLSX.utils.json_to_sheet(linhas);
     ws['!cols'] = [
       {wch:14},{wch:8},{wch:11},{wch:11},{wch:11},{wch:11},{wch:7},{wch:9},
-      {wch:35},{wch:18},{wch:14},{wch:9},{wch:9},{wch:11},{wch:8},{wch:40}
+      {wch:35},{wch:18},{wch:14},{wch:9},{wch:9},{wch:11},{wch:35},{wch:8},{wch:40}
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, titulo);
@@ -590,7 +593,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
 
     autoTable(doc, {
       startY: y + 8,
-      head: [['Documento','Parc','Vcto','Filial','Agente','Valor','Status','Tipo Doc','Historico']],
+      head: [['Documento','Parc','Vcto','Filial','Agente','Valor','Status','Caixa','Tipo Doc','Historico']],
       body: docsFiltrados.map(d => [
         d.documento,
         d.parcela,
@@ -599,23 +602,25 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
         `${d.cod_agente} - ${d.nome_agente}`,
         fmt(d.valor),
         d.status,
+        d.caixa_nome ? `${d.caixa_id} - ${d.caixa_nome}` : '',
         d.tipo_doc,
-        d.historico.slice(0,80)
+        d.historico.slice(0,60)
       ]),
-      foot: [['', '', '', '', 'TOTAL =', fmt(totais.total), '', '', '']],
+      foot: [['', '', '', '', 'TOTAL =', fmt(totais.total), '', '', '', '']],
       styles: { fontSize: 7, cellPadding: 2.5, overflow:'linebreak' },
       headStyles: { fillColor: isCR ? [16, 185, 129] : [225, 29, 72] },
       footStyles: { fillColor: [21, 32, 58], textColor: 240, fontStyle: 'bold' },
       columnStyles: {
-        0: { cellWidth: 60 },
-        1: { cellWidth: 30, halign:'center' },
-        2: { cellWidth: 55 },
-        3: { cellWidth: 35, halign:'center' },
-        4: { cellWidth: 200 },
-        5: { cellWidth: 70, halign:'right' },
-        6: { cellWidth: 55, halign:'center' },
-        7: { cellWidth: 55 },
-        8: { cellWidth: 220 }
+        0: { cellWidth: 58 },
+        1: { cellWidth: 28, halign:'center' },
+        2: { cellWidth: 52 },
+        3: { cellWidth: 32, halign:'center' },
+        4: { cellWidth: 165 },
+        5: { cellWidth: 65, halign:'right' },
+        6: { cellWidth: 52, halign:'center' },
+        7: { cellWidth: 130 },
+        8: { cellWidth: 50 },
+        9: { cellWidth: 140 }
       }
     });
     doc.save(`${tipo === 'CR' ? 'recebimentos' : 'pagamentos'}-${data}.pdf`);
@@ -647,7 +652,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
             <Search size={14} className="absolute left-2 top-2.5 text-gray-500"/>
             <input
               className="bg-ink-800 border border-ink-700 rounded pl-7 pr-3 py-1.5 text-sm w-72"
-              placeholder="Buscar documento, agente, CNPJ, historico..."
+              placeholder={`Buscar titulo, ${isCR ? 'cliente' : 'fornecedor'}, caixa, CNPJ, historico...`}
               value={busca} onChange={e=>setBusca(e.target.value)} />
           </div>
           <div className="flex gap-1">
@@ -689,6 +694,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                   <th className="text-left  p-2">CNPJ/CPF</th>
                   <th className="text-right p-2">Valor</th>
                   <th className="text-center p-2">Status</th>
+                  <th className="text-left  p-2">Caixa</th>
                   <th className="text-center p-2">Tipo Doc</th>
                   <th className="text-center p-2">Tipo Fat</th>
                   <th className="text-center p-2">Ação</th>
@@ -719,6 +725,11 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                           : 'bg-amber-900/40 text-amber-300 border border-amber-700/40'
                       }`}>{d.status}</span>
                     </td>
+                    <td className="p-2 max-w-[220px] truncate" title={d.caixa_nome ? `${d.caixa_id} - ${d.caixa_nome}` : 'Sem baixa (em aberto)'}>
+                      {d.caixa_nome
+                        ? (<><span className="text-gray-500">{d.caixa_id}</span> <span className="text-sky-300">{d.caixa_nome}</span></>)
+                        : <span className="text-gray-600">—</span>}
+                    </td>
                     <td className="p-2 text-center font-mono text-gray-300">{d.tipo_doc}</td>
                     <td className="p-2 text-center font-mono text-gray-400">{d.tipo_fatura}</td>
                     <td className="p-2 text-center font-mono text-gray-400">{d.acao}</td>
@@ -732,7 +743,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                   <td className={`p-3 text-right font-mono ${isCR ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {fmt(docsFiltrados.reduce((s,d)=>s+d.valor,0))}
                   </td>
-                  <td colSpan={5}></td>
+                  <td colSpan={6}></td>
                 </tr>
               </tfoot>
             </table>

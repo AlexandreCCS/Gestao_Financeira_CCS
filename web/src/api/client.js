@@ -65,6 +65,9 @@ export const api = {
   // conciliacao
   conciliacao: (data_ini, data_fim, fil = 0) =>
     req(`/conciliacao?data_ini=${data_ini}&data_fim=${data_fim}&fil=${fil}`),
+  // [01/07/2026 - Alexandre Carvalho] drill-down: lancamentos pendentes de conciliar de uma conta
+  conciliacaoPendentes: (agn, fil, data_ini, data_fim) =>
+    req(`/conciliacao/pendentes?agn=${agn}&fil=${fil || 0}&data_ini=${data_ini}&data_fim=${data_fim}`),
 
   // fluxo previo
   fluxoPrevio: (data_ini, data_fim, filiais = '0', sim = 'S', prev = 'N') =>
@@ -77,5 +80,25 @@ export const api = {
 
   // drilldown de documentos do fluxo (Recebimento ou Pagamento)
   fluxoDocs: (data, tipo, filiais = '0', prev = 'N') =>
-    req(`/fluxo-previo/docs?data=${data}&tipo=${tipo}&filiais=${filiais}&prev=${prev}`)
+    req(`/fluxo-previo/docs?data=${data}&tipo=${tipo}&filiais=${filiais}&prev=${prev}`),
+
+  // [14/05/2026 - Alexandre Carvalho] administracao de usuarios (admin only)
+  adminModulos:  () => req('/admin/modulos'),
+  adminUsuarios: () => req('/admin/usuarios'),
+  adminSalvarUsuario: (gru, perm, modulos) =>
+    req(`/admin/usuarios/${gru}`, { method: 'PUT', body: JSON.stringify({ perm, modulos }) }),
+
+  // [14/05/2026 - Alexandre Carvalho] inadimplencia
+  inadBloqueios:      (data) => req(`/inadimplencia/bloqueios?data=${data}`),
+  inadDesbloqueios:   (data) => req(`/inadimplencia/desbloqueios?data=${data}`),
+  inadClientesAtraso: (receita = 'geral') => req(`/inadimplencia/clientes-atraso?receita=${receita}`),
+
+  // [14/05/2026 - Alexandre Carvalho] inteligencia de credito
+  creditoCarteira:   ()    => req('/credito/carteira'),
+  creditoCliente:    (agn) => req(`/credito/cliente/${agn}`),
+  creditoParametros: ()    => req('/credito/parametros'),
+  creditoSalvarParametros: (parametros) =>
+    req('/credito/parametros', { method: 'PUT', body: JSON.stringify({ parametros }) }),
+  creditoExemplo:    ()    => req('/credito/exemplo'),
+  creditoPainel:     ()    => req('/credito/painel')
 };

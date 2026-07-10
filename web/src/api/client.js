@@ -100,5 +100,14 @@ export const api = {
   creditoSalvarParametros: (parametros) =>
     req('/credito/parametros', { method: 'PUT', body: JSON.stringify({ parametros }) }),
   creditoExemplo:    ()    => req('/credito/exemplo'),
-  creditoPainel:     ()    => req('/credito/painel')
+  creditoPainel:     ()    => req('/credito/painel'),
+
+  // [10/07/2026 - Alexandre Carvalho] liberacao de data de baixa
+  liberacaoBaixaTitulos: () => req('/liberacao-baixa/titulos'),
+  liberacaoBaixaLiberar: (dados) =>
+    req('/liberacao-baixa/liberar', { method: 'POST', body: JSON.stringify(dados) }),
+  liberacaoBaixaRevogar: (id) =>
+    req('/liberacao-baixa/revogar', { method: 'POST', body: JSON.stringify({ id }) }),
+  liberacaoBaixaLiberacoes: (agn, documento) =>
+    req(`/liberacao-baixa/liberacoes${agn ? `?agn=${agn}&documento=${encodeURIComponent(documento)}` : ''}`)
 };

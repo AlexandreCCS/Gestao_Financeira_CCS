@@ -16,6 +16,8 @@ import FichaCliente    from './pages/credito/FichaCliente.jsx';
 import ParametrosScore from './pages/credito/ParametrosScore.jsx';
 import AjudaCredito    from './pages/credito/Ajuda.jsx';
 import PainelExecutivo from './pages/credito/PainelExecutivo.jsx';
+// [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa
+import LiberacaoBaixa from './pages/LiberacaoBaixa.jsx';
 import Shell         from './components/Shell.jsx';
 
 // [14/05/2026 - Alexandre Carvalho] Tela exibida quando o usuario logou mas nao
@@ -75,6 +77,8 @@ createRoot(document.getElementById('root')).render(
       <Route path="/credito/cliente/:agn" element={<Protect modulo="CREDITO"><FichaCliente /></Protect>} />
       <Route path="/credito/parametros"   element={<Protect modulo="CREDITO" adminOnly><ParametrosScore /></Protect>} />
       <Route path="/credito/ajuda"        element={<Protect modulo="CREDITO"><AjudaCredito /></Protect>} />
+      {/* [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa */}
+      <Route path="/liberacao-baixa" element={<Protect modulo="LIBERACAO_BAIXA"><LiberacaoBaixa /></Protect>} />
       <Route path="/admin"        element={<Protect adminOnly><AdminUsuarios /></Protect>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

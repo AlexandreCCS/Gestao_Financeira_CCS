@@ -18,6 +18,8 @@ export const MODULOS = {
       { rota: '/inadimplencia/clientes-atraso', label: 'Clientes em Atraso' },
     ],
   },
+  // [10/07/2026 - Alexandre Carvalho] Liberacao de Data de Baixa (titulos CR em aberto)
+  LIBERACAO_BAIXA: { rota: '/liberacao-baixa', label: 'Liberação de Data de Baixa' },
   CREDITO: {
     label: 'Inteligência de Crédito',
     rota:  '/credito/painel',

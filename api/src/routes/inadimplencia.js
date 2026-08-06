@@ -130,7 +130,15 @@ export default async function inadimplenciaRoutes(app) {
   //   - interno: codigo na whitelist hardcoded da CCS_P_BLOQUEIA_CLIENTE_RESERVA
   //   - grupo isento: cliente em VEN_AGENTESGRUPO cujo grupo de credito tem
   //     VEN_GRUPOCREDITOCMPESP.GCR_ST_NAOBLOQUEIA = 'S' (o vDESCONSIDERA das procs)
-  app.get('/inadimplencia/clientes-atraso', guard, async () => {
+  app.get('/inadimplencia/clientes-atraso', guard, async (req) => {
+    // [01/07/2026 - Alexandre Carvalho] Segmento por CODIGO DE ACAO (GLO_ACAO.ACAO_BO_CREC):
+    //   vendas     = acoes que GERAM contas a receber / receita (ACAO_BO_CREC='S')
+    //   faturamento= faturamento que NAO gera receita (ACAO_BO_CREC<>'S': provisoes, notas de debito, etc.)
+    //   geral      = todos (default)
+    const receita = ['vendas', 'faturamento'].includes(req.query.receita) ? req.query.receita : 'geral';
+    const filtroReceita = receita === 'vendas'      ? `AND NVL(A.ACAO_BO_CREC,'N') = 'S'`
+                        : receita === 'faturamento' ? `AND NVL(A.ACAO_BO_CREC,'N') <> 'S'`
+                        : '';
     const rows = await megaQuery(`
       SELECT C.AGN_IN_CODIGO                                   AS AGN,
              NVL(G.AGN_ST_NOME, G.AGN_ST_FANTASIA)             AS CLIENTE,
@@ -138,6 +146,9 @@ export default async function inadimplenciaRoutes(app) {
              C.MOV_ST_DOCUMENTO                                AS DOCUMENTO,
              C.MOV_ST_PARCELA                                  AS PARCELA,
              C.TPD_ST_CODIGO                                   AS TPD,
+             C.ACAO_IN_CODIGO                                  AS ACAO,
+             SUBSTR(A.ACAO_ST_NOME,1,60)                       AS ACAO_NOME,
+             NVL(A.ACAO_BO_CREC,'N')                           AS CREC,
              TO_CHAR(C.MOV_DT_VENCTO,'YYYY-MM-DD')             AS VENCTO,
              TO_CHAR(C.MOV_DT_PRORROGADO,'YYYY-MM-DD')         AS PRORROGADO,
              C.SALDO_EM_ABERTO                                 AS SALDO,
@@ -151,11 +162,16 @@ export default async function inadimplenciaRoutes(app) {
                  AND NVL(GCR.GCR_ST_NAOBLOQUEIA,'N') = 'S'
                  AND AGR.AGN_IN_CODIGO     = C.AGN_IN_CODIGO)   AS GRUPO_ISENTO
         FROM MEGA.FIN_VW_CONTASRECEBER C,
-             MEGA.GLO_AGENTES          G
+             MEGA.GLO_AGENTES          G,
+             MEGA.GLO_ACAO             A
        WHERE C.AGN_IN_CODIGO = G.AGN_IN_CODIGO (+)
+         AND C.ACAO_TAB_IN_CODIGO = A.ACAO_TAB_IN_CODIGO (+)
+         AND C.ACAO_PAD_IN_CODIGO = A.ACAO_PAD_IN_CODIGO (+)
+         AND C.ACAO_IN_CODIGO     = A.ACAO_IN_CODIGO (+)
          AND C.SALDO_EM_ABERTO   > 0
          AND C.MOV_DT_PRORROGADO < TRUNC(SYSDATE - 2)
          AND C.TPD_ST_CODIGO NOT IN ('PDV')
+         ${filtroReceita}
        ORDER BY C.SALDO_EM_ABERTO DESC`);
 
     const faixa = d => (d <= 30 ? 'd0_30' : d <= 60 ? 'd31_60' : d <= 90 ? 'd61_90' : 'd90p');
@@ -177,6 +193,9 @@ export default async function inadimplenciaRoutes(app) {
         dias_atraso: dias,
         saldo,
         faixa:       faixa(dias),
+        acao:        Number(r.ACAO || 0),
+        acao_nome:   r.ACAO_NOME || '',
+        gera_receita: r.CREC === 'S',   // [01/07/2026] ACAO_BO_CREC
         interno,
         grupo_isento: grupoIsento,
         // a regra de bloqueio isenta este cliente? (whitelist OU grupo isento)
@@ -193,6 +212,7 @@ export default async function inadimplenciaRoutes(app) {
     const isentos = titulos.filter(t => t.isento);
 
     return {
+      receita,   // [01/07/2026] segmento ativo: vendas | faturamento | geral
       criterio: 'SALDO_EM_ABERTO > 0 AND MOV_DT_PRORROGADO < SYSDATE-2 AND TPD <> PDV; '
               + 'isenta whitelist interna + grupo de credito com GCR_ST_NAOBLOQUEIA=S',
       kpi: {

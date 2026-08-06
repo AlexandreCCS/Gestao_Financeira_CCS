@@ -19,6 +19,8 @@ import inadimplenciaRoutes from './routes/inadimplencia.js';
 import creditoRoutes       from './routes/credito.js';
 // [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa
 import liberacaoBaixaRoutes from './routes/liberacaoBaixa.js';
+// [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes (flag de bloqueio por atraso)
+import liberacaoAgentesRoutes from './routes/liberacaoAgentes.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -66,6 +68,7 @@ await app.register(adminRoutes);
 await app.register(inadimplenciaRoutes);
 await app.register(creditoRoutes);
 await app.register(liberacaoBaixaRoutes);
+await app.register(liberacaoAgentesRoutes);
 
 const port = parseInt(process.env.PORT || '3000', 10);
 app.listen({ host: '0.0.0.0', port })

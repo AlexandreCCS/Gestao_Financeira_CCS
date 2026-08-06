@@ -29,6 +29,16 @@ export const MODULOS = {
       { rota: '/liberacao-exc-alt', label: 'Liberação de Exc./Alt.' },
     ],
   },
+  // [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes: modulo com permissao
+  // PROPRIA (separada da LIBERACAO_BAIXA), mas renderizado no MESMO dropdown
+  // "Liberação" — o merge por label acontece em modulosDoUsuario().
+  LIBERACAO_AGENTES: {
+    label: 'Liberação',
+    rota:  '/liberacao-agentes',
+    submenus: [
+      { rota: '/liberacao-agentes', label: 'Liberação de Agentes' },
+    ],
+  },
   CREDITO: {
     label: 'Inteligência de Crédito',
     rota:  '/credito/painel',
@@ -42,11 +52,31 @@ export const MODULOS = {
 // Modulos visiveis do usuario, ordenados, com rota+label resolvidos.
 export function modulosDoUsuario(user) {
   if (!user) return [];
-  return (user.modulos || [])
+  const mods = (user.modulos || [])
     .slice()
     .sort((a, b) => (a.ordem || 0) - (b.ordem || 0))
     .filter(m => MODULOS[m.codigo])
     .map(m => ({ codigo: m.codigo, ...MODULOS[m.codigo] }));
+
+  // [06/08/2026 - Alexandre Carvalho] modulos distintos com o MESMO label e
+  // submenus viram UM dropdown so (caso "Liberação": LIBERACAO_BAIXA +
+  // LIBERACAO_AGENTES, cada um com sua permissao no controle de acesso).
+  const porLabel = new Map();
+  const saida = [];
+  for (const m of mods) {
+    const chave = m.submenus ? m.label : null;
+    if (chave && porLabel.has(chave)) {
+      const alvo = porLabel.get(chave);
+      for (const sm of m.submenus) {
+        if (!alvo.submenus.some(x => x.rota === sm.rota)) alvo.submenus.push(sm);
+      }
+    } else {
+      const copia = m.submenus ? { ...m, submenus: [...m.submenus] } : m;
+      if (chave) porLabel.set(chave, copia);
+      saida.push(copia);
+    }
+  }
+  return saida;
 }
 
 // Usuario pode ver o modulo? Admin ('A') ve tudo.

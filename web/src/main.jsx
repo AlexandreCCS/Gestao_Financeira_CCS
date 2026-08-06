@@ -19,6 +19,8 @@ import PainelExecutivo from './pages/credito/PainelExecutivo.jsx';
 // [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa
 import LiberacaoBaixa from './pages/LiberacaoBaixa.jsx';
 import LiberacaoExcAlt from './pages/LiberacaoExcAlt.jsx';
+// [06/08/2026 - Alexandre Carvalho] modulo Liberacao de Agentes
+import LiberacaoAgentes from './pages/LiberacaoAgentes.jsx';
 import Shell         from './components/Shell.jsx';
 
 // [14/05/2026 - Alexandre Carvalho] Tela exibida quando o usuario logou mas nao
@@ -81,6 +83,8 @@ createRoot(document.getElementById('root')).render(
       {/* [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa */}
       <Route path="/liberacao-baixa" element={<Protect modulo="LIBERACAO_BAIXA"><LiberacaoBaixa /></Protect>} />
       <Route path="/liberacao-exc-alt" element={<Protect modulo="LIBERACAO_BAIXA"><LiberacaoExcAlt /></Protect>} />
+      {/* [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes — permissao propria */}
+      <Route path="/liberacao-agentes" element={<Protect modulo="LIBERACAO_AGENTES"><LiberacaoAgentes /></Protect>} />
       <Route path="/admin"        element={<Protect adminOnly><AdminUsuarios /></Protect>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

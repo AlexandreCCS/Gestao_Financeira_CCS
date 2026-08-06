@@ -123,5 +123,14 @@ export const api = {
   liberacaoExcRevogar: (id) =>
     req('/liberacao-exc/revogar', { method: 'POST', body: JSON.stringify({ id }) }),
   liberacaoExcLiberacoes: (agn, documento) =>
-    req(`/liberacao-exc/liberacoes${agn ? `?agn=${agn}&documento=${encodeURIComponent(documento)}` : ''}`)
+    req(`/liberacao-exc/liberacoes${agn ? `?agn=${agn}&documento=${encodeURIComponent(documento)}` : ''}`),
+
+  // [06/08/2026 - Alexandre Carvalho] liberacao de agentes (flag de bloqueio por atraso)
+  liberacaoAgnLiberados: () => req('/liberacao-agentes/liberados'),
+  liberacaoAgnBusca: (q) => req(`/liberacao-agentes/busca?q=${encodeURIComponent(q)}`),
+  liberacaoAgnLiberar: (dados) =>
+    req('/liberacao-agentes/liberar', { method: 'POST', body: JSON.stringify(dados) }),
+  liberacaoAgnRevogar: (dados) =>
+    req('/liberacao-agentes/revogar', { method: 'POST', body: JSON.stringify(dados) }),
+  liberacaoAgnHistorico: (dias) => req(`/liberacao-agentes/historico?dias=${dias || 30}`)
 };

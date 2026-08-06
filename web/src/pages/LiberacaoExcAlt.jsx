@@ -1,20 +1,21 @@
-// [10/07/2026 - CRIADO POR ALEXANDRE CARVALHO] Liberação de Data de Baixa.
-// Aba "Títulos em aberto": todos os títulos do CR com saldo em aberto
-// (FIN_VW_CONTASRECEBER). Botão direito num título -> "Liberar data de baixa"
-// abre o modal com os dados do título + data retroativa a liberar (um título
-// pode ter várias datas). A liberação vale na trigger CCS_T_DATA_BAIXA
-// (MEGA.CCS_TB_LIBERA_DATA_BAIXA) e cada baixa que a usa gera execução em
-// CCS_TB_LIBERA_DATA_BAIXA_EXEC (quem executou, quando, lançamento).
-// Aba "Histórico de liberações": tudo que foi liberado, status, quem liberou,
-// execuções e revogação.
+// [23/07/2026 - CRIADO POR ALEXANDRE CARVALHO] Liberação de Exc./Alt.
+// Aba "Títulos baixados": títulos do CR JÁ BAIXADOS (baixa total ou parcial)
+// SOMENTE das filiais da indústria (varejo fora, aplicado na API). Botão
+// direito -> "Liberar alteração/exclusão…" abre o modal que registra a
+// liberação em MEGA.CCS_TB_LIBERA_EXC_ALT. A trava é a trigger
+// CCS_T_LIBERA_EXC_ALT (FIN_MOVIMENTO): alterar/excluir título baixado (ou
+// excluir a baixa) só passa com liberação ativa; cada uso vira execução em
+// CCS_TB_LIBERA_EXC_ALT_EXEC (U=alteração / D=exclusão).
+// Aba "Histórico de liberações": tudo que foi liberado, status, execuções,
+// revogação — espelho da tela de Data de Baixa.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  FileSpreadsheet, Search, Wallet, AlertTriangle, CalendarClock,
-  Users, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, CalendarCheck2,
-  Unlock, X, History, ListChecks, Ban, CheckCircle2, Clock3, Settings2
+  FileSpreadsheet, Search, Wallet, CheckCircle2, CircleDollarSign, Users,
+  ChevronUp, ChevronDown, ChevronLeft, ChevronRight, FilePenLine, Unlock,
+  X, History, ListChecks, Ban, Clock3
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { api, getSession } from '../api/client';
+import { api } from '../api/client';
 
 const fmt   = v => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtN  = v => Number(v || 0).toLocaleString('pt-BR');
@@ -22,35 +23,32 @@ const fmtBr = iso => (iso ? iso.slice(0, 10).split('-').reverse().join('/') : ''
 const fmtBrHr = s => (s ? `${fmtBr(s)} ${s.slice(11, 16)}` : '');
 
 const SITUACOES = [
-  { k: 'todos',    l: 'Todos' },
-  { k: 'vencidos', l: 'Vencidos' },
-  { k: 'hoje',     l: 'Vence hoje' },
-  { k: 'avencer',  l: 'A vencer' }
+  { k: 'todos',   l: 'Todos' },
+  { k: 'total',   l: 'Baixa total' },
+  { k: 'parcial', l: 'Baixa parcial' }
 ];
 const POR_PAGINA = 100;
 const SORTS = {
-  cliente:    t => (t.cliente || '').toLowerCase(),
-  fil_id:     t => t.fil_id,
-  documento:  t => t.documento,
-  tipo:       t => t.tipo,
-  forma:      t => t.forma_receb,
-  emissao:    t => t.emissao || '',
-  prorrogado: t => t.prorrogado || '',
-  dias:       t => t.dias_atraso,
-  valor:      t => t.valor,
-  saldo:      t => t.saldo
+  cliente:   t => (t.cliente || '').toLowerCase(),
+  fil_id:    t => t.fil_id,
+  documento: t => t.documento,
+  tipo:      t => t.tipo,
+  forma:     t => t.forma_receb,
+  emissao:   t => t.emissao || '',
+  vencto:    t => t.prorrogado || t.vencto || '',
+  situacao:  t => (t.baixa_total ? 1 : 0),
+  valor:     t => t.valor,
+  recebido:  t => t.recebido,
+  saldo:     t => t.saldo
 };
+const iso = d => d.toISOString().slice(0, 10);
 
-export default function LiberacaoBaixa() {
+export default function LiberacaoExcAlt() {
   const [aba, setAba] = useState('titulos');   // titulos | historico
-  // menu de contexto + modal de liberação (compartilhados pelas abas)
   const [ctx,   setCtx]   = useState(null);    // {x, y, titulo}
   const [modal, setModal] = useState(null);    // titulo em liberação
-  const [modalParam, setModalParam] = useState(false); // modal de parâmetros
   const [refreshHist, setRefreshHist] = useState(0);
-  const [refreshTit,  setRefreshTit]  = useState(0);   // recarrega títulos após mudar parâmetro
 
-  // fecha o menu de contexto em qualquer clique/scroll/esc
   useEffect(() => {
     if (!ctx) return;
     const fecha = () => setCtx(null);
@@ -69,222 +67,44 @@ export default function LiberacaoBaixa() {
     <div className="p-6 space-y-5 max-w-7xl mx-auto">
       <div>
         <h1 className="text-xl font-bold text-prim-400 flex items-center gap-2">
-          <CalendarCheck2 size={20} /> Liberação de Data de Baixa
+          <FilePenLine size={20} /> Liberação de Exc./Alt.
         </h1>
         <p className="text-sm text-gray-400 mt-1 max-w-3xl">
-          A baixa com data diferente da data de hoje é travada no ERP. Clique com o
-          <b> botão direito</b> num título para liberar uma data específica — a liberação
-          vale para uma baixa naquela data e fica auditada no histórico.
+          Alterar ou excluir um título <b>já baixado</b> é travado no ERP (indústria).
+          Clique com o <b>botão direito</b> num título para liberar a alteração/exclusão —
+          a liberação é de <b>uso único</b>: vale para uma operação e é consumida nela;
+          cada uso fica auditado no histórico.
         </p>
       </div>
 
       {/* Abas */}
-      <div className="flex gap-1 border-b border-ink-700 items-center">
+      <div className="flex gap-1 border-b border-ink-700">
         <Aba ativo={aba === 'titulos'} onClick={() => setAba('titulos')}
-             icon={<ListChecks size={15} />} label="Títulos em aberto" />
+             icon={<ListChecks size={15} />} label="Títulos baixados" />
         <Aba ativo={aba === 'historico'} onClick={() => setAba('historico')}
              icon={<History size={15} />} label="Histórico de liberações" />
-        <button className="btn-ghost ml-auto mb-1 !py-1.5" onClick={() => setModalParam(true)}>
-          <Settings2 size={15} /> Parâmetros
-        </button>
       </div>
 
       {aba === 'titulos'
-        ? <AbaTitulos refresh={refreshTit} onContexto={(e, t) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, titulo: t }); }} />
+        ? <AbaBaixados onContexto={(e, t) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, titulo: t }); }} />
         : <AbaHistorico refresh={refreshHist} />}
 
       {/* Menu de contexto */}
       {ctx && (
-        <div className="fixed z-40 bg-ink-900 border border-ink-700 rounded-lg shadow-xl py-1 min-w-[220px]"
-             style={{ left: Math.min(ctx.x, window.innerWidth - 240), top: Math.min(ctx.y, window.innerHeight - 60) }}>
+        <div className="fixed z-40 bg-ink-900 border border-ink-700 rounded-lg shadow-xl py-1 min-w-[250px]"
+             style={{ left: Math.min(ctx.x, window.innerWidth - 270), top: Math.min(ctx.y, window.innerHeight - 60) }}>
           <button className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-ink-800 flex items-center gap-2"
                   onClick={() => { setModal(ctx.titulo); setCtx(null); }}>
-            <Unlock size={15} className="text-prim-400" /> Liberar data de baixa…
+            <Unlock size={15} className="text-prim-400" /> Liberar alteração/exclusão…
           </button>
         </div>
       )}
 
       {/* Modal de liberação */}
       {modal && (
-        <ModalLiberacao titulo={modal}
+        <ModalLiberacaoExc titulo={modal}
           onClose={(mudou) => { setModal(null); if (mudou) setRefreshHist(x => x + 1); }} />
       )}
-
-      {/* Modal de parâmetros */}
-      {modalParam && <ModalParametros
-        onClose={(mudou) => { setModalParam(false); if (mudou) setRefreshTit(x => x + 1); }} />}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------- parâmetros */
-// [23/07/2026 - Alexandre Carvalho] Parâmetros do módulo (CCS_TB_GFIN_PARAM).
-// Hoje: "Número de dias úteis para Baixa". Salvar é restrito a administradores
-// (o servidor devolve 403 para os demais).
-function ModalParametros({ onClose }) {
-  const [dias,  setDias]  = useState('');
-  const [impcrec, setImpcrec] = useState(false); // mostrar títulos IMPCREC
-  const [grupo,   setGrupo]   = useState(false); // mostrar empresas do grupo
-  const [info,  setInfo]  = useState(null);   // { alterado_em, alterado_por }
-  const [hist,  setHist]  = useState(null);   // histórico de alterações
-  const [pagHist, setPagHist] = useState(1);  // página do histórico (8 por pág.)
-  const [busy,  setBusy]  = useState(false);
-  const [erro,  setErro]  = useState('');
-  const [okMsg, setOkMsg] = useState('');
-  const mudou = useRef(false);
-  const HIST_POR_PAG = 8;
-
-  async function carregaHist() {
-    try {
-      const r = await api.liberacaoBaixaParametrosHistorico();
-      setHist(r.historico);
-      setPagHist(1);
-    } catch { setHist([]); }
-  }
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const r = await api.liberacaoBaixaParametros();
-        setDias(String(r.dias_uteis_baixa));
-        setImpcrec(!!r.mostrar_impcrec);
-        setGrupo(!!r.mostrar_grupo);
-        setInfo(r);
-      } catch { setErro('Não foi possível carregar os parâmetros.'); }
-    })();
-    carregaHist();
-  }, []);
-
-  async function salvar() {
-    setErro(''); setOkMsg('');
-    const n = Number(dias);
-    if (!Number.isInteger(n) || n < 0 || n > 365) {
-      setErro('Informe um número inteiro de 0 a 365.'); return;
-    }
-    setBusy(true);
-    try {
-      await api.liberacaoBaixaSalvarParametros({ dias_uteis_baixa: n, mostrar_impcrec: impcrec, mostrar_grupo: grupo });
-      mudou.current = true;
-      setOkMsg('Parâmetros salvos.');
-      carregaHist();
-    } catch (e) {
-      setErro(e.message === 'admin_only'
-        ? 'Somente administradores podem alterar os parâmetros.'
-        : (e.message || 'Erro ao salvar'));
-    } finally { setBusy(false); }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
-         onClick={() => onClose(mudou.current)}>
-      <div className="card w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="px-5 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-900 rounded-t-lg">
-          <h2 className="font-semibold text-prim-400 flex items-center gap-2">
-            <Settings2 size={16} /> Parâmetros
-          </h2>
-          <button className="text-gray-500 hover:text-gray-200" onClick={() => onClose(mudou.current)}>
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          <div className="space-y-2">
-            <label className="text-xs uppercase tracking-wider text-gray-400">
-              Número de dias úteis para Baixa
-            </label>
-            <input type="number" min={0} max={365} step={1} value={dias}
-                   onChange={e => setDias(e.target.value)}
-                   className="w-full bg-ink-900 border border-ink-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-prim-500 font-mono" />
-            <p className="text-xs text-gray-500">
-              Quantidade de dias úteis considerada pelo módulo para a baixa dos títulos.
-            </p>
-
-            <label className="flex items-center gap-2.5 bg-ink-900/60 rounded-lg px-3 py-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={impcrec}
-                     onChange={e => setImpcrec(e.target.checked)}
-                     className="accent-prim-500 w-4 h-4" />
-              <span className="text-sm text-gray-200">Mostrar IMPCREC</span>
-              <span className="text-xs text-gray-500 ml-auto">
-                exibe os títulos desse tipo na lista
-              </span>
-            </label>
-
-            <label className="flex items-center gap-2.5 bg-ink-900/60 rounded-lg px-3 py-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={grupo}
-                     onChange={e => setGrupo(e.target.checked)}
-                     className="accent-prim-500 w-4 h-4" />
-              <span className="text-sm text-gray-200">Mostrar empresas do grupo</span>
-              <span className="text-xs text-gray-500 ml-auto">
-                exibe títulos cujo cliente é empresa do grupo
-              </span>
-            </label>
-
-            {info?.alterado_em && (
-              <p className="text-[11px] text-gray-500">
-                Última alteração: {fmtBrHr(info.alterado_em)}{info.alterado_por ? ` por ${info.alterado_por}` : ''}
-              </p>
-            )}
-            {erro  && <div className="text-rose-300 text-xs bg-rose-900/30 rounded p-2">{erro}</div>}
-            {okMsg && <div className="text-prim-300 text-xs bg-prim-600/15 rounded p-2 flex items-center gap-1.5">
-              <CheckCircle2 size={14} /> {okMsg}</div>}
-            <button className="btn-prim w-full justify-center" disabled={busy || dias === ''} onClick={salvar}>
-              {busy ? 'Salvando…' : 'Salvar'}
-            </button>
-          </div>
-
-          {/* histórico de alterações */}
-          <div>
-            <div className="text-xs uppercase tracking-wider text-gray-400 mb-1.5 flex items-center gap-1.5">
-              <History size={13} /> Histórico de alterações {hist && hist.length > 0 && `(${hist.length})`}
-            </div>
-            {!hist && <div className="text-xs text-gray-500">carregando…</div>}
-            {hist && hist.length === 0 && (
-              <div className="text-xs text-gray-500">Nenhuma alteração registrada — valor inicial em vigor.</div>
-            )}
-            {hist && hist.length > 0 && (() => {
-              const totalPag = Math.max(1, Math.ceil(hist.length / HIST_POR_PAG));
-              const pag = Math.min(pagHist, totalPag);
-              const visiveis = hist.slice((pag - 1) * HIST_POR_PAG, pag * HIST_POR_PAG);
-              return (
-                <>
-                  <div className="space-y-1.5">
-                    {visiveis.map((h, i) => (
-                      <div key={i} className="bg-ink-900/60 rounded-lg px-3 py-2 text-xs flex items-center gap-3">
-                        {h.parametro && (
-                          <span className="text-[10px] uppercase tracking-wider text-gray-500 whitespace-nowrap">
-                            {h.parametro}
-                          </span>
-                        )}
-                        <span className="font-mono text-gray-200 whitespace-nowrap">
-                          {h.de == null ? '—' : h.de} <span className="text-gray-500">→</span>{' '}
-                          <span className="text-prim-400 font-semibold">{h.para}</span>
-                        </span>
-                        <span className="text-gray-500 truncate flex-1" title={`por ${h.usuario} em ${fmtBrHr(h.quando)}`}>
-                          por {h.usuario}
-                        </span>
-                        <span className="text-gray-500 whitespace-nowrap">{fmtBrHr(h.quando)}</span>
-                      </div>
-                    ))}
-                  </div>
-                  {totalPag > 1 && (
-                    <div className="flex items-center justify-end gap-2 mt-2 text-xs text-gray-400">
-                      <button className="p-1 rounded hover:bg-ink-800 disabled:opacity-30"
-                              disabled={pag <= 1} onClick={() => setPagHist(pag - 1)}>
-                        <ChevronLeft size={14} />
-                      </button>
-                      página {pag} de {totalPag}
-                      <button className="p-1 rounded hover:bg-ink-800 disabled:opacity-30"
-                              disabled={pag >= totalPag} onClick={() => setPagHist(pag + 1)}>
-                        <ChevronRight size={14} />
-                      </button>
-                    </div>
-                  )}
-                </>
-              );
-            })()}
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -300,25 +120,28 @@ function Aba({ ativo, onClick, icon, label }) {
   );
 }
 
-/* ---------------------------------------------------------------- títulos */
-function AbaTitulos({ onContexto, refresh }) {
-  const [resp,   setResp]   = useState(null);
-  const [busy,   setBusy]   = useState(true);
-  const [erro,   setErro]   = useState('');
-  const [sit,    setSit]    = useState('todos');
-  const [fil,    setFil]    = useState('todas');
-  const [forma,  setForma]  = useState('todas');
-  const [busca,  setBusca]  = useState('');
-  const [sort,   setSort]   = useState({ k: 'prorrogado', asc: true });
+/* ------------------------------------------------------------- baixados */
+function AbaBaixados({ onContexto }) {
+  const hoje = new Date();
+  const [ini, setIni] = useState(iso(new Date(hoje.getTime() - 60 * 86400000)));
+  const [fim, setFim] = useState(iso(hoje));
+  const [resp,  setResp]  = useState(null);
+  const [busy,  setBusy]  = useState(true);
+  const [erro,  setErro]  = useState('');
+  const [sit,   setSit]   = useState('todos');
+  const [fil,   setFil]   = useState('todas');
+  const [forma, setForma] = useState('todas');
+  const [busca, setBusca] = useState('');
+  const [sort,  setSort]  = useState({ k: 'emissao', asc: false });
   const [pagina, setPagina] = useState(1);
 
-  async function carregar() {
+  async function carregar(pIni = ini, pFim = fim) {
     setBusy(true); setErro('');
-    try { setResp(await api.liberacaoBaixaTitulos()); }
-    catch (e) { setErro(e.message || 'Erro ao carregar títulos em aberto'); setResp(null); }
+    try { setResp(await api.liberacaoBaixaBaixados(pIni, pFim)); }
+    catch (e) { setErro(e.message || 'Erro ao carregar títulos baixados'); setResp(null); }
     finally { setBusy(false); }
   }
-  useEffect(() => { carregar(); }, [refresh]);
+  useEffect(() => { carregar(); }, []);
 
   const filiais = useMemo(() =>
     resp ? [...new Set(resp.titulos.map(t => t.fil_id))].sort((a, b) => a - b) : [], [resp]);
@@ -328,11 +151,10 @@ function AbaTitulos({ onContexto, refresh }) {
   const linhas = useMemo(() => {
     if (!resp) return [];
     let arr = resp.titulos;
-    if (sit === 'vencidos') arr = arr.filter(t => t.dias_atraso > 0);
-    if (sit === 'hoje')     arr = arr.filter(t => t.dias_atraso === 0);
-    if (sit === 'avencer')  arr = arr.filter(t => t.dias_atraso < 0);
-    if (fil   !== 'todas')  arr = arr.filter(t => String(t.fil_id) === fil);
-    if (forma !== 'todas')  arr = arr.filter(t => t.forma_receb === forma);
+    if (sit === 'total')   arr = arr.filter(t => t.baixa_total);
+    if (sit === 'parcial') arr = arr.filter(t => !t.baixa_total);
+    if (fil   !== 'todas') arr = arr.filter(t => String(t.fil_id) === fil);
+    if (forma !== 'todas') arr = arr.filter(t => t.forma_receb === forma);
     if (busca.trim()) {
       const q = busca.toLowerCase();
       arr = arr.filter(t =>
@@ -340,7 +162,7 @@ function AbaTitulos({ onContexto, refresh }) {
         (t.cliente   || '').toLowerCase().includes(q) ||
         (t.documento || '').toLowerCase().includes(q));
     }
-    const ex = SORTS[sort.k] || SORTS.prorrogado;
+    const ex = SORTS[sort.k] || SORTS.emissao;
     arr = [...arr].sort((a, b) => {
       const va = ex(a), vb = ex(b);
       const c = va < vb ? -1 : va > vb ? 1 : 0;
@@ -353,7 +175,7 @@ function AbaTitulos({ onContexto, refresh }) {
 
   const totPaginas = Math.max(1, Math.ceil(linhas.length / POR_PAGINA));
   const visiveis   = linhas.slice((pagina - 1) * POR_PAGINA, pagina * POR_PAGINA);
-  const somaFiltro = useMemo(() => linhas.reduce((s, t) => s + t.saldo, 0), [linhas]);
+  const somaFiltro = useMemo(() => linhas.reduce((s, t) => s + t.recebido, 0), [linhas]);
 
   function alternaSort(k) { setSort(s => s.k === k ? { k, asc: !s.asc } : { k, asc: true }); }
 
@@ -362,36 +184,51 @@ function AbaTitulos({ onContexto, refresh }) {
       'Cód. Cliente': t.agn_id, Cliente: t.cliente, Filial: t.fil_id,
       Documento: t.documento, Parcela: t.parcela, Tipo: t.tipo,
       'Forma Receb.': t.forma_receb, 'Emissão': fmtBr(t.emissao),
-      Vencimento: fmtBr(t.vencto), 'Venc. prorrogado': fmtBr(t.prorrogado),
-      Dias: t.dias_atraso, 'Valor original': t.valor, 'Saldo em aberto': t.saldo
+      Vencimento: fmtBr(t.prorrogado || t.vencto),
+      'Situação': t.baixa_total ? 'Baixa total' : 'Baixa parcial',
+      'Valor original': t.valor, Recebido: t.recebido, 'Saldo em aberto': t.saldo
     }));
     const ws = XLSX.utils.json_to_sheet(dados);
     ws['!cols'] = [{wch:12},{wch:48},{wch:7},{wch:14},{wch:8},{wch:10},{wch:24},
-                   {wch:11},{wch:11},{wch:14},{wch:9},{wch:14},{wch:15}];
+                   {wch:11},{wch:11},{wch:13},{wch:14},{wch:14},{wch:15}];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Títulos em aberto');
-    XLSX.writeFile(wb, `liberacao-data-baixa-titulos-${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, 'Títulos baixados');
+    XLSX.writeFile(wb, `liberacao-exc-alt-baixados-${new Date().toISOString().slice(0,10)}.xlsx`);
   }
 
   const kpi = resp?.kpi;
-  const pctVencido = kpi && kpi.saldo_total > 0
-    ? Math.round(kpi.saldo_vencido / kpi.saldo_total * 100) : 0;
 
   return (
     <div className="space-y-5">
       {erro && <div className="bg-red-900/40 text-red-200 text-sm rounded p-3">{erro}</div>}
 
+      {/* período */}
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="text-[10px] uppercase tracking-wider text-gray-500 block mb-1">Emissão de</label>
+          <input type="date" value={ini} onChange={e => setIni(e.target.value)}
+                 className="bg-ink-900 border border-ink-700 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-prim-500" />
+        </div>
+        <div>
+          <label className="text-[10px] uppercase tracking-wider text-gray-500 block mb-1">até</label>
+          <input type="date" value={fim} onChange={e => setFim(e.target.value)}
+                 className="bg-ink-900 border border-ink-700 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-prim-500" />
+        </div>
+        <button className="btn-prim" disabled={busy || !ini || !fim} onClick={() => carregar()}>
+          {busy ? 'Carregando…' : 'Aplicar período'}
+        </button>
+      </div>
+
       {kpi && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Kpi icon={<Wallet size={16} />} label="Saldo em aberto" value={fmt(kpi.saldo_total)}
-               sub={`${fmtN(kpi.qt_titulos)} título(s)`} color="prim" />
-          <Kpi icon={<AlertTriangle size={16} />} label="Vencido" value={fmt(kpi.saldo_vencido)}
-               sub={`${fmtN(kpi.qt_vencidos)} título(s) · ${pctVencido}% do saldo`} color="rose" />
-          <Kpi icon={<CalendarClock size={16} />} label="A vencer" value={fmt(kpi.saldo_avencer)}
-               sub={`${fmtN(kpi.qt_avencer)} título(s)`} color="acc" />
-          <Kpi icon={<Users size={16} />} label="Clientes com saldo" value={fmtN(kpi.qt_clientes)}
-               sub={kpi.maior_atraso > 0 ? `maior atraso: ${fmtN(kpi.maior_atraso)} dia(s)` : 'sem títulos vencidos'}
-               color="prim" />
+          <Kpi icon={<Wallet size={16} />} label="Recebido no período" value={fmt(kpi.vl_recebido)}
+               sub={`${fmtN(kpi.qt_titulos)} título(s) baixado(s)`} color="prim" />
+          <Kpi icon={<CheckCircle2 size={16} />} label="Baixa total" value={fmt(kpi.vl_baixa_total)}
+               sub={`${fmtN(kpi.qt_baixa_total)} título(s)`} color="prim" />
+          <Kpi icon={<CircleDollarSign size={16} />} label="Baixa parcial" value={fmt(kpi.vl_parcial)}
+               sub={`${fmtN(kpi.qt_parcial)} título(s) · saldo ${fmt(kpi.saldo_parcial)}`} color="acc" />
+          <Kpi icon={<Users size={16} />} label="Clientes" value={fmtN(kpi.qt_clientes)}
+               sub={`período ${fmtBr(resp.periodo.ini)} a ${fmtBr(resp.periodo.fim)}`} color="prim" />
         </div>
       )}
 
@@ -431,8 +268,8 @@ function AbaTitulos({ onContexto, refresh }) {
 
           <div className="px-4 py-2 bg-ink-900/50 border-b border-ink-700 text-xs text-gray-400 flex flex-wrap gap-4 items-center">
             <span>{fmtN(linhas.length)} título(s) no filtro</span>
-            <span>Soma: <span className="text-prim-400 font-mono">{fmt(somaFiltro)}</span></span>
-            <span className="text-gray-500 hidden md:inline">botão direito num título → liberar data de baixa</span>
+            <span>Recebido: <span className="text-prim-400 font-mono">{fmt(somaFiltro)}</span></span>
+            <span className="text-gray-500 hidden md:inline">botão direito num título → liberar alteração/exclusão</span>
             {busy && <span className="text-gray-500">atualizando…</span>}
             <Pager pagina={pagina} total={totPaginas} onChange={setPagina} />
           </div>
@@ -441,22 +278,22 @@ function AbaTitulos({ onContexto, refresh }) {
             <table className="w-full text-sm">
               <thead className="bg-ink-900/70 text-gray-400 uppercase text-xs sticky top-0 z-10">
                 <tr>
-                  <Th k="cliente"    sort={sort} onSort={alternaSort} className="text-left pl-4">Cliente</Th>
-                  <Th k="fil_id"     sort={sort} onSort={alternaSort} className="text-center">Filial</Th>
-                  <Th k="documento"  sort={sort} onSort={alternaSort} className="text-left">Documento</Th>
-                  <Th k="tipo"       sort={sort} onSort={alternaSort} className="text-left">Tipo</Th>
-                  <Th k="forma"      sort={sort} onSort={alternaSort} className="text-left">Forma Receb.</Th>
-                  <Th k="emissao"    sort={sort} onSort={alternaSort} className="text-center">Emissão</Th>
-                  <Th k="prorrogado" sort={sort} onSort={alternaSort} className="text-center">Vencimento</Th>
-                  <Th k="dias"       sort={sort} onSort={alternaSort} className="text-right">Situação</Th>
-                  <Th k="valor"      sort={sort} onSort={alternaSort} className="text-right">Valor</Th>
-                  <Th k="saldo"      sort={sort} onSort={alternaSort} className="text-right pr-4">Saldo em aberto</Th>
+                  <Th k="cliente"   sort={sort} onSort={alternaSort} className="text-left pl-4">Cliente</Th>
+                  <Th k="fil_id"    sort={sort} onSort={alternaSort} className="text-center">Filial</Th>
+                  <Th k="documento" sort={sort} onSort={alternaSort} className="text-left">Documento</Th>
+                  <Th k="tipo"      sort={sort} onSort={alternaSort} className="text-left">Tipo</Th>
+                  <Th k="forma"     sort={sort} onSort={alternaSort} className="text-left">Forma Receb.</Th>
+                  <Th k="emissao"   sort={sort} onSort={alternaSort} className="text-center">Emissão</Th>
+                  <Th k="vencto"    sort={sort} onSort={alternaSort} className="text-center">Vencimento</Th>
+                  <Th k="situacao"  sort={sort} onSort={alternaSort} className="text-center">Situação</Th>
+                  <Th k="valor"     sort={sort} onSort={alternaSort} className="text-right">Valor</Th>
+                  <Th k="recebido"  sort={sort} onSort={alternaSort} className="text-right">Recebido</Th>
+                  <Th k="saldo"     sort={sort} onSort={alternaSort} className="text-right pr-4">Saldo em aberto</Th>
                 </tr>
               </thead>
               <tbody>
                 {visiveis.map((t, i) => (
-                  <tr key={i}
-                      className="border-t border-ink-700 hover:bg-ink-800/40 cursor-context-menu"
+                  <tr key={i} className="border-t border-ink-700 hover:bg-ink-800/40 cursor-context-menu"
                       onContextMenu={e => onContexto(e, t)}>
                     <td className="p-2 pl-4">
                       <div className="text-gray-200">{t.cliente}</div>
@@ -471,22 +308,18 @@ function AbaTitulos({ onContexto, refresh }) {
                       {t.forma_receb || '—'}
                     </td>
                     <td className="p-2 text-center text-xs text-gray-400">{fmtBr(t.emissao)}</td>
-                    <td className="p-2 text-center text-xs text-gray-300">
-                      {fmtBr(t.prorrogado)}
-                      {t.prorrogado !== t.vencto && (
-                        <div className="text-[10px] text-gray-500" title="Vencimento original">
-                          orig. {fmtBr(t.vencto)}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-2 text-right"><BadgeDias dias={t.dias_atraso} /></td>
+                    <td className="p-2 text-center text-xs text-gray-300">{fmtBr(t.prorrogado || t.vencto)}</td>
+                    <td className="p-2 text-center"><BadgeBaixa total={t.baixa_total} /></td>
                     <td className="p-2 text-right font-mono text-xs text-gray-400">{fmt(t.valor)}</td>
-                    <td className="p-2 pr-4 text-right font-mono font-semibold text-gray-100">{fmt(t.saldo)}</td>
+                    <td className="p-2 text-right font-mono font-semibold text-gray-100">{fmt(t.recebido)}</td>
+                    <td className="p-2 pr-4 text-right font-mono text-xs text-gray-400">
+                      {t.baixa_total ? '—' : fmt(t.saldo)}
+                    </td>
                   </tr>
                 ))}
                 {visiveis.length === 0 && (
-                  <tr><td colSpan={10} className="p-8 text-center text-gray-500">
-                    {busy ? 'Carregando...' : 'Nenhum título no filtro selecionado.'}
+                  <tr><td colSpan={11} className="p-8 text-center text-gray-500">
+                    {busy ? 'Carregando...' : 'Nenhum título baixado no filtro/período selecionado.'}
                   </td></tr>
                 )}
               </tbody>
@@ -499,17 +332,15 @@ function AbaTitulos({ onContexto, refresh }) {
         </div>
       )}
 
-      {busy && !resp && <div className="text-gray-400 text-sm">Carregando títulos em aberto...</div>}
+      {busy && !resp && <div className="text-gray-400 text-sm">Carregando títulos baixados...</div>}
     </div>
   );
 }
 
-/* ------------------------------------------------------- modal liberação */
-function ModalLiberacao({ titulo, onClose }) {
-  const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  const [data,   setData]   = useState('');
+/* --------------------------------------------------- modal de liberação */
+function ModalLiberacaoExc({ titulo, onClose }) {
   const [motivo, setMotivo] = useState('');
-  const [libs,   setLibs]   = useState(null);   // liberações já existentes do título
+  const [libs,   setLibs]   = useState(null);
   const [busy,   setBusy]   = useState(false);
   const [erro,   setErro]   = useState('');
   const [okMsg,  setOkMsg]  = useState('');
@@ -517,7 +348,7 @@ function ModalLiberacao({ titulo, onClose }) {
 
   async function carregaLibs() {
     try {
-      const r = await api.liberacaoBaixaLiberacoes(titulo.agn_id, titulo.documento);
+      const r = await api.liberacaoExcLiberacoes(titulo.agn_id, titulo.documento);
       setLibs(r.liberacoes.filter(l =>
         (l.parcela || '') === (titulo.parcela || '') && l.fil_id === titulo.fil_id));
     } catch { setLibs([]); }
@@ -526,28 +357,27 @@ function ModalLiberacao({ titulo, onClose }) {
 
   async function liberar() {
     setErro(''); setOkMsg('');
-    if (!data) { setErro('Informe a data a liberar.'); return; }
     setBusy(true);
     try {
-      await api.liberacaoBaixaLiberar({
+      await api.liberacaoExcLiberar({
         fil: titulo.fil_id, agn: titulo.agn_id,
         documento: titulo.documento, parcela: titulo.parcela || '',
-        data, motivo: motivo.trim()
+        motivo: motivo.trim()
       });
       mudou.current = true;
-      setOkMsg(`Data ${fmtBr(data)} liberada para a baixa deste título.`);
-      setData(''); setMotivo('');
+      setOkMsg('Alteração/exclusão liberada para este título.');
+      setMotivo('');
       carregaLibs();
     } catch (e) {
       setErro(e.message === 'ja_liberado'
-        ? 'Este título já tem uma liberação ativa para esta data.'
+        ? 'Este título já tem uma liberação ativa.'
         : (e.message || 'Erro ao liberar'));
     } finally { setBusy(false); }
   }
 
   async function revogar(id) {
     setBusy(true); setErro(''); setOkMsg('');
-    try { await api.liberacaoBaixaRevogar(id); mudou.current = true; carregaLibs(); }
+    try { await api.liberacaoExcRevogar(id); mudou.current = true; carregaLibs(); }
     catch (e) { setErro(e.message || 'Erro ao revogar'); }
     finally { setBusy(false); }
   }
@@ -558,7 +388,7 @@ function ModalLiberacao({ titulo, onClose }) {
       <div className="card w-full max-w-lg shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="px-5 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-900 rounded-t-lg">
           <h2 className="font-semibold text-prim-400 flex items-center gap-2">
-            <Unlock size={16} /> Liberar data de baixa
+            <Unlock size={16} /> Liberar alteração/exclusão
           </h2>
           <button className="text-gray-500 hover:text-gray-200" onClick={() => onClose(mudou.current)}>
             <X size={18} />
@@ -566,34 +396,31 @@ function ModalLiberacao({ titulo, onClose }) {
         </div>
 
         <div className="p-5 space-y-4">
-          {/* dados do título */}
           <div className="bg-ink-900/60 rounded-lg p-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
             <Info rotulo="Cliente" valor={`${titulo.cliente}`} span2 />
             <Info rotulo="Cód. cliente" valor={titulo.agn_id} mono />
             <Info rotulo="Filial" valor={titulo.fil_id} mono />
             <Info rotulo="Documento" valor={`${titulo.documento}${titulo.parcela ? '/' + titulo.parcela : ''}`} mono />
             <Info rotulo="Tipo" valor={titulo.tipo} />
-            <Info rotulo="Vencimento" valor={fmtBr(titulo.prorrogado)} />
-            <Info rotulo="Saldo em aberto" valor={fmt(titulo.saldo)} destaque />
+            <Info rotulo="Situação" valor={titulo.baixa_total ? 'Baixa total' : 'Baixa parcial'} />
+            <Info rotulo="Recebido" valor={fmt(titulo.recebido)} destaque />
           </div>
 
-          {/* nova liberação */}
           <div className="space-y-2">
-            <label className="text-xs uppercase tracking-wider text-gray-400">
-              Data liberada para a baixa (retroativa)
-            </label>
-            <input type="date" max={ontem} value={data}
-                   onChange={e => setData(e.target.value)}
-                   className="w-full bg-ink-900 border border-ink-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-prim-500" />
             <textarea rows={2} placeholder="Motivo (opcional)"
                       value={motivo} onChange={e => setMotivo(e.target.value)} maxLength={200}
                       className="w-full bg-ink-900 border border-ink-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-prim-500 resize-none" />
             {erro  && <div className="text-rose-300 text-xs bg-rose-900/30 rounded p-2">{erro}</div>}
             {okMsg && <div className="text-prim-300 text-xs bg-prim-600/15 rounded p-2 flex items-center gap-1.5">
               <CheckCircle2 size={14} /> {okMsg}</div>}
-            <button className="btn-prim w-full justify-center" disabled={busy || !data} onClick={liberar}>
-              <Unlock size={15} /> {busy ? 'Liberando…' : 'Liberar esta data'}
+            <button className="btn-prim w-full justify-center" disabled={busy} onClick={liberar}>
+              <Unlock size={15} /> {busy ? 'Liberando…' : 'Liberar alteração/exclusão'}
             </button>
+            <p className="text-[11px] text-gray-500">
+              Liberação de <b>uso único</b>: o ERP aceita <b>uma</b> alteração ou exclusão
+              deste título/baixa e a liberação é consumida na operação. Para uma nova
+              operação, libere novamente. Cada uso fica registrado no histórico.
+            </p>
           </div>
 
           {/* liberações existentes deste título */}
@@ -609,7 +436,6 @@ function ModalLiberacao({ titulo, onClose }) {
               <div className="space-y-1.5 max-h-44 overflow-auto pr-1">
                 {libs.map(l => (
                   <div key={l.id} className="bg-ink-900/60 rounded-lg px-3 py-2 text-xs flex items-center gap-3">
-                    <span className="font-mono text-gray-200">{fmtBr(l.data_liberada)}</span>
                     <StatusLib lib={l} />
                     <span className="text-gray-500 truncate flex-1" title={`por ${l.usu_liberou_nome} em ${fmtBrHr(l.liberado_em)}`}>
                       por {l.usu_liberou_nome} · {fmtBrHr(l.liberado_em)}
@@ -651,63 +477,60 @@ const FILTROS_HIST = [
 ];
 
 function AbaHistorico({ refresh }) {
-  const [resp,  setResp]  = useState(null);
-  const [busy,  setBusy]  = useState(true);
-  const [erro,  setErro]  = useState('');
+  const [resp,   setResp]   = useState(null);
+  const [busy,   setBusy]   = useState(true);
+  const [erro,   setErro]   = useState('');
   const [filtro, setFiltro] = useState('todas');
-  const [busca, setBusca] = useState('');
+  const [busca,  setBusca]  = useState('');
 
   async function carregar() {
     setBusy(true); setErro('');
-    try { setResp(await api.liberacaoBaixaLiberacoes()); }
+    try { setResp(await api.liberacaoExcLiberacoes()); }
     catch (e) { setErro(e.message || 'Erro ao carregar histórico'); setResp(null); }
     finally { setBusy(false); }
   }
   useEffect(() => { carregar(); }, [refresh]);
 
   async function revogar(id) {
-    if (!window.confirm('Revogar esta liberação? Ela deixa de valer imediatamente.')) return;
-    try { await api.liberacaoBaixaRevogar(id); carregar(); }
+    try { await api.liberacaoExcRevogar(id); carregar(); }
     catch (e) { setErro(e.message || 'Erro ao revogar'); }
   }
 
   const linhas = useMemo(() => {
-    if (!resp) return [];
-    let arr = resp.liberacoes;
-    if (filtro === 'ativas')     arr = arr.filter(l => l.status === 'A' && l.execucoes.length === 0);
-    if (filtro === 'executadas') arr = arr.filter(l => l.execucoes.length > 0);
-    if (filtro === 'canceladas') arr = arr.filter(l => l.status === 'C');
+    let ls = resp?.liberacoes || [];
+    if (filtro === 'ativas')     ls = ls.filter(l => l.status === 'A' && l.execucoes.length === 0);
+    if (filtro === 'executadas') ls = ls.filter(l => l.execucoes.length > 0);
+    if (filtro === 'canceladas') ls = ls.filter(l => l.status === 'C');
     if (busca.trim()) {
       const q = busca.toLowerCase();
-      arr = arr.filter(l =>
-        String(l.agn_id).includes(q) ||
-        (l.cliente   || '').toLowerCase().includes(q) ||
+      ls = ls.filter(l =>
+        (l.cliente || '').toLowerCase().includes(q) ||
         (l.documento || '').toLowerCase().includes(q) ||
         (l.usu_liberou_nome || '').toLowerCase().includes(q));
     }
-    return arr;
+    return ls;
   }, [resp, filtro, busca]);
 
   function exportXlsx() {
     const dados = [];
     for (const l of linhas) {
       const base = {
-        'Liberado em': fmtBrHr(l.liberado_em), 'Quem liberou': l.usu_liberou_nome,
-        'Cód. Cliente': l.agn_id, Cliente: l.cliente, Filial: l.fil_id,
-        Documento: l.documento, Parcela: l.parcela,
-        'Data liberada': fmtBr(l.data_liberada), Motivo: l.motivo,
-        Status: l.status === 'C' ? 'Cancelada' : l.execucoes.length ? 'Executada' : 'Ativa'
+        Cliente: l.cliente, 'Cód.': l.agn_id, Filial: l.fil_id,
+        Documento: `${l.documento}${l.parcela ? '/' + l.parcela : ''}`,
+        Motivo: l.motivo, Status: l.status === 'C' ? 'Cancelada' : (l.execucoes.length ? 'Executada' : 'Ativa'),
+        'Liberado em': fmtBrHr(l.liberado_em), 'Quem liberou': l.usu_liberou_nome
       };
-      if (l.execucoes.length === 0) dados.push({ ...base, 'Executado em': '', 'Quem executou': '', 'Lançamento': '', 'Valor baixado': '' });
+      if (l.execucoes.length === 0) dados.push(base);
       for (const e of l.execucoes) dados.push({
-        ...base, 'Executado em': fmtBrHr(e.executado_em),
-        'Quem executou': e.usu_exec_nome, 'Lançamento': e.lancamento, 'Valor baixado': e.valor
+        ...base, 'Operação': e.operacao === 'D' ? 'Exclusão' : 'Alteração',
+        'Executado em': fmtBrHr(e.executado_em),
+        'Quem executou': e.usu_exec_nome, 'Lançamento': e.lancamento, 'Valor': e.valor
       });
     }
     const ws = XLSX.utils.json_to_sheet(dados);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Histórico de liberações');
-    XLSX.writeFile(wb, `liberacao-data-baixa-historico-${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb, `liberacao-exc-alt-historico-${new Date().toISOString().slice(0,10)}.xlsx`);
   }
 
   const kpi = useMemo(() => {
@@ -726,7 +549,7 @@ function AbaHistorico({ refresh }) {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Kpi icon={<History size={16} />}      label="Liberações"  value={fmtN(kpi.total)}      color="prim" />
-        <Kpi icon={<Clock3 size={16} />}       label="Ativas (aguardando baixa)" value={fmtN(kpi.ativas)} color="acc" />
+        <Kpi icon={<Clock3 size={16} />}       label="Ativas (aguardando uso)" value={fmtN(kpi.ativas)} color="acc" />
         <Kpi icon={<CheckCircle2 size={16} />} label="Executadas"  value={fmtN(kpi.executadas)} color="prim" />
         <Kpi icon={<Ban size={16} />}          label="Canceladas"  value={fmtN(kpi.canceladas)} color="rose" />
       </div>
@@ -760,10 +583,9 @@ function AbaHistorico({ refresh }) {
               <tr>
                 <th className="text-left p-2 pl-4">Liberado em / por</th>
                 <th className="text-left p-2">Título</th>
-                <th className="text-center p-2">Data liberada</th>
                 <th className="text-left p-2">Motivo</th>
                 <th className="text-center p-2">Status</th>
-                <th className="text-left p-2">Execução (baixa)</th>
+                <th className="text-left p-2">Execuções (alteração/exclusão)</th>
                 <th className="text-right p-2 pr-4"></th>
               </tr>
             </thead>
@@ -780,17 +602,19 @@ function AbaHistorico({ refresh }) {
                       fil {l.fil_id} · {l.documento}{l.parcela ? `/${l.parcela}` : ''} · cód. {l.agn_id}
                     </div>
                   </td>
-                  <td className="p-2 text-center font-mono text-xs text-gray-200">{fmtBr(l.data_liberada)}</td>
                   <td className="p-2 text-xs text-gray-400 max-w-[180px]">
                     <span className="line-clamp-2" title={l.motivo}>{l.motivo || '—'}</span>
                   </td>
                   <td className="p-2 text-center"><StatusLib lib={l} /></td>
                   <td className="p-2">
                     {l.execucoes.length === 0
-                      ? <span className="text-xs text-gray-500">— não executada</span>
+                      ? <span className="text-xs text-gray-500">— não utilizada</span>
                       : l.execucoes.map((e, i) => (
                           <div key={i} className="text-xs text-gray-300">
-                            <span className="text-prim-300">{fmtBrHr(e.executado_em)}</span>
+                            <span className={e.operacao === 'D' ? 'text-rose-300' : 'text-acc-500'}>
+                              {e.operacao === 'D' ? 'Exclusão' : 'Alteração'}
+                            </span>
+                            {' · '}<span className="text-prim-300">{fmtBrHr(e.executado_em)}</span>
                             {' · '}{e.usu_exec_nome}
                             {' · '}<span className="font-mono text-gray-400">lançto {e.lancamento}</span>
                             {' · '}<span className="font-mono">{fmt(e.valor)}</span>
@@ -813,7 +637,7 @@ function AbaHistorico({ refresh }) {
                 </tr>
               ))}
               {linhas.length === 0 && (
-                <tr><td colSpan={7} className="p-8 text-center text-gray-500">
+                <tr><td colSpan={6} className="p-8 text-center text-gray-500">
                   {busy ? 'Carregando...' : 'Nenhuma liberação no filtro selecionado.'}
                 </td></tr>
               )}
@@ -829,11 +653,17 @@ function StatusLib({ lib }) {
   if (lib.status === 'C')
     return <span className="text-[10px] px-1.5 py-0.5 rounded bg-ink-700 text-gray-400 uppercase">Cancelada</span>;
   if (lib.execucoes.length > 0)
-    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-prim-600/25 text-prim-300 uppercase">Executada</span>;
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-prim-600/20 text-prim-400 uppercase">Executada</span>;
   return <span className="text-[10px] px-1.5 py-0.5 rounded bg-acc-500/20 text-acc-500 uppercase">Ativa</span>;
 }
 
-/* ------------------------------------------------------------ genéricos */
+/* ------------------------------------------------- componentes locais */
+function BadgeBaixa({ total }) {
+  return total
+    ? <span className="text-[11px] px-1.5 py-0.5 rounded bg-prim-600/20 text-prim-400 font-semibold">Total</span>
+    : <span className="text-[11px] px-1.5 py-0.5 rounded bg-acc-500/20 text-acc-500 font-semibold">Parcial</span>;
+}
+
 function Kpi({ icon, label, value, sub, color = 'prim' }) {
   const map = {
     prim: { border: 'border-prim-500', text: 'text-prim-400' },
@@ -861,17 +691,6 @@ function Th({ k, sort, onSort, className = '', children }) {
       </span>
     </th>
   );
-}
-
-function BadgeDias({ dias }) {
-  if (dias === 0)
-    return <span className="text-[11px] px-1.5 py-0.5 rounded bg-acc-500/20 text-acc-500 font-semibold">vence hoje</span>;
-  if (dias < 0)
-    return <span className="text-xs text-gray-400 font-mono">em {fmtN(-dias)}d</span>;
-  const cor = dias > 90 ? 'text-rose-400 font-bold'
-            : dias > 60 ? 'text-orange-400'
-            : dias > 30 ? 'text-amber-400' : 'text-amber-300';
-  return <span className={`text-xs font-mono ${cor}`}>{fmtN(dias)}d atraso</span>;
 }
 
 function Pager({ pagina, total, onChange }) {

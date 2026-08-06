@@ -19,7 +19,16 @@ export const MODULOS = {
     ],
   },
   // [10/07/2026 - Alexandre Carvalho] Liberacao de Data de Baixa (titulos CR em aberto)
-  LIBERACAO_BAIXA: { rota: '/liberacao-baixa', label: 'Liberação de Data de Baixa' },
+  // [23/07/2026 - Alexandre Carvalho] Virou menu "Liberação" com 2 telas
+  // (mesma permissão de módulo cobre as duas, padrão Inadimplência).
+  LIBERACAO_BAIXA: {
+    label: 'Liberação',
+    rota:  '/liberacao-baixa',
+    submenus: [
+      { rota: '/liberacao-baixa',   label: 'Liberação de Data de Baixa' },
+      { rota: '/liberacao-exc-alt', label: 'Liberação de Exc./Alt.' },
+    ],
+  },
   CREDITO: {
     label: 'Inteligência de Crédito',
     rota:  '/credito/painel',

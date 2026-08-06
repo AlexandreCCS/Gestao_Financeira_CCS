@@ -109,5 +109,19 @@ export const api = {
   liberacaoBaixaRevogar: (id) =>
     req('/liberacao-baixa/revogar', { method: 'POST', body: JSON.stringify({ id }) }),
   liberacaoBaixaLiberacoes: (agn, documento) =>
-    req(`/liberacao-baixa/liberacoes${agn ? `?agn=${agn}&documento=${encodeURIComponent(documento)}` : ''}`)
+    req(`/liberacao-baixa/liberacoes${agn ? `?agn=${agn}&documento=${encodeURIComponent(documento)}` : ''}`),
+  // [23/07/2026 - Alexandre Carvalho] parametros do modulo (dias uteis p/ baixa)
+  liberacaoBaixaParametros: () => req('/liberacao-baixa/parametros'),
+  liberacaoBaixaSalvarParametros: (dados) =>
+    req('/liberacao-baixa/parametros', { method: 'PUT', body: JSON.stringify(dados) }),
+  liberacaoBaixaParametrosHistorico: () => req('/liberacao-baixa/parametros/historico'),
+  // [23/07/2026 - Alexandre Carvalho] Liberacao de Exc./Alt. — titulos baixados (industria)
+  liberacaoBaixaBaixados: (ini, fim) =>
+    req(`/liberacao-baixa/baixados?ini=${ini || ''}&fim=${fim || ''}`),
+  liberacaoExcLiberar: (dados) =>
+    req('/liberacao-exc/liberar', { method: 'POST', body: JSON.stringify(dados) }),
+  liberacaoExcRevogar: (id) =>
+    req('/liberacao-exc/revogar', { method: 'POST', body: JSON.stringify({ id }) }),
+  liberacaoExcLiberacoes: (agn, documento) =>
+    req(`/liberacao-exc/liberacoes${agn ? `?agn=${agn}&documento=${encodeURIComponent(documento)}` : ''}`)
 };

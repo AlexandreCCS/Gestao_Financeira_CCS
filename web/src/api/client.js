@@ -78,6 +78,11 @@ export const api = {
   fluxoResumo: (data_ini, data_fim, tipo, filiais = '0', prev = 'N', v3 = {}) =>
     req(`/fluxo-previo/resumo?data_ini=${data_ini}&data_fim=${data_fim}&tipo=${tipo}&filiais=${filiais}&prev=${prev}`
       + `&grupo=${v3.grupo || 'S'}&classes=${v3.classes || ''}&d1=${v3.d1 || 'N'}`),
+  // [21/09/2026 - Alexandre Carvalho] contas a pagar do periodo: pago x em aberto x conta que pagou
+  fluxoPagarBase:    () => req('/fluxo-previo/pagar-periodo/base'),
+  fluxoPagarPeriodo: (data_ini, data_fim, filiais = '0', cmp = null) =>
+    req(`/fluxo-previo/pagar-periodo?data_ini=${data_ini}&data_fim=${data_fim}&filiais=${filiais}`
+      + (cmp ? `&cmp_ini=${cmp.ini}&cmp_fim=${cmp.fim}` : '')),
   fluxoPrazos:    () => req('/fluxo-previo/prazos'),
   fluxoPrazosSet: (itens) => req('/fluxo-previo/prazos', { method:'PUT', body: JSON.stringify({ itens }) }),
   fluxoContasConfig:    () => req('/fluxo-previo/contas-config'),

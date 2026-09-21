@@ -3,6 +3,9 @@
 // para o proximo dia util (mesma logica da CCS_F_GFIN_FLUXO_PREVIO).
 import { megaQuery } from '../soap/mega.js';
 import { paramsV3 } from './fluxoPrevio.js';
+// [21/09/2026 - Alexandre Carvalho] contas a pagar do periodo (pago x em aberto x conta que pagou) - registrada daqui
+// para nao mexer no server.js (arquivo sensivel no deploy)
+import fluxoPagosRoutes from './fluxoPagos.js';
 
 const sqlEsc = s => String(s ?? '').replace(/'/g, "''");
 
@@ -37,6 +40,8 @@ function regrasV3({ tipo, grupo, classes, d1 }) {
 }
 
 export default async function fluxoDocsRoutes(app) {
+
+  await fluxoPagosRoutes(app);
 
   // ==========================================================================
   // GET /fluxo-previo/docs?data=YYYY-MM-DD&tipo=CR|CP&filiais=400,401&prev=S|N

@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { api } from '../api/client';
+import PagarPeriodo from './fluxo/PagarPeriodo';
 
 const fmt   = v => Number(v||0).toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
 const fmtN  = v => Number(v||0).toLocaleString('pt-BR');
@@ -41,6 +42,8 @@ export default function FluxoCaixa() {
   const [classesFora, setClassesFora] = useState([]);      // classes de credito desconsideradas no CR (C, D, E)
   const [showPrazos,  setShowPrazos]  = useState(false);
   const [showResumo,  setShowResumo]  = useState(false);   // tela sintetica do PERIODO consultado
+  // [21/09/2026 - Alexandre Carvalho] abas da pagina: a previsao (matriz) e a tela nova "pago x em aberto"
+  const [aba, setAba] = useState('previsao');               // 'previsao' | 'pagar'
   const [resp, setResp] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err,  setErr]  = useState('');
@@ -142,6 +145,19 @@ export default function FluxoCaixa() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* [21/09/2026 - Alexandre Carvalho] abas do Fluxo de Caixa */}
+      <div className="flex flex-wrap gap-2 border-b border-ink-700 pb-3">
+        {[{ k: 'previsao', l: 'Previsão de caixa', d: 'o que vai entrar e sair' },
+          { k: 'pagar',    l: 'Contas a pagar: pago × em aberto', d: 'o que havia para pagar, o que foi pago e de qual conta saiu' }].map(t => (
+          <button key={t.k} onClick={() => setAba(t.k)} title={t.d}
+            className={`px-4 py-2 rounded-t text-sm font-semibold transition border-b-2
+              ${aba === t.k ? 'border-prim-500 text-prim-400 bg-ink-800/60' : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-ink-800/40'}`}>
+            {t.l}
+          </button>
+        ))}
+      </div>
+
+      {aba === 'pagar' ? <PagarPeriodo /> : (<>
       {/* Filtros */}
       <div className="card p-4 space-y-3">
         <div className="flex flex-wrap items-end gap-3">
@@ -360,6 +376,7 @@ export default function FluxoCaixa() {
       )}
       {showSim    && <ModalSimulacoes filiais={filiaisOpcoes} onClose={()=>{ setShowSim(false); consultar(); }} />}
       {docsModal  && <ModalDocumentos {...docsModal} onClose={()=>setDocsModal(null)} />}
+      </>)}
     </div>
   );
 }

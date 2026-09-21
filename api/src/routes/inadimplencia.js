@@ -139,6 +139,10 @@ export default async function inadimplenciaRoutes(app) {
     const filtroReceita = receita === 'vendas'      ? `AND NVL(A.ACAO_BO_CREC,'N') = 'S'`
                         : receita === 'faturamento' ? `AND NVL(A.ACAO_BO_CREC,'N') <> 'S'`
                         : '';
+    // [21/09/2026 - Alexandre Carvalho] Pedido Renata/Quality (doc "BI Financeiro - Melhorias", bloco
+    // Inadimplencia): a query passa a trazer a FORMA DE RECEBIMENTO do titulo (a view ja expoe HCOB_*)
+    // e o nome da filial. Os filtros novos (periodo por vencimento, filial, forma) e o agrupado
+    // cliente x forma sao feitos na tela, sobre esta mesma lista - como faixa/busca/isentos ja eram.
     const rows = await megaQuery(`
       SELECT C.AGN_IN_CODIGO                                   AS AGN,
              NVL(G.AGN_ST_NOME, G.AGN_ST_FANTASIA)             AS CLIENTE,
@@ -153,6 +157,11 @@ export default async function inadimplenciaRoutes(app) {
              TO_CHAR(C.MOV_DT_PRORROGADO,'YYYY-MM-DD')         AS PRORROGADO,
              C.SALDO_EM_ABERTO                                 AS SALDO,
              TRUNC(SYSDATE) - TRUNC(C.MOV_DT_PRORROGADO)       AS DIAS,
+             C.HCOB_IN_SEQUENCIA                               AS FORMA_ID,
+             SUBSTR(C.HCOB_ST_DESCRICAO,1,60)                  AS FORMA,
+             (SELECT SUBSTR(NVL(O.ORG_ST_FANTASIA, O.ORG_ST_NOME),1,40)
+                FROM MEGA.GLO_VW_ORGANIZACAO O
+               WHERE O.ORG_IN_CODIGO = C.FIL_IN_CODIGO AND ROWNUM = 1) AS FIL_NOME,
              (SELECT MAX('S')
                 FROM MEGA.VEN_AGENTESGRUPO        AGR,
                      MEGA.VEN_GRUPOCREDITOCMPESP  GCR
@@ -185,6 +194,10 @@ export default async function inadimplenciaRoutes(app) {
         agn_id:      agn,
         cliente:     r.CLIENTE || `Cliente ${agn}`,
         fil_id:      Number(r.FIL || 0),
+        fil_nome:    r.FIL_NOME || '',
+        // [21/09/2026 - Alexandre Carvalho] forma de recebimento; titulo sem forma vira '(sem forma)'
+        forma_id:    r.FORMA_ID ? Number(r.FORMA_ID) : null,
+        forma:       (r.FORMA || '').trim() || '(sem forma)',
         documento:   r.DOCUMENTO || '',
         parcela:     r.PARCELA || '',
         tipo:        r.TPD || '',

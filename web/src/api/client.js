@@ -117,6 +117,13 @@ export const api = {
       + (cmp ? `&cmp_ini=${cmp.ini}&cmp_fim=${cmp.fim}` : '')),
   // [21/09/2026 - Alexandre Carvalho] extrato do banco (CNAB 240 lido no navegador) x Mega: o que falta baixar e conciliar
   fluxoExtratoAnalisar: (contas) => req('/fluxo-previo/extrato/analisar', { method: 'POST', body: JSON.stringify({ contas }) }),
+  // [21/09/2026 - Alexandre Carvalho] Baixas/Conciliacao: baixa automatica de contas a pagar pelo extrato (simular = valida sem gravar)
+  baixasBaixar:   (body)   => req('/baixas-conciliacao/baixar',   { method: 'POST', body: JSON.stringify(body) }),
+  baixasEstornar: (log_id) => req('/baixas-conciliacao/estornar', { method: 'POST', body: JSON.stringify({ log_id }) }),
+  baixasListar:   (dias = 7) => req(`/baixas-conciliacao/baixas?dias=${dias}`),
+  baixasConciliar:    (body)   => req('/baixas-conciliacao/conciliar',    { method: 'POST', body: JSON.stringify(body) }),
+  baixasDesconciliar: (log_id) => req('/baixas-conciliacao/desconciliar', { method: 'POST', body: JSON.stringify({ log_id }) }),
+  baixasConciliacoes: (dias = 7) => req(`/baixas-conciliacao/conciliacoes?dias=${dias}`),
   fluxoPrazos:    () => req('/fluxo-previo/prazos'),
   fluxoPrazosSet: (itens) => req('/fluxo-previo/prazos', { method:'PUT', body: JSON.stringify({ itens }) }),
   fluxoContasConfig:    () => req('/fluxo-previo/contas-config'),

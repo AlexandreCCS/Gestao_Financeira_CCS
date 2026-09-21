@@ -7,10 +7,13 @@
 //   sugestao de titulo) | lancar (tarifa/transferencia sem lancamento) | informativo (aplicacao automatica).
 import React, { useMemo, useRef, useState } from 'react';
 import { UploadCloud, FileCheck2, X, CheckCircle2, AlertTriangle, Link2, FilePlus2, Info, Search, FileSpreadsheet,
-         ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Landmark, Sparkles } from 'lucide-react';
+         ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Landmark, Sparkles, Zap } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { api } from '../../api/client';
 import { lerExtratoCnab240 } from './cnab240';
+// [21/09/2026 - Alexandre Carvalho] botao "Baixar no Mega" (contas a pagar) + trilha do que foi baixado por aqui
+import BaixarNoMega, { BaixasFeitas, separarBaixaveis } from './BaixarNoMega';
+import ConciliarNoMega, { ConciliacoesFeitas, separarConciliaveis } from './ConciliarNoMega';
 
 const fmt   = v => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtN  = v => Number(v || 0).toLocaleString('pt-BR');
@@ -40,7 +43,11 @@ export default function ExtratoBanco() {
   const [erro,     setErro]     = useState('');
   const [sobre,    setSobre]    = useState(false);  // arrastando por cima
   const [modal,    setModal]    = useState(null);   // { titulo, filtro }
+  const [baixando, setBaixando] = useState(false);  // modal "Baixar no Mega"
+  const [conciliando, setConciliando] = useState(false);  // modal "Conciliar no Mega"
+  const [mexeu,    setMexeu]    = useState(0);      // conta baixas/estornos feitos -> reanalisa e recarrega a trilha
   const input = useRef(null);
+  const mexeuAoAbrir = useRef(0);
 
   async function receber(fileList) {
     setErro('');
@@ -88,6 +95,8 @@ export default function ExtratoBanco() {
     return out;
   }, [L]);
   const naoAchadas = (analise?.contas || []).filter(c => !c.encontrada);
+  const B = useMemo(() => separarBaixaveis(L), [L]);
+  const Cc = useMemo(() => separarConciliaveis(L), [L]);
 
   return (
     <div className="card overflow-hidden">
@@ -181,6 +190,33 @@ export default function ExtratoBanco() {
                 </button>); })}
             </div>
 
+            {/* ------------------------------------------------------ acoes: 1) baixar no Mega  2) conciliar no Mega */}
+            {(R.baixar.qt > 0 || R.conciliar.qt > 0) && (
+              <div className="grid lg:grid-cols-2 gap-3">
+                <div className={`rounded-lg border p-3 flex items-center gap-3 ${B.prontos.length ? 'border-emerald-700/40 bg-emerald-950/20' : 'border-ink-700 bg-ink-800/30'}`}>
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${B.prontos.length ? 'bg-emerald-600 text-white' : 'bg-ink-700 text-gray-400'}`}>1</div>
+                  <div className="flex-1 text-sm text-gray-200 leading-snug">
+                    {B.prontos.length > 0
+                      ? <>Posso baixar no Mega <b className="text-emerald-300">{fmtN(B.prontos.length)}</b> pagamento(s) ({fmt(B.prontos.reduce((s, l) => s + l.valor, 0))}) que têm título em aberto do mesmo valor.</>
+                      : <span className="text-gray-400">Nenhum pagamento sem baixa tem título em aberto do mesmo valor.</span>}
+                    {(B.semTitulo.length + B.entradas.length) > 0 && <span className="text-gray-400"> Outros {fmtN(B.semTitulo.length + B.entradas.length)} eu só aviso.</span>}
+                  </div>
+                  <button className="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold flex items-center gap-1.5 transition hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0 whitespace-nowrap"
+                          disabled={!R.baixar.qt} onClick={() => setBaixando(true)}><Zap size={15} /> Baixar no Mega{B.prontos.length > 0 ? ` (${fmtN(B.prontos.length)})` : ''}</button>
+                </div>
+                <div className={`rounded-lg border p-3 flex items-center gap-3 ${Cc.prontos.length ? 'border-amber-700/40 bg-amber-950/20' : 'border-ink-700 bg-ink-800/30'}`}>
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${Cc.prontos.length ? 'bg-amber-600 text-white' : 'bg-ink-700 text-gray-400'}`}>2</div>
+                  <div className="flex-1 text-sm text-gray-200 leading-snug">
+                    {Cc.prontos.length > 0
+                      ? <>Posso conciliar no Mega <b className="text-amber-300">{fmtN(Cc.prontos.length)}</b> lançamento(s) ({fmt(Cc.prontos.reduce((s, l) => s + l.valor, 0))}) que já batem com o banco.</>
+                      : <span className="text-gray-400">Nenhum lançamento pronto para conciliar.</span>}
+                    {(Cc.naoImportados.length + Cc.extratoJaUsado.length) > 0 && <span className="text-gray-400"> Outros {fmtN(Cc.naoImportados.length + Cc.extratoJaUsado.length)} eu só aviso.</span>}
+                  </div>
+                  <button className="px-4 py-2 rounded bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold flex items-center gap-1.5 transition hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0 whitespace-nowrap"
+                          disabled={!R.conciliar.qt} onClick={() => setConciliando(true)}><Link2 size={15} /> Conciliar no Mega{Cc.prontos.length > 0 ? ` (${fmtN(Cc.prontos.length)})` : ''}</button>
+                </div>
+              </div>)}
+
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-gray-500">
               {R.informativo.qt > 0 && <button className="hover:text-gray-300 underline decoration-dotted" onClick={() => setModal({ titulo: SIT.informativo.l, filtro: 'informativo' })}>
                 {fmtN(R.informativo.qt)} movimento(s) de aplicação automática ({fmt(R.informativo.valor)}) ficaram de fora da conta</button>}
@@ -211,7 +247,13 @@ export default function ExtratoBanco() {
         )}
       </div>
 
+      <div className="px-4 pb-4 space-y-2"><BaixasFeitas versao={mexeu} onMudou={() => analisar(arquivos)} /><ConciliacoesFeitas versao={mexeu} onMudou={() => analisar(arquivos)} /></div>
+
       {modal && <ModalLinhas titulo={modal.titulo} inicial={modal.filtro} linhas={L} onClose={() => setModal(null)} />}
+      {baixando && <BaixarNoMega linhas={L} arquivo={arquivos.map(a => a.nome).join(', ')} onFeito={() => setMexeu(n => n + 1)}
+                                 onClose={() => { setBaixando(false); if (mexeu !== mexeuAoAbrir.current) { mexeuAoAbrir.current = mexeu; analisar(arquivos); } }} />}
+      {conciliando && <ConciliarNoMega linhas={L} arquivo={arquivos.map(a => a.nome).join(', ')} onFeito={() => setMexeu(n => n + 1)}
+                                       onClose={() => { setConciliando(false); if (mexeu !== mexeuAoAbrir.current) { mexeuAoAbrir.current = mexeu; analisar(arquivos); } }} />}
     </div>
   );
 }

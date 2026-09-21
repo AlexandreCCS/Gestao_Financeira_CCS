@@ -234,14 +234,14 @@ export default async function fluxoPagosRoutes(app) {
            WHERE M.AGN_IN_CODIGO = ${agn} AND M.AGN_TAU_ST_CODIGO = 'N' AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C'
              AND M.MOV_DT_VENCTO BETWEEN ${dt(dMin)} - 5 AND ${dt(dMax)} + 5`),
         megaQuery(`
-          SELECT TO_CHAR(CBA_DT_DATA,'YYYY-MM-DD') AS DT, CBA_CH_NATUREZA AS NAT, CBA_RE_VALOR AS VL, NVL(CBA_CH_STATUS,'N') AS ST,
+          SELECT CBA_IN_SEQUENCIA AS ID, TO_CHAR(CBA_DT_DATA,'YYYY-MM-DD') AS DT, CBA_CH_NATUREZA AS NAT, CBA_RE_VALOR AS VL, NVL(CBA_CH_STATUS,'N') AS ST,
                  TO_CHAR(CBA_DT_IMPORTACAO,'YYYY-MM-DD HH24:MI') AS IMP
             FROM MEGA.FIN_CONCILIACAO
            WHERE AGN_IN_CODIGO = ${agn} AND AGN_TAU_ST_CODIGO = 'N' AND CBA_DT_DATA BETWEEN ${dt(dMin)} AND ${dt(dMax)}`)
       ]);
       const M = movs.map(m => ({ id: m.ID, dt: m.DT, nat: m.NAT, vl: num(m.VL), conc: m.CONC === 'S', acao: num(m.ACAO), tpd: m.TPD || '', doc: m.DOC || '',
                                  hist: m.HIST || '', titulo: m.TITULO ? String(m.TITULO).split(SEP) : null, usado: false }));
-      const E = ext.map(e => ({ dt: e.DT, nat: e.NAT, vl: num(e.VL), st: e.ST === 'S', imp: e.IMP || '', usado: false }));
+      const E = ext.map(e => ({ id: num(e.ID), dt: e.DT, nat: e.NAT, vl: num(e.VL), st: e.ST === 'S', imp: e.IMP || '', usado: false }));
 
       // (2) casamento com o lancamento do Mega - do maior valor para o menor, o mais proximo na data ganha
       const linhas = ls.map((l, i) => ({ ...l, i, tipo: tipoDe(l), mov: null, ext: null, sugestoes: [] }));
@@ -250,7 +250,10 @@ export default async function fluxoPagosRoutes(app) {
         const cand = M.filter(m => !m.usado && m.nat === natMega && Math.abs(m.vl - l.valor) < 0.005 && Math.abs(dias(m.dt, l.data)) <= 5)
                       .sort((a, b) => Math.abs(dias(a.dt, l.data)) - Math.abs(dias(b.dt, l.data)));
         if (cand[0]) { cand[0].usado = true; l.mov = cand[0]; }
-        const e = E.find(x => !x.usado && x.dt === l.data && x.nat === l.dc && Math.abs(x.vl - l.valor) < 0.005);
+        // [21/09/2026] linha importada no Mega (FIN_CONCILIACAO): com valores repetidos no dia, prefere a que esta no MESMO estado do
+        // lancamento (conciliado com conciliada, pendente com pendente) - e o ext_id dela que o botao "Conciliar no Mega" usa.
+        const mesma = x => !x.usado && x.dt === l.data && x.nat === l.dc && Math.abs(x.vl - l.valor) < 0.005;
+        const e = E.find(x => mesma(x) && x.st === !!l.mov?.conc) || E.find(mesma);
         if (e) { e.usado = true; l.ext = e; }
       }
 
@@ -287,7 +290,7 @@ export default async function fluxoPagosRoutes(app) {
           : ['pagamento', 'recebimento'].includes(l.tipo) ? 'baixar'
           : l.tipo === 'aplicacao' ? 'informativo' : 'lancar';
         return { seq: l.seq || '', data: l.data, valor: l.valor, dc: l.dc, natureza: l.natureza || '', historico: l.historico || '', documento: l.documento || '',
-                 tipo: l.tipo, situacao, importado: !!l.ext, extrato_conciliado: !!l.ext?.st, importado_em: l.ext?.imp || '',
+                 tipo: l.tipo, situacao, importado: !!l.ext, ext_id: l.ext?.id || null, extrato_conciliado: !!l.ext?.st, importado_em: l.ext?.imp || '',
                  mov: l.mov ? { id: l.mov.id, data: l.mov.dt, conciliado: l.mov.conc, acao: l.mov.acao, tpd: l.mov.tpd, doc: l.mov.doc, historico: l.mov.hist,
                                 dif_dias: dias(l.mov.dt, l.data),
                                 contraparte_id: l.mov.titulo ? num(l.mov.titulo[0]) : null, contraparte: l.mov.titulo ? l.mov.titulo[1] : '',

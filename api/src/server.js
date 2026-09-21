@@ -21,6 +21,8 @@ import creditoRoutes       from './routes/credito.js';
 import liberacaoBaixaRoutes from './routes/liberacaoBaixa.js';
 // [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes (flag de bloqueio por atraso)
 import liberacaoAgentesRoutes from './routes/liberacaoAgentes.js';
+// [21/09/2026 - Alexandre Carvalho] Baixas/Conciliacao: baixa automatica de contas a pagar pelo extrato do banco
+import baixasExtratoRoutes from './routes/baixasExtrato.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -69,6 +71,7 @@ await app.register(inadimplenciaRoutes);
 await app.register(creditoRoutes);
 await app.register(liberacaoBaixaRoutes);
 await app.register(liberacaoAgentesRoutes);
+await app.register(baixasExtratoRoutes);
 
 const port = parseInt(process.env.PORT || '3000', 10);
 app.listen({ host: '0.0.0.0', port })

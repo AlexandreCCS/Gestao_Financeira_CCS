@@ -1,12 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { LogOut, Wallet, Users, ChevronDown, HelpCircle } from 'lucide-react';
-import { api, getSession, clearSession } from '../api/client';
+import { api, getSession, clearSession, sincronizarSessao } from '../api/client';
 import { modulosDoUsuario } from '../modulos';
 
 export default function Shell({ children }) {
   const nav = useNavigate();
   const loc = useLocation();
+  // [21/09/2026 - Alexandre Carvalho] ao abrir o portal, sincroniza os modulos com o servidor: menu novo ou permissao
+  // alterada aparece sem precisar sair e entrar. `tick` so forca o redesenho quando algo mudou.
+  const [, setTick] = useState(0);
+  useEffect(() => { sincronizarSessao().then(mudou => { if (mudou) setTick(t => t + 1); }); }, []);
   const s   = getSession();
   const u   = s?.user;
   // [14/05/2026 - Alexandre Carvalho] menu agora vem da permissao por modulo:

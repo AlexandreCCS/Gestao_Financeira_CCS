@@ -7,6 +7,38 @@ export function getSession() {
 export function setSession(s) { localStorage.setItem(KEY, JSON.stringify(s)); }
 export function clearSession() { localStorage.removeItem(KEY); }
 
+// [21/09/2026 - Alexandre Carvalho] O /auth/refresh RECALCULA os modulos do usuario e manda dentro do token novo
+// (auth.js, 14/05: "mudancas de permissao propagarem sem exigir novo login"), mas o front guardava so o accessToken e o
+// menu continuava lendo user.modulos do LOGIN. Resultado: menu novo (ex.: Baixas/Conciliacao) so aparecia saindo e
+// entrando de novo. Agora a sessao local acompanha o que vem no token.
+function lerToken(jwt) {
+  try {
+    const b = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(atob(b + '='.repeat((4 - b.length % 4) % 4)), c => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch { return null; }
+}
+function sessaoComToken(s, accessToken) {
+  const p = lerToken(accessToken);
+  const user = (p && Array.isArray(p.modulos)) ? { ...s.user, perm: p.perm ?? s.user?.perm, modulos: p.modulos } : s.user;
+  return { ...s, accessToken, user };
+}
+// Renova o token AGORA e devolve true se a lista de modulos (ou a permissao) mudou. Usado pelo Shell ao abrir o portal.
+export async function sincronizarSessao() {
+  const s = getSession();
+  if (!s?.accessToken || !s?.user?.jti) return false;
+  try {
+    const r = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include', headers: { 'X-JTI': s.user.jti } });
+    if (!r.ok) return false;                          // sem refresh valido: o fluxo normal do req() cuida
+    const { accessToken } = await r.json();
+    const nova = sessaoComToken(getSession() || s, accessToken);
+    const assin = u => JSON.stringify([u?.perm, (u?.modulos || []).map(m => m.codigo).sort()]);
+    const mudou = assin(nova.user) !== assin(s.user);
+    setSession(nova);
+    return mudou;
+  } catch { return false; }
+}
+
 async function req(path, opts = {}) {
   const s = getSession();
   const headers = { ...(opts.headers || {}) };
@@ -27,7 +59,7 @@ async function req(path, opts = {}) {
     });
     if (r.ok) {
       const { accessToken } = await r.json();
-      setSession({ ...s, accessToken });
+      setSession(sessaoComToken(s, accessToken));     // [21/09/2026] leva junto os modulos recalculados pelo servidor
       return req(path, opts);
     }
     clearSession();

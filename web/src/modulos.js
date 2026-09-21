@@ -39,6 +39,15 @@ export const MODULOS = {
       { rota: '/liberacao-agentes', label: 'Liberação de Agentes' },
     ],
   },
+  // [21/09/2026 - Alexandre Carvalho] Baixas/Conciliacao: menu proprio (permissao BAIXAS_CONCILIACAO, sql/18) com a tela
+  // de arrastar o extrato do banco e ver o que falta baixar e conciliar. Dropdown porque vai receber outras telas.
+  BAIXAS_CONCILIACAO: {
+    label: 'Baixas/Conciliação',
+    rota:  '/baixas-conciliacao/extrato',
+    submenus: [
+      { rota: '/baixas-conciliacao/extrato', label: 'Extrato do banco × Mega' },
+    ],
+  },
   CREDITO: {
     label: 'Inteligência de Crédito',
     rota:  '/credito/painel',

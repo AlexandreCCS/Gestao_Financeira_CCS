@@ -21,6 +21,8 @@ import LiberacaoBaixa from './pages/LiberacaoBaixa.jsx';
 import LiberacaoExcAlt from './pages/LiberacaoExcAlt.jsx';
 // [06/08/2026 - Alexandre Carvalho] modulo Liberacao de Agentes
 import LiberacaoAgentes from './pages/LiberacaoAgentes.jsx';
+// [21/09/2026 - Alexandre Carvalho] menu Baixas/Conciliacao
+import ExtratoBancoPage from './pages/baixas/ExtratoBancoPage.jsx';
 import Shell         from './components/Shell.jsx';
 
 // [14/05/2026 - Alexandre Carvalho] Tela exibida quando o usuario logou mas nao
@@ -85,6 +87,7 @@ createRoot(document.getElementById('root')).render(
       <Route path="/liberacao-exc-alt" element={<Protect modulo="LIBERACAO_BAIXA"><LiberacaoExcAlt /></Protect>} />
       {/* [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes — permissao propria */}
       <Route path="/liberacao-agentes" element={<Protect modulo="LIBERACAO_AGENTES"><LiberacaoAgentes /></Protect>} />
+      <Route path="/baixas-conciliacao/extrato" element={<Protect modulo="BAIXAS_CONCILIACAO"><ExtratoBancoPage /></Protect>} />
       <Route path="/admin"        element={<Protect adminOnly><AdminUsuarios /></Protect>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

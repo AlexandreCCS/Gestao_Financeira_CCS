@@ -2,6 +2,7 @@
 // Lista detalhada de Recebimentos (CR) ou Pagamentos (CP) de um dia rolado
 // para o proximo dia util (mesma logica da CCS_F_GFIN_FLUXO_PREVIO).
 import { megaQuery } from '../soap/mega.js';
+import { paramsV3 } from './fluxoPrevio.js';
 
 const sqlEsc = s => String(s ?? '').replace(/'/g, "''");
 
@@ -23,6 +24,8 @@ export default async function fluxoDocsRoutes(app) {
     const tipo    = String(req.query.tipo || 'CR').toUpperCase();
     const filiais = String(req.query.filiais || '0').replace(/[^0-9,]/g, '') || '0';
     const prev    = (String(req.query.prev || 'N').toUpperCase() === 'S') ? 'S' : 'N';
+    // [21/09/2026 - Alexandre Carvalho] V3: mesmos parametros (e mesma validacao) da matriz
+    const { grupo, classes, d1 } = paramsV3(req.query);
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
       const e = new Error('data e obrigatoria no formato YYYY-MM-DD');
@@ -83,6 +86,28 @@ export default async function fluxoDocsRoutes(app) {
     // HCOB_*; a FIN_VW_CONTASPAGAR nao tem coluna de modalidade, entao no CP vai vazio.
     const colForma = tipo === 'CR' ? `SUBSTR(M.HCOB_ST_DESCRICAO, 1, 60)` : `CAST(NULL AS VARCHAR2(60))`;
 
+    // [21/09/2026 - Alexandre Carvalho] V3 - ESPELHO da CCS_F_GFIN_FLUXO_PREVIO (sql/05):
+    //   (F) D+1: no CR com d1='S' o dia da celula e a DATA DO CREDITO pelo prazo da forma (sql/17);
+    //   (D) grupo='N' tira empresas do grupo (CR e CP); (E) classes tira do CR clientes nessas classes.
+    const aplicaPrazo = tipo === 'CR' && d1 === 'S';
+    const subPrazo = col => `NVL((SELECT PZ.${col} FROM MEGA.CCS_TB_GFIN_FLX_PRAZO PZ
+                                  WHERE PZ.FORMA_ST_DESCRICAO = NVL(UPPER(TRIM(M.HCOB_ST_DESCRICAO)),'(SEM FORMA)')), 0)`;
+    const dtPagto = `MEGA.F_PROXDIAUTIL(${dtBase}, 1, 200)`;     // dia util em que o titulo e pago
+    const dtDia   = aplicaPrazo
+      ? `MEGA.CCS_F_GFIN_FLX_DT_CREDITO(${dtBase}, ${subPrazo('PRZ_IN_DIAS_CORRIDOS')}, ${subPrazo('PRZ_IN_DIAS_UTEIS')}, 200)`
+      : dtPagto;
+    const folga   = aplicaPrazo
+      ? `(SELECT 15 + NVL(MAX(PRZ_IN_DIAS_CORRIDOS),0) + NVL(MAX(PRZ_IN_DIAS_UTEIS),0) * 5 FROM MEGA.CCS_TB_GFIN_FLX_PRAZO)`
+      : `15`;
+    const filtroGrupo = grupo === 'N'
+      ? `NOT EXISTS (SELECT 1 FROM MEGA.GLO_AGENTES_ID GI WHERE GI.AGN_IN_CODIGO = M.AGN_IN_CODIGO AND GI.AGN_TAU_ST_CODIGO = 'G')
+         AND NOT EXISTS (SELECT 1 FROM MEGA.CCS_TB_GFIN_LIB_GRUPO_AGN GX WHERE GX.AGN_IN_CODIGO = M.AGN_IN_CODIGO)`
+      : '1=1';
+    const filtroClasses = (tipo === 'CR' && classes)
+      ? `NOT EXISTS (SELECT 1 FROM MEGA.CCS_TB_GFIN_SCORE SC WHERE SC.AGN_IN_CODIGO = M.AGN_IN_CODIGO
+                        AND SC.CLASSE IN (${classes.split(',').map(c => `'${c}'`).join(',')}))`
+      : '1=1';
+
     const sql = `
       SELECT M.MOV_ST_DOCUMENTO                                AS DOCUMENTO,
              M.MOV_ST_PARCELA                                  AS PARCELA,
@@ -100,6 +125,10 @@ export default async function fluxoDocsRoutes(app) {
              NVL(M.SALDO_EM_ABERTO,0)                          AS SALDO_ABERTO,
              TO_CHAR(${dtBase}, 'YYYY-MM-DD')                  AS DATA_BASE,
              ${colForma}                                       AS FORMA,
+             TO_CHAR(${dtPagto}, 'YYYY-MM-DD')                 AS DT_PAGTO,
+             ${aplicaPrazo ? subPrazo('PRZ_IN_DIAS_CORRIDOS') : '0'} AS PRZ_COR,
+             ${aplicaPrazo ? subPrazo('PRZ_IN_DIAS_UTEIS')    : '0'} AS PRZ_UTE,
+             (SELECT MAX(SC.CLASSE) FROM MEGA.CCS_TB_GFIN_SCORE SC WHERE SC.AGN_IN_CODIGO = M.AGN_IN_CODIGO) AS CLASSE,
              M.TPD_ST_CODIGO                                   AS TIPO_DOC,
              M.${colTpdFatura}                                 AS TIPO_FATURA,
              CASE WHEN M.TPD_ST_CODIGO IN ('PDV','PREVPDC')
@@ -112,8 +141,10 @@ export default async function fluxoDocsRoutes(app) {
        WHERE M.AGN_TAB_IN_CODIGO = AGN.AGN_TAB_IN_CODIGO(+)
          AND M.AGN_PAD_IN_CODIGO = AGN.AGN_PAD_IN_CODIGO(+)
          AND M.AGN_IN_CODIGO     = AGN.AGN_IN_CODIGO(+)
-         AND ${dtBase} BETWEEN ${dtCel} - 15 AND ${dtCel}
-         AND MEGA.F_PROXDIAUTIL(${dtBase}, 1, 200) = ${dtCel}
+         AND ${dtBase} BETWEEN ${dtCel} - ${folga} AND ${dtCel}
+         AND ${dtDia} = ${dtCel}
+         AND ${filtroGrupo}
+         AND ${filtroClasses}
          AND (NOT (${futuro}) OR NVL(M.SALDO_EM_ABERTO,0) > 0)
          AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C'
          AND ${filtroFil}
@@ -143,7 +174,14 @@ export default async function fluxoDocsRoutes(app) {
       data_base:    r.DATA_BASE || '',
       forma:        tipo === 'CR' ? ((r.FORMA || '').trim() || '(sem forma)') : '',
       parcial:     Number(r.VALOR || 0) + 0.005 < Number(r.VALOR_TITULO || 0),
-      rolado:       !!r.DATA_BASE && r.DATA_BASE !== data,
+      // rolado = a data base caiu em dia NAO util (o pagamento foi para o proximo dia util).
+      // d1 = o dia da celula e o do CREDITO, deslocado pelo prazo da forma (prazo_cor corridos + prazo_ute uteis).
+      rolado:       !!r.DATA_BASE && !!r.DT_PAGTO && r.DATA_BASE !== r.DT_PAGTO,
+      dt_pagto:     r.DT_PAGTO || '',
+      prazo_cor:    Number(r.PRZ_COR || 0),
+      prazo_ute:    Number(r.PRZ_UTE || 0),
+      d1:           Number(r.PRZ_COR || 0) + Number(r.PRZ_UTE || 0) > 0,
+      classe:       tipo === 'CR' ? (r.CLASSE || '') : '',
       prorrogado:   !!r.DATA_BASE && !!r.VENCIMENTO && r.DATA_BASE !== r.VENCIMENTO,
       tipo_doc:     r.TIPO_DOC || '',
       tipo_fatura:  r.TIPO_FATURA || '',
@@ -164,7 +202,8 @@ export default async function fluxoDocsRoutes(app) {
       // [21/09/2026 - Alexandre Carvalho] V2: contadores para o aviso da tela
       qtd_rolados:     docs.filter(d => d.rolado).length,
       qtd_prorrogados: docs.filter(d => d.prorrogado).length,
-      qtd_parciais:    docs.filter(d => d.parcial).length
+      qtd_parciais:    docs.filter(d => d.parcial).length,
+      qtd_d1:          docs.filter(d => d.d1).length
     };
 
     // [21/09/2026 - Alexandre Carvalho] so_aberto = dia de hoje em diante (regra do saldo em aberto ativa).
@@ -172,7 +211,7 @@ export default async function fluxoDocsRoutes(app) {
     const hojeBr = new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Recife' });
 
     return {
-      filtro: { data, tipo, filiais, prev, so_aberto: data >= hojeBr },
+      filtro: { data, tipo, filiais, prev, grupo, classes, d1, so_aberto: data >= hojeBr },
       totais,
       docs
     };

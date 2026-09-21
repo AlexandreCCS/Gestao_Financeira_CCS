@@ -70,8 +70,12 @@ export const api = {
     req(`/conciliacao/pendentes?agn=${agn}&fil=${fil || 0}&data_ini=${data_ini}&data_fim=${data_fim}`),
 
   // fluxo previo
-  fluxoPrevio: (data_ini, data_fim, filiais = '0', sim = 'S', prev = 'N') =>
-    req(`/fluxo-previo?data_ini=${data_ini}&data_fim=${data_fim}&filiais=${filiais}&sim=${sim}&prev=${prev}`),
+  // [21/09/2026 - Alexandre Carvalho] v3 = { grupo:'S'|'N', classes:'C,D,E', d1:'S'|'N' } (pedido Renata/Quality)
+  fluxoPrevio: (data_ini, data_fim, filiais = '0', sim = 'S', prev = 'N', v3 = {}) =>
+    req(`/fluxo-previo?data_ini=${data_ini}&data_fim=${data_fim}&filiais=${filiais}&sim=${sim}&prev=${prev}`
+      + `&grupo=${v3.grupo || 'S'}&classes=${v3.classes || ''}&d1=${v3.d1 || 'N'}`),
+  fluxoPrazos:    () => req('/fluxo-previo/prazos'),
+  fluxoPrazosSet: (itens) => req('/fluxo-previo/prazos', { method:'PUT', body: JSON.stringify({ itens }) }),
   fluxoContasConfig:    () => req('/fluxo-previo/contas-config'),
   fluxoContasConfigSet: (ids) => req('/fluxo-previo/contas-config', { method:'POST', body: JSON.stringify({ ids }) }),
   fluxoSimulacoes:      () => req('/fluxo-previo/simulacoes'),
@@ -79,8 +83,9 @@ export const api = {
   fluxoSimulacaoApagar: (id) => req(`/fluxo-previo/simulacoes/${id}`, { method:'DELETE' }),
 
   // drilldown de documentos do fluxo (Recebimento ou Pagamento)
-  fluxoDocs: (data, tipo, filiais = '0', prev = 'N') =>
-    req(`/fluxo-previo/docs?data=${data}&tipo=${tipo}&filiais=${filiais}&prev=${prev}`),
+  fluxoDocs: (data, tipo, filiais = '0', prev = 'N', v3 = {}) =>
+    req(`/fluxo-previo/docs?data=${data}&tipo=${tipo}&filiais=${filiais}&prev=${prev}`
+      + `&grupo=${v3.grupo || 'S'}&classes=${v3.classes || ''}&d1=${v3.d1 || 'N'}`),
 
   // [14/05/2026 - Alexandre Carvalho] administracao de usuarios (admin only)
   adminModulos:  () => req('/admin/modulos'),

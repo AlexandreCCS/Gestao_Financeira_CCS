@@ -35,6 +35,11 @@ export default function FluxoCaixa() {
   const [filiaisOpcoes, setFiliaisOpcoes] = useState([]);  // todas disponíveis
   const [incluiSim,  setIncluiSim]  = useState(true);
   const [incluiPrev, setIncluiPrev] = useState(false);     // [06/05/2026] PDV/PREVPDC default OFF
+  // [21/09/2026 - Alexandre Carvalho] V3 (pedido Renata/Quality, bloco Fluxo de Caixa):
+  const [d1,          setD1]          = useState(true);    // recebimento pela data do CREDITO em conta (prazo da forma)
+  const [incluiGrupo, setIncluiGrupo] = useState(true);    // empresas do grupo entram no CR/CP?
+  const [classesFora, setClassesFora] = useState([]);      // classes de credito desconsideradas no CR (C, D, E)
+  const [showPrazos,  setShowPrazos]  = useState(false);
   const [resp, setResp] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err,  setErr]  = useState('');
@@ -50,7 +55,8 @@ export default function FluxoCaixa() {
     setBusy(true); setErr('');
     try {
       const filsParam = filiais.length === 0 ? '0' : filiais.join(',');
-      const r = await api.fluxoPrevio(dataIni, dataFim, filsParam, incluiSim ? 'S':'N', incluiPrev ? 'S':'N');
+      const r = await api.fluxoPrevio(dataIni, dataFim, filsParam, incluiSim ? 'S':'N', incluiPrev ? 'S':'N',
+        { grupo: incluiGrupo ? 'S' : 'N', classes: classesFora.join(','), d1: d1 ? 'S' : 'N' });
       setResp(r);
     } catch (e) {
       setErr(e.message || 'Erro ao consultar fluxo'); setResp(null);
@@ -157,12 +163,38 @@ export default function FluxoCaixa() {
             <input type="checkbox" checked={incluiPrev} onChange={e=>setIncluiPrev(e.target.checked)} />
             Considerar previsão
           </label>
+          {/* [21/09/2026 - Alexandre Carvalho] V3: D+1, empresas do grupo e clientes com historico de atraso */}
+          <label className="flex items-center gap-2 text-sm text-gray-300 mt-5 cursor-pointer"
+                 title="Recebimento pela data em que o dinheiro entra na conta: boleto e cartão de débito D+1, cartão de crédito 30+1. Os prazos por forma ficam no botão Prazos.">
+            <input type="checkbox" checked={d1} onChange={e=>setD1(e.target.checked)} />
+            Considerar D+1 (crédito em conta)
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-300 mt-5 cursor-pointer"
+                 title="Desmarque para tirar recebimentos e pagamentos entre empresas do grupo">
+            <input type="checkbox" checked={incluiGrupo} onChange={e=>setIncluiGrupo(e.target.checked)} />
+            Empresas do grupo
+          </label>
+          <div className="mt-5 flex items-center gap-1.5 text-sm text-gray-300"
+               title="Simula o recebimento SEM os clientes das classes marcadas (classe da Inteligência de Crédito, recalculada toda noite). Não afeta pagamentos.">
+            <span>Desconsiderar clientes classe</span>
+            {['C','D','E'].map(c => (
+              <button key={c} type="button"
+                className={`w-7 h-7 rounded text-xs font-bold transition
+                  ${classesFora.includes(c) ? 'bg-rose-600 text-white' : 'bg-ink-800 hover:bg-ink-700 text-gray-400'}`}
+                onClick={() => setClassesFora(p => p.includes(c) ? p.filter(x => x !== c) : [...p, c].sort())}>
+                {c}
+              </button>
+            ))}
+          </div>
           <button className="btn-prim" onClick={consultar} disabled={busy}>
             {busy ? 'Calculando...' : 'Consultar'}
           </button>
           <div className="flex-1" />
           <button className="btn-ghost" onClick={()=>setShowConfig(true)} title="Selecionar contas que compõem o saldo inicial">
             <Settings size={16} /> Contas
+          </button>
+          <button className="btn-ghost" onClick={()=>setShowPrazos(true)} title="Prazo de crédito por forma de recebimento (D+1)">
+            <Calendar size={16} /> Prazos
           </button>
           <button className="btn-ghost" onClick={()=>setShowSim(true)} title="Adicionar simulações">
             <Beaker size={16} /> Simulações
@@ -202,6 +234,14 @@ export default function FluxoCaixa() {
           <b className="text-gray-300">Como a matriz soma:</b> de hoje em diante entram só títulos <b className="text-gray-300">em aberto</b>, pelo saldo
           (o que já foi recebido ou pago está no saldo bancário) · a data é o <b className="text-gray-300">vencimento prorrogado</b> ·
           vencimentos em <b className="text-gray-300">sábado, domingo e feriado</b> são somados no próximo dia útil · dias já passados mostram o valor cheio dos títulos.
+          {resp?.filtro && (
+            <div className="mt-1">
+              <b className="text-gray-300">Nesta consulta:</b>{' '}
+              {resp.filtro.d1 === 'S' ? 'recebimentos pela data do crédito em conta (D+1 por forma)' : 'recebimentos na data do vencimento (sem D+1)'} ·{' '}
+              {resp.filtro.grupo === 'N' ? <span className="text-amber-300">sem empresas do grupo</span> : 'com empresas do grupo'} ·{' '}
+              {resp.filtro.classes ? <span className="text-amber-300">sem clientes classe {resp.filtro.classes.split(',').join(', ')}</span> : 'todos os clientes'}
+            </div>
+          )}
         </div>
       </div>
 
@@ -244,8 +284,12 @@ export default function FluxoCaixa() {
                   const recebto = (d.detalhes.CR_REALIZADO?.ent || 0) + (d.detalhes.CR_PREVISTO?.ent || 0);
                   const pagto   = (d.detalhes.CP_REALIZADO?.sai || 0) + (d.detalhes.CP_PREVISTO?.sai || 0);
                   const simNet  = (d.detalhes.SIMULACAO?.ent || 0) - (d.detalhes.SIMULACAO?.sai || 0);
-                  const filsParam = filiais.length === 0 ? '0' : filiais.join(',');
-                  const prevParam = incluiPrev ? 'S' : 'N';
+                  // [21/09/2026 - Alexandre Carvalho] o modal abre com os parametros DA CONSULTA que gerou a
+                  // matriz (resp.filtro), nao com o estado atual dos controles - senao bastava marcar um
+                  // checkbox sem clicar em Consultar para a celula e o modal divergirem.
+                  const filsParam = resp.filtro?.filiais ?? (filiais.length === 0 ? '0' : filiais.join(','));
+                  const prevParam = resp.filtro?.previsao ?? (incluiPrev ? 'S' : 'N');
+                  const v3Param   = { grupo: resp.filtro?.grupo || 'S', classes: resp.filtro?.classes || '', d1: resp.filtro?.d1 || 'N' };
                   return (
                     <tr key={i} className="border-b border-ink-700 hover:bg-ink-800/40">
                       <td className="p-3 pl-5 font-mono sticky left-0 bg-ink-900/95">
@@ -255,7 +299,7 @@ export default function FluxoCaixa() {
                       <td className="p-3 text-right font-mono">
                         {recebto ? (
                           <button
-                            onClick={() => setDocsModal({ data: d.dt, tipo: 'CR', filiais: filsParam, prev: prevParam })}
+                            onClick={() => setDocsModal({ data: d.dt, tipo: 'CR', filiais: filsParam, prev: prevParam, v3: v3Param })}
                             className="text-emerald-400 hover:text-emerald-300 hover:underline transition cursor-pointer"
                             title="Clique para ver os documentos">
                             {fmt(recebto)}
@@ -265,7 +309,7 @@ export default function FluxoCaixa() {
                       <td className="p-3 text-right font-mono">
                         {pagto ? (
                           <button
-                            onClick={() => setDocsModal({ data: d.dt, tipo: 'CP', filiais: filsParam, prev: prevParam })}
+                            onClick={() => setDocsModal({ data: d.dt, tipo: 'CP', filiais: filsParam, prev: prevParam, v3: v3Param })}
                             className="text-rose-400 hover:text-rose-300 hover:underline transition cursor-pointer"
                             title="Clique para ver os documentos">
                             {fmt(pagto)}
@@ -302,6 +346,7 @@ export default function FluxoCaixa() {
       )}
 
       {showConfig && <ModalContas onClose={()=>{ setShowConfig(false); consultar(); }} />}
+      {showPrazos && <ModalPrazos onClose={(mudou)=>{ setShowPrazos(false); if (mudou) consultar(); }} />}
       {showSim    && <ModalSimulacoes filiais={filiaisOpcoes} onClose={()=>{ setShowSim(false); consultar(); }} />}
       {docsModal  && <ModalDocumentos {...docsModal} onClose={()=>setDocsModal(null)} />}
     </div>
@@ -397,6 +442,107 @@ function ModalContas({ onClose }) {
 }
 
 // ============================================================================
+// [21/09/2026 - Alexandre Carvalho] Prazo de credito por forma de recebimento ("D+1") - pedido Renata/Quality.
+// Boleto e cartao de debito = 0 corridos + 1 util; cartao de credito = 30 corridos + 1 util; demais no dia.
+// Qualquer usuario ve; so administrador altera (a API tambem barra).
+function ModalPrazos({ onClose }) {
+  const [itens, setItens] = useState([]);
+  const [orig,  setOrig]  = useState({});
+  const [pode,  setPode]  = useState(false);
+  const [busy,  setBusy]  = useState(true);
+  const [erro,  setErro]  = useState('');
+  const [mudou, setMudou] = useState(false);
+
+  async function carregar() {
+    setBusy(true); setErro('');
+    try {
+      const r = await api.fluxoPrazos();
+      setItens(r.itens || []); setPode(!!r.pode_editar);
+      setOrig(Object.fromEntries((r.itens || []).map(i => [i.id, `${i.corridos}|${i.uteis}`])));
+    } catch (e) { setErro(e.message || 'Erro ao carregar prazos'); }
+    finally { setBusy(false); }
+  }
+  useEffect(() => { carregar(); }, []);
+
+  const alterados = itens.filter(i => orig[i.id] !== `${i.corridos}|${i.uteis}`);
+  const set = (id, campo, v) => setItens(p => p.map(i => i.id === id ? { ...i, [campo]: Math.max(0, Math.min(campo === 'corridos' ? 120 : 10, parseInt(v, 10) || 0)) } : i));
+
+  async function salvar() {
+    setBusy(true); setErro('');
+    try {
+      await api.fluxoPrazosSet(alterados.map(i => ({ id: i.id, corridos: i.corridos, uteis: i.uteis })));
+      setMudou(true); await carregar();
+    } catch (e) { setErro(e.message || 'Erro ao salvar'); setBusy(false); }
+  }
+
+  const rotulo = i => (i.corridos === 0 && i.uteis === 0) ? 'no dia' : i.corridos === 0 ? `D+${i.uteis}` : `${i.corridos}+${i.uteis}`;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-3">
+      <div className="bg-ink-900 rounded-lg w-full max-w-3xl max-h-[88vh] flex flex-col border border-prim-700/30 shadow-2xl">
+        <div className="flex items-start justify-between p-5 border-b border-ink-700">
+          <div>
+            <div className="font-semibold flex items-center gap-2"><Calendar size={18}/> Prazo de crédito por forma de recebimento</div>
+            <div className="text-xs text-gray-400 mt-1 leading-relaxed">
+              Usado quando <b className="text-gray-200">"Considerar D+1"</b> está marcado. Data do crédito = dia útil do pagamento
+              + dias corridos + dias úteis. Ex.: boleto <b className="text-gray-200">0 + 1</b> (vence sexta, credita segunda);
+              cartão de crédito <b className="text-gray-200">30 + 1</b>.
+              {!pode && <span className="text-amber-300"> Somente administradores alteram.</span>}
+            </div>
+          </div>
+          <button className="text-gray-400 hover:text-white" onClick={() => onClose(mudou)}><X size={22}/></button>
+        </div>
+        {erro && <div className="m-3 bg-red-900/40 text-red-200 text-sm rounded p-3">{erro}</div>}
+        <div className="overflow-auto flex-1">
+          <table className="w-full text-sm">
+            <thead className="bg-ink-900/70 text-xs text-gray-400 uppercase sticky top-0">
+              <tr>
+                <th className="text-left p-2 pl-5">Forma de recebimento</th>
+                <th className="text-right p-2">Títulos em aberto</th>
+                <th className="text-center p-2">Dias corridos</th>
+                <th className="text-center p-2">Dias úteis</th>
+                <th className="text-center p-2">Regra</th>
+                <th className="text-left p-2 pr-5">Última alteração</th>
+              </tr>
+            </thead>
+            <tbody>
+              {itens.map(i => {
+                const alt = orig[i.id] !== `${i.corridos}|${i.uteis}`;
+                return (
+                  <tr key={i.id} className={`border-t border-ink-800 ${alt ? 'bg-prim-900/20' : ''}`}>
+                    <td className="p-2 pl-5 text-gray-200">{i.forma}</td>
+                    <td className="p-2 text-right font-mono text-xs text-gray-400">{fmtN(i.qt_abertos)}</td>
+                    <td className="p-2 text-center">
+                      <input type="number" min="0" max="120" disabled={!pode || busy} value={i.corridos}
+                             onChange={e => set(i.id, 'corridos', e.target.value)}
+                             className="bg-ink-800 border border-ink-700 rounded w-16 text-center py-1 disabled:opacity-60" />
+                    </td>
+                    <td className="p-2 text-center">
+                      <input type="number" min="0" max="10" disabled={!pode || busy} value={i.uteis}
+                             onChange={e => set(i.id, 'uteis', e.target.value)}
+                             className="bg-ink-800 border border-ink-700 rounded w-16 text-center py-1 disabled:opacity-60" />
+                    </td>
+                    <td className="p-2 text-center text-xs font-mono text-violet-300">{rotulo(i)}</td>
+                    <td className="p-2 pr-5 text-xs text-gray-500">{i.dt_alteracao ? `${fmtBr(i.dt_alteracao.slice(0,10))} · ${i.usuario}` : ''}</td>
+                  </tr>
+                );
+              })}
+              {itens.length === 0 && (
+                <tr><td colSpan={6} className="p-8 text-center text-gray-500">{busy ? 'Carregando...' : 'Nenhuma forma cadastrada.'}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-ink-700">
+          <span className="text-xs text-gray-500 mr-auto">{alterados.length > 0 ? `${alterados.length} alteração(ões) não salva(s)` : ''}</span>
+          <button className="btn-ghost" onClick={() => onClose(mudou)}>Fechar</button>
+          {pode && <button className="btn-prim" onClick={salvar} disabled={busy || alterados.length === 0}>{busy ? 'Salvando...' : 'Salvar'}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ModalSimulacoes({ filiais, onClose }) {
   const [list, setList] = useState([]);
   const [form, setForm] = useState({ data: isoToday(), fil: 0, tipo: 'C', valor: '', descricao: '' });
@@ -573,7 +719,7 @@ function PagerDoc({ pagina, total, onChange }) {
   );
 }
 
-function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
+function ModalDocumentos({ data, tipo, filiais, prev = 'N', v3 = {}, onClose }) {
   const [docs,   setDocs]   = useState([]);
   const [totais, setTotais] = useState({ total:0, qtd:0, realizado:0, previsto:0, qtd_realizado:0, qtd_previsto:0 });
   const [busy,   setBusy]   = useState(false);
@@ -595,11 +741,11 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
 
   useEffect(() => {
     setBusy(true); setErr('');
-    api.fluxoDocs(data, tipo, filiais, prev)
+    api.fluxoDocs(data, tipo, filiais, prev, v3)
       .then(r => { setDocs(r.docs || []); setTotais(r.totais || { total:0, qtd:0 }); setSoAberto(!!r.filtro?.so_aberto); })
       .catch(e => setErr(e.message || 'Erro ao carregar documentos'))
       .finally(() => setBusy(false));
-  }, [data, tipo, filiais, prev]);
+  }, [data, tipo, filiais, prev, v3.grupo, v3.classes, v3.d1]);
 
   // opcoes dos selects saem dos proprios documentos do dia (com contagem)
   const opcoes = useMemo(() => {
@@ -756,12 +902,16 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                 ? <>Só títulos <b className="text-gray-200">em aberto</b>, pelo <b className="text-gray-200">saldo a {isCR ? 'receber' : 'pagar'}</b> — o que já foi {isCR ? 'recebido' : 'pago'} está no saldo bancário.</>
                 : <>Dia já passado: mostra os títulos pelo valor cheio, {isCR ? 'recebidos' : 'pagos'} ou não.</>}
               {' '}A data considerada é o <b className="text-gray-200">vencimento prorrogado</b>; sábado, domingo e feriado somam no próximo dia útil.
+              {isCR && v3.d1 === 'S' && <> Com <b className="text-violet-300">D+1</b> ligado, o dia é o do <b className="text-gray-200">crédito em conta</b> pelo prazo da forma de recebimento.</>}
+              {v3.grupo === 'N' && <> <span className="text-amber-300">Sem empresas do grupo.</span></>}
+              {isCR && v3.classes && <> <span className="text-amber-300">Sem clientes classe {v3.classes.split(',').join(', ')}.</span></>}
               {(totais.qtd_rolados > 0 || totais.qtd_prorrogados > 0 || totais.qtd_parciais > 0) && (
                 <span className="ml-1 text-sky-300">
                   ({[
                     totais.qtd_rolados     > 0 && `${totais.qtd_rolados} trazido${totais.qtd_rolados === 1 ? '' : 's'} de dia não útil`,
                     totais.qtd_prorrogados > 0 && `${totais.qtd_prorrogados} prorrogado${totais.qtd_prorrogados === 1 ? '' : 's'}`,
-                    totais.qtd_parciais    > 0 && `${totais.qtd_parciais} com baixa parcial`
+                    totais.qtd_parciais    > 0 && `${totais.qtd_parciais} com baixa parcial`,
+                    totais.qtd_d1          > 0 && `${totais.qtd_d1} com prazo de crédito`
                   ].filter(Boolean).join(' · ')})
                 </span>
               )}
@@ -868,7 +1018,14 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                       {fmtBr(d.venc_pror)}
                       {d.rolado && (
                         <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-sky-900/50 text-sky-300 border border-sky-700/40 font-sans"
-                              title={`Vence em ${fmtBr(d.data_base)} (dia não útil) — somado em ${fmtBr(data)}`}>dia útil</span>
+                              title={`Vence em ${fmtBr(d.data_base)} (dia não útil) — pagamento em ${fmtBr(d.dt_pagto || data)}`}>dia útil</span>
+                      )}
+                      {/* [21/09/2026 - Alexandre Carvalho] V3: o dia da celula e o do CREDITO em conta (prazo da forma) */}
+                      {d.d1 && (
+                        <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-violet-900/50 text-violet-300 border border-violet-700/40 font-sans"
+                              title={`Pagamento em ${fmtBr(d.dt_pagto)} · crédito em conta em ${fmtBr(data)} (prazo da forma: ${d.prazo_cor} dia(s) corrido(s) + ${d.prazo_ute} útil(eis))`}>
+                          {d.prazo_cor ? `${d.prazo_cor}+${d.prazo_ute}` : `D+${d.prazo_ute}`}
+                        </span>
                       )}
                     </td>
                     <td className="p-2 text-center font-mono text-gray-500">{fmtBr(d.emissao)}</td>
@@ -876,6 +1033,11 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                     <td className="p-2 text-center font-mono text-gray-300">{d.filial}</td>
                     <td className="p-2 max-w-[280px] truncate" title={`${d.cod_agente} - ${d.nome_agente}`}>
                       <span className="text-gray-500">{d.cod_agente}</span> {d.nome_agente}
+                      {isCR && d.classe && (
+                        <span className={`ml-1 text-[9px] px-1 py-0.5 rounded font-bold
+                          ${'DE'.includes(d.classe) ? 'bg-rose-900/50 text-rose-300' : d.classe === 'C' ? 'bg-amber-900/40 text-amber-300' : 'bg-ink-700 text-gray-400'}`}
+                          title="Classe do cliente na Inteligência de Crédito">{d.classe}</span>
+                      )}
                     </td>
                     <td className="p-2 font-mono text-gray-400">{d.cgc}</td>
                     <td className={`p-2 text-right font-mono font-semibold ${isCR ? 'text-emerald-400' : 'text-rose-400'}`}>

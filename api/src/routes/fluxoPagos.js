@@ -156,4 +156,147 @@ export default async function fluxoPagosRoutes(app) {
         FROM DUAL`);
     return { hoje: r[0]?.HOJE, ontem_util: r[0]?.ONTEM_UTIL };
   });
+
+  // ==========================================================================
+  // [21/09/2026 - Alexandre Carvalho] EXTRATO DO BANCO x MEGA - "arrasto o arquivo da conciliacao e a tela diz o que
+  // deveria estar BAIXADO e CONCILIADO". Pedido do Alexandre (com a Renata/Quality).
+  // POST /fluxo-previo/extrato/analisar   body: { contas: [{ banco, agencia, conta, lancamentos: [...] }] }
+  // O ARQUIVO (.RET CNAB 240, servico 04 / segmento E) E LIDO NO NAVEGADOR; aqui chegam so as linhas ja lidas - nada e gravado.
+  //
+  // Para cada lancamento do banco:
+  //   1) acha a CONTA do Mega: GLO_CONTASFIN por banco + agencia (AGE_IN_CODIGO) + digitos da conta (CTA_ST_NUMERO vem sujo).
+  //   2) procura o LANCAMENTO DO MEGA na conta (FIN_MOVIMENTO): mesmo valor, natureza espelhada (debito no banco = natureza
+  //      'C' no Mega; credito = 'D'), data ate 5 dias de distancia; o mais proximo ganha e NUNCA e reutilizado
+  //      (ha valores repetidos: 3 PIX de 5.280,00 no mesmo dia).
+  //   3) com lancamento: conciliado (MOV_CH_CONCILIADO='S') -> OK | senao -> CONCILIAR.
+  //   4) sem lancamento: PAGAMENTO/RECEBIMENTO -> BAIXAR, com sugestao de TITULO EM ABERTO de mesmo saldo (vencimento mais
+  //      proximo, sem reutilizar; confianca ALTA quando o nome do favorecido no historico confere com o agente do titulo);
+  //      TARIFA/TRANSFERENCIA -> LANCAR; APLICACAO AUTOMATICA/RENDIMENTO -> informativo.
+  //   5) diz tambem se a linha ja foi IMPORTADA no Mega (FIN_CONCILIACAO) e o status dela la.
+  // ==========================================================================
+  app.post('/fluxo-previo/extrato/analisar', {
+    preHandler: [app.authenticate], bodyLimit: 8 * 1024 * 1024,
+    schema: { body: { type: 'object', required: ['contas'], properties: { contas: { type: 'array', minItems: 1, maxItems: 20, items: {
+      type: 'object', required: ['banco', 'agencia', 'conta', 'lancamentos'],
+      properties: { banco: { type: 'integer' }, agencia: { type: 'string', maxLength: 10 }, conta: { type: 'string', maxLength: 20 }, dv: { type: 'string', maxLength: 3 },
+        lancamentos: { type: 'array', maxItems: 6000, items: { type: 'object', required: ['data', 'valor', 'dc'],
+          properties: { seq: { type: 'string' }, data: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' }, valor: { type: 'number', minimum: 0 },
+            dc: { type: 'string', enum: ['D', 'C'] }, natureza: { type: 'string' }, categoria: { type: 'string' }, cod_hist: { type: 'string' },
+            historico: { type: 'string', maxLength: 60 }, documento: { type: 'string', maxLength: 60 } } } } } } } } } }
+  }, async (req) => {
+    const num = v => Number(v || 0), so = s => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
+    const dias = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
+    const dt = s => `TO_DATE('${s}','YYYY-MM-DD')`;
+    const tipoDe = l => {
+      const h = (l.historico || '').toUpperCase();
+      if (l.natureza === 'APL' || /^(APL |RES |REND|APLICACAO|RESGATE)/.test(h)) return 'aplicacao';
+      if (/^TAR |TARIFA/.test(h)) return 'tarifa';
+      if (/TRANSF/.test(h)) return 'transferencia';
+      if (/MOV TIT COB|COBRANCA/.test(h)) return 'cobranca';
+      return l.dc === 'D' ? 'pagamento' : 'recebimento';
+    };
+    // palavras do favorecido no historico do banco (tira o verbo: BOLETO PAGO / PIX ENVIADO / SISPAG / TED ...)
+    const favorecido = h => String(h || '').toUpperCase().replace(/^(BOLETO PAGO|PIX ENVIADO|PIX RECEBIDO|SISPAG|TED|DOC|PAG|PAGTO|TRANSF)\s*/,'').split(/[^A-Z0-9]+/).filter(w => w.length >= 4);
+    const nomeConfere = (h, nome) => { const n = String(nome || '').toUpperCase(); return favorecido(h).some(w => n.includes(w)); };
+
+    const saida = [];
+    for (const c of req.body.contas) {
+      const ls = c.lancamentos.filter(l => l.valor > 0);
+      const base = { banco: c.banco, agencia: c.agencia, conta: c.conta, qt: ls.length };
+      const cad = await megaQuery(`
+        SELECT C.AGN_IN_CODIGO AGN, SUBSTR(A.AGN_ST_NOME,1,70) NOME, C.CTA_ST_NUMERO NUMERO, C.FIL_IN_CODIGO FIL
+          FROM MEGA.GLO_CONTASFIN C, MEGA.GLO_AGENTES A
+         WHERE A.AGN_TAB_IN_CODIGO = C.AGN_TAB_IN_CODIGO AND A.AGN_PAD_IN_CODIGO = C.AGN_PAD_IN_CODIGO AND A.AGN_IN_CODIGO = C.AGN_IN_CODIGO
+           AND C.AGN_TAU_ST_CODIGO = 'N' AND C.BAN_IN_NUMERO = ${parseInt(c.banco, 10) || 0} AND C.AGE_IN_CODIGO = ${parseInt(so(c.agencia), 10) || 0}`);
+      // no Mega o numero vem com o digito ("08839-5"); no CNAB o digito e campo separado -> compara COM o DV e, se nao achar, sem
+      const conta = cad.find(x => so(x.NUMERO) === so(String(c.conta) + String(c.dv || ''))) || cad.find(x => so(x.NUMERO) === so(c.conta));
+      if (!conta || !ls.length) { saida.push({ ...base, encontrada: !!conta, agn_id: conta ? num(conta.AGN) : null, agn_nome: conta?.NOME || '', linhas: [] }); continue; }
+      const agn = num(conta.AGN), datas = ls.map(l => l.data).sort(), dMin = datas[0], dMax = datas[datas.length - 1];
+
+      const [movs, ext] = await Promise.all([
+        megaQuery(`
+          SELECT M.ORG_IN_CODIGO || '.' || M.MOV_SEQ_IN_CODIGO || '.' || M.MOV_IN_NUMLANCTO AS ID, TO_CHAR(M.MOV_DT_VENCTO,'YYYY-MM-DD') AS DT,
+                 M.MOV_CH_NATUREZA AS NAT, NVL(M.MOV_RE_VALORCRE,0) + NVL(M.MOV_RE_VALORDEB,0) AS VL, NVL(M.MOV_CH_CONCILIADO,'N') AS CONC,
+                 M.ACAO_IN_CODIGO AS ACAO, M.TPD_ST_CODIGO AS TPD, M.MOV_ST_DOCUMENTO AS DOC, SUBSTR(NVL(M.MOV_ST_COMPLHIST,''),1,120) AS HIST,
+                 (SELECT MAX(T.AGN_IN_CODIGO || CHR(167) || SUBSTR(AG.AGN_ST_NOME,1,60) || CHR(167) || T.MOV_ST_DOCUMENTO || CHR(167) || T.MOV_ST_PARCELA)
+                    FROM MEGA.FIN_REFERENCIAFIN R, MEGA.FIN_MOVIMENTO T, MEGA.GLO_AGENTES AG
+                   WHERE R.REF_ST_TIPO IN ('BXCPA','BXCRE')
+                     AND R.ORI_ORG_TAB_IN_CODIGO = M.ORG_TAB_IN_CODIGO AND R.ORI_ORG_PAD_IN_CODIGO = M.ORG_PAD_IN_CODIGO
+                     AND R.ORI_ORG_IN_CODIGO     = M.ORG_IN_CODIGO     AND R.ORI_ORG_TAU_ST_CODIGO = M.ORG_TAU_ST_CODIGO
+                     AND R.ORI_MOV_TAB_IN_CODIGO = M.MOV_TAB_IN_CODIGO AND R.ORI_MOV_SEQ_IN_CODIGO = M.MOV_SEQ_IN_CODIGO
+                     AND R.ORI_MOV_IN_NUMLANCTO  = M.MOV_IN_NUMLANCTO
+                     AND T.ORG_TAB_IN_CODIGO = R.REF_ORG_TAB_IN_CODIGO AND T.ORG_PAD_IN_CODIGO = R.REF_ORG_PAD_IN_CODIGO
+                     AND T.ORG_IN_CODIGO     = R.REF_ORG_IN_CODIGO     AND T.ORG_TAU_ST_CODIGO = R.REF_ORG_TAU_ST_CODIGO
+                     AND T.MOV_TAB_IN_CODIGO = R.REF_MOV_TAB_IN_CODIGO AND T.MOV_SEQ_IN_CODIGO = R.REF_MOV_SEQ_IN_CODIGO
+                     AND T.MOV_IN_NUMLANCTO  = R.REF_MOV_IN_NUMLANCTO
+                     AND AG.AGN_TAB_IN_CODIGO = T.AGN_TAB_IN_CODIGO AND AG.AGN_PAD_IN_CODIGO = T.AGN_PAD_IN_CODIGO AND AG.AGN_IN_CODIGO = T.AGN_IN_CODIGO) AS TITULO
+            FROM MEGA.FIN_MOVIMENTO M
+           WHERE M.AGN_IN_CODIGO = ${agn} AND M.AGN_TAU_ST_CODIGO = 'N' AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C'
+             AND M.MOV_DT_VENCTO BETWEEN ${dt(dMin)} - 5 AND ${dt(dMax)} + 5`),
+        megaQuery(`
+          SELECT TO_CHAR(CBA_DT_DATA,'YYYY-MM-DD') AS DT, CBA_CH_NATUREZA AS NAT, CBA_RE_VALOR AS VL, NVL(CBA_CH_STATUS,'N') AS ST,
+                 TO_CHAR(CBA_DT_IMPORTACAO,'YYYY-MM-DD HH24:MI') AS IMP
+            FROM MEGA.FIN_CONCILIACAO
+           WHERE AGN_IN_CODIGO = ${agn} AND AGN_TAU_ST_CODIGO = 'N' AND CBA_DT_DATA BETWEEN ${dt(dMin)} AND ${dt(dMax)}`)
+      ]);
+      const M = movs.map(m => ({ id: m.ID, dt: m.DT, nat: m.NAT, vl: num(m.VL), conc: m.CONC === 'S', acao: num(m.ACAO), tpd: m.TPD || '', doc: m.DOC || '',
+                                 hist: m.HIST || '', titulo: m.TITULO ? String(m.TITULO).split(SEP) : null, usado: false }));
+      const E = ext.map(e => ({ dt: e.DT, nat: e.NAT, vl: num(e.VL), st: e.ST === 'S', imp: e.IMP || '', usado: false }));
+
+      // (2) casamento com o lancamento do Mega - do maior valor para o menor, o mais proximo na data ganha
+      const linhas = ls.map((l, i) => ({ ...l, i, tipo: tipoDe(l), mov: null, ext: null, sugestoes: [] }));
+      for (const l of [...linhas].sort((a, b) => b.valor - a.valor)) {
+        const natMega = l.dc === 'D' ? 'C' : 'D';
+        const cand = M.filter(m => !m.usado && m.nat === natMega && Math.abs(m.vl - l.valor) < 0.005 && Math.abs(dias(m.dt, l.data)) <= 5)
+                      .sort((a, b) => Math.abs(dias(a.dt, l.data)) - Math.abs(dias(b.dt, l.data)));
+        if (cand[0]) { cand[0].usado = true; l.mov = cand[0]; }
+        const e = E.find(x => !x.usado && x.dt === l.data && x.nat === l.dc && Math.abs(x.vl - l.valor) < 0.005);
+        if (e) { e.usado = true; l.ext = e; }
+      }
+
+      // (4) sem lancamento: titulos em aberto de mesmo saldo
+      const semMov = linhas.filter(l => !l.mov && ['pagamento', 'recebimento'].includes(l.tipo));
+      for (const [dc, view, prev] of [['D', 'FIN_VW_CONTASPAGAR', 'PREVPDC'], ['C', 'FIN_VW_CONTASRECEBER', 'PDV']]) {
+        const valores = [...new Set(semMov.filter(l => l.dc === dc).map(l => l.valor.toFixed(2)))];
+        const tit = [];
+        for (let k = 0; k < valores.length; k += 400) {
+          tit.push(...await megaQuery(`
+            SELECT P.ORG_IN_CODIGO || '.' || P.MOV_SEQ_IN_CODIGO || '.' || P.MOV_IN_NUMLANCTO AS ID, P.AGN_IN_CODIGO AS AGN, SUBSTR(A.AGN_ST_NOME,1,60) AS NOME,
+                   P.MOV_ST_DOCUMENTO AS DOC, P.MOV_ST_PARCELA AS PARC, P.TPD_ST_CODIGO AS TPD, P.FIL_IN_CODIGO AS FIL,
+                   TO_CHAR(NVL(P.MOV_DT_PRORROGADO, P.MOV_DT_VENCTO),'YYYY-MM-DD') AS VENC, P.SALDO_EM_ABERTO AS SALDO, P.MOV_RE_VALOR AS VALOR
+              FROM MEGA.${view} P, MEGA.GLO_AGENTES A
+             WHERE A.AGN_TAB_IN_CODIGO = P.AGN_TAB_IN_CODIGO AND A.AGN_PAD_IN_CODIGO = P.AGN_PAD_IN_CODIGO AND A.AGN_IN_CODIGO = P.AGN_IN_CODIGO
+               AND NVL(P.MOV_CH_SITUACAO,'A') <> 'C' AND P.TPD_ST_CODIGO <> '${prev}'
+               AND P.SALDO_EM_ABERTO IN (${valores.slice(k, k + 400).join(',')})
+               AND NVL(P.MOV_DT_PRORROGADO, P.MOV_DT_VENCTO) BETWEEN ${dt(dMin)} - 90 AND ${dt(dMax)} + 30`));
+        }
+        const Tt = tit.map(t => ({ id: t.ID, agn_id: num(t.AGN), nome: t.NOME || '', doc: t.DOC || '', parcela: t.PARC || '', tpd: t.TPD || '', fil_id: num(t.FIL),
+                                   venc: t.VENC, saldo: num(t.SALDO), valor: num(t.VALOR), usado: false }));
+        for (const l of semMov.filter(x => x.dc === dc).sort((a, b) => b.valor - a.valor)) {
+          const cand = Tt.filter(t => !t.usado && Math.abs(t.saldo - l.valor) < 0.005)
+            .map(t => ({ ...t, nome_confere: nomeConfere(l.historico, t.nome), dist: Math.abs(dias(t.venc, l.data)) }))
+            .sort((a, b) => (b.nome_confere - a.nome_confere) || (a.dist - b.dist));
+          if (cand[0]) { const orig = Tt.find(t => t.id === cand[0].id); if (orig) orig.usado = true; }
+          l.sugestoes = cand.slice(0, 3).map(t => ({ id: t.id, agn_id: t.agn_id, nome: t.nome, doc: t.doc, parcela: t.parcela, tpd: t.tpd, fil_id: t.fil_id, venc: t.venc, saldo: t.saldo,
+            confianca: t.nome_confere ? 'alta' : t.dist <= 5 ? 'media' : 'baixa' }));
+        }
+      }
+
+      const res = linhas.sort((a, b) => a.i - b.i).map(l => {
+        const situacao = l.mov ? (l.mov.conc ? 'ok' : 'conciliar')
+          : ['pagamento', 'recebimento'].includes(l.tipo) ? 'baixar'
+          : l.tipo === 'aplicacao' ? 'informativo' : 'lancar';
+        return { seq: l.seq || '', data: l.data, valor: l.valor, dc: l.dc, natureza: l.natureza || '', historico: l.historico || '', documento: l.documento || '',
+                 tipo: l.tipo, situacao, importado: !!l.ext, extrato_conciliado: !!l.ext?.st, importado_em: l.ext?.imp || '',
+                 mov: l.mov ? { id: l.mov.id, data: l.mov.dt, conciliado: l.mov.conc, acao: l.mov.acao, tpd: l.mov.tpd, doc: l.mov.doc, historico: l.mov.hist,
+                                dif_dias: dias(l.mov.dt, l.data),
+                                contraparte_id: l.mov.titulo ? num(l.mov.titulo[0]) : null, contraparte: l.mov.titulo ? l.mov.titulo[1] : '',
+                                titulo: l.mov.titulo ? `${l.mov.titulo[2]}/${l.mov.titulo[3]}` : '' } : null,
+                 sugestoes: l.sugestoes };
+      });
+      saida.push({ ...base, encontrada: true, agn_id: agn, agn_nome: conta.NOME, fil_id: num(conta.FIL), periodo: { ini: dMin, fim: dMax },
+                   importados: res.filter(x => x.importado).length, linhas: res });
+    }
+    return { contas: saida };
+  });
 }

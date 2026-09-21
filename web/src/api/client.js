@@ -83,6 +83,8 @@ export const api = {
   fluxoPagarPeriodo: (data_ini, data_fim, filiais = '0', cmp = null) =>
     req(`/fluxo-previo/pagar-periodo?data_ini=${data_ini}&data_fim=${data_fim}&filiais=${filiais}`
       + (cmp ? `&cmp_ini=${cmp.ini}&cmp_fim=${cmp.fim}` : '')),
+  // [21/09/2026 - Alexandre Carvalho] extrato do banco (CNAB 240 lido no navegador) x Mega: o que falta baixar e conciliar
+  fluxoExtratoAnalisar: (contas) => req('/fluxo-previo/extrato/analisar', { method: 'POST', body: JSON.stringify({ contas }) }),
   fluxoPrazos:    () => req('/fluxo-previo/prazos'),
   fluxoPrazosSet: (itens) => req('/fluxo-previo/prazos', { method:'PUT', body: JSON.stringify({ itens }) }),
   fluxoContasConfig:    () => req('/fluxo-previo/contas-config'),

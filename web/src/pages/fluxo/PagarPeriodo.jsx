@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { api } from '../../api/client';
+import ExtratoBanco from './ExtratoBanco';
 
 const fmt   = v => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtK  = v => { const n = Number(v || 0), a = Math.abs(n);
@@ -175,6 +176,9 @@ export default function PagarPeriodo() {
           </span>
         </div>
       </div>
+
+      {/* [21/09/2026 - Alexandre Carvalho] arrasta o extrato do banco -> o que falta baixar e conciliar no Mega */}
+      <ExtratoBanco />
 
       {erro && <div className="bg-red-900/40 text-red-200 text-sm rounded p-3">{erro}</div>}
 

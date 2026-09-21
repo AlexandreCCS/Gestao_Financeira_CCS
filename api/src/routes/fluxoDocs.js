@@ -79,6 +79,9 @@ export default async function fluxoDocsRoutes(app) {
     const dtCel   = `TO_DATE('${data}','YYYY-MM-DD')`;
     const dtBase  = `NVL(M.MOV_DT_PRORROGADO, M.MOV_DT_VENCTO)`;
     const futuro  = `${dtCel} >= TRUNC(SYSDATE)`;
+    // [21/09/2026 - Alexandre Carvalho] Forma de recebimento (tipo de cobranca): so a view do CR expoe
+    // HCOB_*; a FIN_VW_CONTASPAGAR nao tem coluna de modalidade, entao no CP vai vazio.
+    const colForma = tipo === 'CR' ? `SUBSTR(M.HCOB_ST_DESCRICAO, 1, 60)` : `CAST(NULL AS VARCHAR2(60))`;
 
     const sql = `
       SELECT M.MOV_ST_DOCUMENTO                                AS DOCUMENTO,
@@ -96,6 +99,7 @@ export default async function fluxoDocsRoutes(app) {
              NVL(M.MOV_RE_VALOR,0)                             AS VALOR_TITULO,
              NVL(M.SALDO_EM_ABERTO,0)                          AS SALDO_ABERTO,
              TO_CHAR(${dtBase}, 'YYYY-MM-DD')                  AS DATA_BASE,
+             ${colForma}                                       AS FORMA,
              M.TPD_ST_CODIGO                                   AS TIPO_DOC,
              M.${colTpdFatura}                                 AS TIPO_FATURA,
              CASE WHEN M.TPD_ST_CODIGO IN ('PDV','PREVPDC')
@@ -137,7 +141,8 @@ export default async function fluxoDocsRoutes(app) {
       valor_titulo: Number(r.VALOR_TITULO || 0),
       saldo_aberto: Number(r.SALDO_ABERTO || 0),
       data_base:    r.DATA_BASE || '',
-      parcial:      Number(r.VALOR || 0) + 0.005 < Number(r.VALOR_TITULO || 0),
+      forma:        tipo === 'CR' ? ((r.FORMA || '').trim() || '(sem forma)') : '',
+      parcial:     Number(r.VALOR || 0) + 0.005 < Number(r.VALOR_TITULO || 0),
       rolado:       !!r.DATA_BASE && r.DATA_BASE !== data,
       prorrogado:   !!r.DATA_BASE && !!r.VENCIMENTO && r.DATA_BASE !== r.VENCIMENTO,
       tipo_doc:     r.TIPO_DOC || '',

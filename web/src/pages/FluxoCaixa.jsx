@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Filter, Settings, Beaker, Calendar, FileSpreadsheet, FileText, X,
-  TrendingUp, TrendingDown, Wallet, Plus, Trash2, ChevronDown, Search
+  TrendingUp, TrendingDown, Wallet, Plus, Trash2, ChevronDown, Search,
+  ChevronUp, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
@@ -518,6 +519,60 @@ function ModalSimulacoes({ filiais, onClose }) {
 // [06/05/2026 - Alexandre Carvalho] Modal de drilldown de documentos.
 // Abre quando o usuario clica num valor de Recebimento ou Pagamento na tabela.
 // ============================================================================
+// [21/09/2026 - Alexandre Carvalho] Grid do modal de documentos no MESMO padrao da Liberacao de Data de
+// Baixa (pedido do Alexandre com a Renata/Quality): cabecalho clicavel ordena, filtros por select,
+// resumo com contagem/soma e paginacao. Mapa coluna -> valor usado na ordenacao:
+const DOCS_POR_PAGINA = 100;
+const DOCS_SORTS = {
+  documento:  d => String(d.documento || ''),
+  parcela:    d => String(d.parcela || ''),
+  vencimento: d => d.vencimento || '',
+  venc_pror:  d => d.venc_pror || '',
+  emissao:    d => d.emissao || '',
+  entrada:    d => d.entrada || '',
+  filial:     d => d.filial,
+  agente:     d => (d.nome_agente || '').toLowerCase(),
+  cgc:        d => d.cgc || '',
+  valor:      d => d.valor,
+  forma:      d => (d.forma || '').toLowerCase(),
+  status:     d => d.status || '',
+  caixa:      d => (d.caixa_nome || '').toLowerCase(),
+  tipo_doc:   d => d.tipo_doc || '',
+  tipo_fat:   d => d.tipo_fatura || '',
+  acao:       d => d.acao,
+  historico:  d => (d.historico || '').toLowerCase()
+};
+
+function ThDoc({ k, sort, onSort, className = '', children }) {
+  const ativo = sort.k === k;
+  return (
+    <th className={`p-2 select-none cursor-pointer whitespace-nowrap hover:text-gray-200 ${className}`}
+        onClick={() => onSort(k)} title="Clique para ordenar">
+      <span className="inline-flex items-center gap-0.5">
+        {children}
+        {ativo && (sort.asc ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+      </span>
+    </th>
+  );
+}
+
+function PagerDoc({ pagina, total, onChange }) {
+  if (total <= 1) return null;
+  return (
+    <span className="ml-auto flex items-center gap-2 text-xs text-gray-400">
+      <button className="p-1 rounded hover:bg-ink-700 disabled:opacity-30"
+              disabled={pagina <= 1} onClick={() => onChange(pagina - 1)}>
+        <ChevronLeft size={14} />
+      </button>
+      página {pagina} de {fmtN(total)}
+      <button className="p-1 rounded hover:bg-ink-700 disabled:opacity-30"
+              disabled={pagina >= total} onClick={() => onChange(pagina + 1)}>
+        <ChevronRight size={14} />
+      </button>
+    </span>
+  );
+}
+
 function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
   const [docs,   setDocs]   = useState([]);
   const [totais, setTotais] = useState({ total:0, qtd:0, realizado:0, previsto:0, qtd_realizado:0, qtd_previsto:0 });
@@ -527,6 +582,12 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
   const [statusFiltro, setStatusFiltro] = useState('TODOS');
   // [21/09/2026 - Alexandre Carvalho] V2 do fluxo: de hoje em diante o dia soma so o SALDO EM ABERTO
   const [soAberto, setSoAberto] = useState(false);
+  // [21/09/2026 - Alexandre Carvalho] grid com filtros + ordenacao + paginacao (padrao Liberacao de Data de Baixa)
+  const [filFiltro,   setFilFiltro]   = useState('todas');
+  const [formaFiltro, setFormaFiltro] = useState('todas');
+  const [tpdFiltro,   setTpdFiltro]   = useState('todos');
+  const [sort,        setSort]        = useState({ k: 'valor', asc: false });   // maior valor primeiro
+  const [pagina,      setPagina]      = useState(1);
 
   const isCR = tipo === 'CR';
   const titulo = isCR ? 'Recebimentos' : 'Pagamentos';
@@ -540,10 +601,29 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
       .finally(() => setBusy(false));
   }, [data, tipo, filiais, prev]);
 
+  // opcoes dos selects saem dos proprios documentos do dia (com contagem)
+  const opcoes = useMemo(() => {
+    const conta = (key) => {
+      const m = new Map();
+      for (const d of docs) { const k = key(d); if (k === '' || k == null) continue; m.set(k, (m.get(k) || 0) + 1); }
+      return [...m.entries()];
+    };
+    return {
+      filiais: conta(d => d.filial).sort((a, b) => a[0] - b[0]),
+      formas:  conta(d => d.forma).sort((a, b) => b[1] - a[1]),
+      tpds:    conta(d => d.tipo_doc).sort((a, b) => b[1] - a[1])
+    };
+  }, [docs]);
+
+  function alternaSort(k) { setSort(s => s.k === k ? { k, asc: !s.asc } : { k, asc: true }); }
+
   const docsFiltrados = useMemo(() => {
     const q = busca.trim().toLowerCase();
-    return docs.filter(d => {
+    const arr = docs.filter(d => {
       if (statusFiltro !== 'TODOS' && d.status !== statusFiltro) return false;
+      if (filFiltro   !== 'todas' && String(d.filial) !== filFiltro) return false;
+      if (formaFiltro !== 'todas' && d.forma !== formaFiltro) return false;
+      if (tpdFiltro   !== 'todos' && d.tipo_doc !== tpdFiltro) return false;
       if (!q) return true;
       return (
         String(d.documento).toLowerCase().includes(q) ||
@@ -554,10 +634,23 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
         d.tipo_doc.toLowerCase().includes(q) ||
         d.historico.toLowerCase().includes(q) ||
         (d.caixa_nome || '').toLowerCase().includes(q) ||
-        String(d.caixa_id || '').includes(q)
+        String(d.caixa_id || '').includes(q) ||
+        (d.forma || '').toLowerCase().includes(q)
       );
     });
-  }, [docs, busca, statusFiltro]);
+    const ex = DOCS_SORTS[sort.k] || DOCS_SORTS.valor;
+    return arr.sort((a, b) => {
+      const va = ex(a), vb = ex(b);
+      const c = va < vb ? -1 : va > vb ? 1 : 0;
+      return sort.asc ? c : -c;
+    });
+  }, [docs, busca, statusFiltro, filFiltro, formaFiltro, tpdFiltro, sort]);
+
+  useEffect(() => { setPagina(1); }, [busca, statusFiltro, filFiltro, formaFiltro, tpdFiltro, sort]);
+  const totPaginas = Math.max(1, Math.ceil(docsFiltrados.length / DOCS_POR_PAGINA));
+  const visiveis   = docsFiltrados.slice((pagina - 1) * DOCS_POR_PAGINA, pagina * DOCS_POR_PAGINA);
+  const somaFiltro = useMemo(() => docsFiltrados.reduce((s, d) => s + d.valor, 0), [docsFiltrados]);
+  const filtroAtivo = !!(busca.trim() || statusFiltro !== 'TODOS' || filFiltro !== 'todas' || formaFiltro !== 'todas' || tpdFiltro !== 'todos');
 
   function exportXlsx() {
     const linhas = docsFiltrados.map(d => ({
@@ -574,6 +667,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
       Valor:        d.valor,
       // [21/09/2026 - Alexandre Carvalho] V2: valor cheio + observacao (parcial / prorrogado / dia nao util)
       'Valor Titulo': d.valor_titulo,
+      ...(isCR ? { 'Forma Receb.': d.forma } : {}),
       'Tipo Doc':   d.tipo_doc,
       'Tipo Fat':   d.tipo_fatura,
       Status:       d.status,
@@ -583,12 +677,13 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
       Obs:          [d.parcial && 'baixa parcial', d.prorrogado && 'prorrogado', d.rolado && 'veio de dia nao util'].filter(Boolean).join('; ')
     }));
     linhas.push({});
-    linhas.push({ Documento:'TOTAL', Valor: totais.total, Status:`${totais.qtd} doc` });
+    // [21/09/2026 - Alexandre Carvalho] o Excel sai com o que esta na grid (filtro + ordem); total = soma do filtro
+    linhas.push({ Documento:'TOTAL', Valor: somaFiltro, Status:`${docsFiltrados.length} doc` });
 
     const ws = XLSX.utils.json_to_sheet(linhas);
     ws['!cols'] = [
       {wch:14},{wch:8},{wch:11},{wch:11},{wch:11},{wch:11},{wch:7},{wch:9},
-      {wch:35},{wch:18},{wch:14},{wch:14},{wch:9},{wch:9},{wch:11},{wch:35},{wch:8},{wch:40},{wch:32}
+      {wch:35},{wch:18},{wch:14},{wch:14},...(isCR ? [{wch:28}] : []),{wch:9},{wch:9},{wch:11},{wch:35},{wch:8},{wch:40},{wch:32}
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, titulo);
@@ -618,7 +713,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
         d.tipo_doc,
         d.historico.slice(0,60)
       ]),
-      foot: [['', '', '', '', 'TOTAL =', fmt(totais.total), '', '', '', '']],
+      foot: [['', '', '', '', 'TOTAL =', fmt(somaFiltro), '', '', '', '']],
       styles: { fontSize: 7, cellPadding: 2.5, overflow:'linebreak' },
       headStyles: { fillColor: isCR ? [16, 185, 129] : [225, 29, 72] },
       footStyles: { fillColor: [21, 32, 58], textColor: 240, fontStyle: 'bold' },
@@ -690,14 +785,45 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                 onClick={()=>setStatusFiltro(s)}>{s}</button>
             ))}
           </div>
+          {/* [21/09/2026 - Alexandre Carvalho] filtros por select (padrao Liberacao de Data de Baixa) */}
+          <select className="bg-ink-800 text-xs text-gray-300 rounded px-2 py-1.5 outline-none"
+                  value={filFiltro} onChange={e => setFilFiltro(e.target.value)}>
+            <option value="todas">Todas as filiais</option>
+            {opcoes.filiais.map(([f, n]) => <option key={f} value={String(f)}>Filial {f} ({fmtN(n)})</option>)}
+          </select>
+          {isCR && (
+            <select className="bg-ink-800 text-xs text-gray-300 rounded px-2 py-1.5 outline-none max-w-[240px]"
+                    value={formaFiltro} onChange={e => setFormaFiltro(e.target.value)}>
+              <option value="todas">Todas as formas de receb.</option>
+              {opcoes.formas.map(([f, n]) => <option key={f} value={f}>{f} ({fmtN(n)})</option>)}
+            </select>
+          )}
+          <select className="bg-ink-800 text-xs text-gray-300 rounded px-2 py-1.5 outline-none"
+                  value={tpdFiltro} onChange={e => setTpdFiltro(e.target.value)}>
+            <option value="todos">Todos os tipos de doc.</option>
+            {opcoes.tpds.map(([t, n]) => <option key={t} value={t}>{t} ({fmtN(n)})</option>)}
+          </select>
+          {filtroAtivo && (
+            <button className="text-xs text-gray-400 hover:text-white underline"
+                    onClick={() => { setBusca(''); setStatusFiltro('TODOS'); setFilFiltro('todas'); setFormaFiltro('todas'); setTpdFiltro('todos'); }}>
+              limpar
+            </button>
+          )}
           <div className="flex-1"/>
-          <span className="text-xs text-gray-400">{docsFiltrados.length} de {docs.length}</span>
           <button className="btn-ghost" onClick={exportXlsx} disabled={busy || docs.length === 0}>
             <FileSpreadsheet size={14}/> Excel
           </button>
           <button className="btn-ghost" onClick={exportPdf} disabled={busy || docs.length === 0}>
             <FileText size={14}/> PDF
           </button>
+        </div>
+
+        {/* resumo do filtro + paginacao */}
+        <div className="px-4 py-2 bg-ink-900/50 border-b border-ink-800 text-xs text-gray-400 flex flex-wrap gap-4 items-center">
+          <span>{fmtN(docsFiltrados.length)} de {fmtN(docs.length)} documento(s) no filtro</span>
+          <span>Soma: <span className={`font-mono ${corHeader}`}>{fmt(somaFiltro)}</span></span>
+          <span className="text-gray-500 hidden md:inline">clique no título da coluna para ordenar</span>
+          <PagerDoc pagina={pagina} total={totPaginas} onChange={setPagina} />
         </div>
 
         <div className="overflow-auto flex-1">
@@ -711,26 +837,27 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
             <table className="w-full text-xs">
               <thead className="bg-ink-900 text-gray-400 uppercase sticky top-0 z-10">
                 <tr>
-                  <th className="text-left  p-2 pl-4">Documento</th>
-                  <th className="text-center p-2">Parc</th>
-                  <th className="text-center p-2">Vcto</th>
-                  <th className="text-center p-2">Vcto Prorr</th>
-                  <th className="text-center p-2">Emissão</th>
-                  <th className="text-center p-2">Entrada</th>
-                  <th className="text-center p-2">Fil</th>
-                  <th className="text-left  p-2">Agente</th>
-                  <th className="text-left  p-2">CNPJ/CPF</th>
-                  <th className="text-right p-2">Valor</th>
-                  <th className="text-center p-2">Status</th>
-                  <th className="text-left  p-2">Caixa</th>
-                  <th className="text-center p-2">Tipo Doc</th>
-                  <th className="text-center p-2">Tipo Fat</th>
-                  <th className="text-center p-2">Ação</th>
-                  <th className="text-left  p-2 pr-4">Histórico</th>
+                  <ThDoc k="documento"  sort={sort} onSort={alternaSort} className="text-left pl-4">Documento</ThDoc>
+                  <ThDoc k="parcela"    sort={sort} onSort={alternaSort} className="text-center">Parc</ThDoc>
+                  <ThDoc k="vencimento" sort={sort} onSort={alternaSort} className="text-center">Vcto</ThDoc>
+                  <ThDoc k="venc_pror"  sort={sort} onSort={alternaSort} className="text-center">Vcto Prorr</ThDoc>
+                  <ThDoc k="emissao"    sort={sort} onSort={alternaSort} className="text-center">Emissão</ThDoc>
+                  <ThDoc k="entrada"    sort={sort} onSort={alternaSort} className="text-center">Entrada</ThDoc>
+                  <ThDoc k="filial"     sort={sort} onSort={alternaSort} className="text-center">Fil</ThDoc>
+                  <ThDoc k="agente"     sort={sort} onSort={alternaSort} className="text-left">Agente</ThDoc>
+                  <ThDoc k="cgc"        sort={sort} onSort={alternaSort} className="text-left">CNPJ/CPF</ThDoc>
+                  <ThDoc k="valor"      sort={sort} onSort={alternaSort} className="text-right">Valor</ThDoc>
+                  {isCR && <ThDoc k="forma" sort={sort} onSort={alternaSort} className="text-left">Forma Receb.</ThDoc>}
+                  <ThDoc k="status"     sort={sort} onSort={alternaSort} className="text-center">Status</ThDoc>
+                  <ThDoc k="caixa"      sort={sort} onSort={alternaSort} className="text-left">Caixa</ThDoc>
+                  <ThDoc k="tipo_doc"   sort={sort} onSort={alternaSort} className="text-center">Tipo Doc</ThDoc>
+                  <ThDoc k="tipo_fat"   sort={sort} onSort={alternaSort} className="text-center">Tipo Fat</ThDoc>
+                  <ThDoc k="acao"       sort={sort} onSort={alternaSort} className="text-center">Ação</ThDoc>
+                  <ThDoc k="historico"  sort={sort} onSort={alternaSort} className="text-left pr-4">Histórico</ThDoc>
                 </tr>
               </thead>
               <tbody>
-                {docsFiltrados.map((d, i) => (
+                {visiveis.map((d, i) => (
                   <tr key={i} className="border-b border-ink-800 hover:bg-ink-800/40">
                     <td className="p-2 pl-4 font-mono">{d.documento}</td>
                     <td className="p-2 text-center font-mono text-gray-400">{d.parcela}</td>
@@ -760,6 +887,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                         </div>
                       )}
                     </td>
+                    {isCR && <td className="p-2 text-gray-300 max-w-[180px] truncate" title={d.forma}>{d.forma}</td>}
                     <td className="p-2 text-center">
                       <span className={`text-[10px] px-2 py-0.5 rounded ${
                         d.status === 'REALIZADO'
@@ -783,9 +911,9 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                 <tr className="bg-ink-900 border-t-2 border-prim-600/40 font-bold">
                   <td className="p-3 pl-4 text-gray-300" colSpan={9}>TOTAL ({docsFiltrados.length} documento{docsFiltrados.length===1?'':'s'})</td>
                   <td className={`p-3 text-right font-mono ${isCR ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {fmt(docsFiltrados.reduce((s,d)=>s+d.valor,0))}
+                    {fmt(somaFiltro)}
                   </td>
-                  <td colSpan={6}></td>
+                  <td colSpan={isCR ? 7 : 6}></td>
                 </tr>
               </tfoot>
             </table>

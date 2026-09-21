@@ -40,6 +40,7 @@ export default function FluxoCaixa() {
   const [incluiGrupo, setIncluiGrupo] = useState(true);    // empresas do grupo entram no CR/CP?
   const [classesFora, setClassesFora] = useState([]);      // classes de credito desconsideradas no CR (C, D, E)
   const [showPrazos,  setShowPrazos]  = useState(false);
+  const [showResumo,  setShowResumo]  = useState(false);   // tela sintetica do PERIODO consultado
   const [resp, setResp] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err,  setErr]  = useState('');
@@ -192,6 +193,10 @@ export default function FluxoCaixa() {
           <div className="flex-1" />
           <button className="btn-ghost" onClick={()=>setShowConfig(true)} title="Selecionar contas que compõem o saldo inicial">
             <Settings size={16} /> Contas
+          </button>
+          <button className="btn-ghost" onClick={()=>setShowResumo(true)} disabled={!resp}
+                  title="Tela sintética do período consultado: total por tipo de cobrança e por cliente/fornecedor">
+            <TrendingUp size={16} /> Resumo
           </button>
           <button className="btn-ghost" onClick={()=>setShowPrazos(true)} title="Prazo de crédito por forma de recebimento (D+1)">
             <Calendar size={16} /> Prazos
@@ -347,6 +352,12 @@ export default function FluxoCaixa() {
 
       {showConfig && <ModalContas onClose={()=>{ setShowConfig(false); consultar(); }} />}
       {showPrazos && <ModalPrazos onClose={(mudou)=>{ setShowPrazos(false); if (mudou) consultar(); }} />}
+      {showResumo && resp && (
+        <ModalResumo dataIni={resp.filtro.data_ini} dataFim={resp.filtro.data_fim} tipo="CR"
+                     filiais={resp.filtro.filiais} prev={resp.filtro.previsao}
+                     v3={{ grupo: resp.filtro.grupo || 'S', classes: resp.filtro.classes || '', d1: resp.filtro.d1 || 'N' }}
+                     onClose={()=>setShowResumo(false)} />
+      )}
       {showSim    && <ModalSimulacoes filiais={filiaisOpcoes} onClose={()=>{ setShowSim(false); consultar(); }} />}
       {docsModal  && <ModalDocumentos {...docsModal} onClose={()=>setDocsModal(null)} />}
     </div>
@@ -537,6 +548,146 @@ function ModalPrazos({ onClose }) {
           <span className="text-xs text-gray-500 mr-auto">{alterados.length > 0 ? `${alterados.length} alteração(ões) não salva(s)` : ''}</span>
           <button className="btn-ghost" onClick={() => onClose(mudou)}>Fechar</button>
           {pode && <button className="btn-prim" onClick={salvar} disabled={busy || alterados.length === 0}>{busy ? 'Salvando...' : 'Salvar'}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// [21/09/2026 - Alexandre Carvalho] TELA SINTETICA do fluxo - "Receita por tipo de cobranca e agente" e
+// "Pagamentos por agente" (pedido Renata/Quality; fechado com o Alexandre como "um botao que abra essa tela
+// mais sintetica"). Abre pelo botao Resumo da tela (periodo consultado) e pelo botao Resumo do modal (o dia).
+// Usa as MESMAS regras da matriz: o total daqui = soma das celulas do periodo.
+function ModalResumo({ dataIni, dataFim, tipo: tipoIni = 'CR', filiais, prev = 'N', v3 = {}, onClose }) {
+  const [tipo, setTipo] = useState(tipoIni);
+  const [r,    setR]    = useState(null);
+  const [busy, setBusy] = useState(true);
+  const [erro, setErro] = useState('');
+  const [busca, setBusca] = useState('');
+
+  useEffect(() => {
+    setBusy(true); setErro('');
+    api.fluxoResumo(dataIni, dataFim, tipo, filiais, prev, v3)
+      .then(setR).catch(e => { setErro(e.message || 'Erro ao carregar o resumo'); setR(null); })
+      .finally(() => setBusy(false));
+  }, [dataIni, dataFim, tipo, filiais, prev, v3.grupo, v3.classes, v3.d1]);
+
+  const isCR = tipo === 'CR';
+  const cor  = isCR ? 'text-emerald-400' : 'text-rose-400';
+  const barra = isCR ? 'bg-emerald-600/60' : 'bg-rose-600/60';
+  const total = r?.total?.valor || 0;
+  const pct = v => total > 0 ? (v / total * 100) : 0;
+  const agentes = useMemo(() => {
+    const q = busca.trim().toLowerCase();
+    return (r?.por_agente || []).filter(a => !q || a.nome.toLowerCase().includes(q) || String(a.agn_id).includes(q));
+  }, [r, busca]);
+  const periodo = dataIni === dataFim ? fmtBr(dataIni) : `${fmtBr(dataIni)} a ${fmtBr(dataFim)}`;
+
+  function exportXlsx() {
+    if (!r) return;
+    const wb = XLSX.utils.book_new();
+    if (isCR) {
+      const w1 = XLSX.utils.json_to_sheet(r.por_forma.map(f => ({ 'Tipo de cobrança': f.forma, 'Títulos': f.qt, Clientes: f.agentes, Valor: f.valor, '% do total': Number(pct(f.valor).toFixed(2)) })));
+      w1['!cols'] = [{wch:34},{wch:9},{wch:9},{wch:16},{wch:11}];
+      XLSX.utils.book_append_sheet(wb, w1, 'Por tipo de cobrança');
+    }
+    const w2 = XLSX.utils.json_to_sheet(r.por_agente.map(a => ({ 'Código': a.agn_id, [isCR ? 'Cliente' : 'Fornecedor']: a.nome, ...(isCR ? { Classe: a.classe } : {}), 'Títulos': a.qt, Valor: a.valor, '% do total': Number(pct(a.valor).toFixed(2)) })));
+    w2['!cols'] = [{wch:10},{wch:52},...(isCR ? [{wch:8}] : []),{wch:9},{wch:16},{wch:11}];
+    XLSX.utils.book_append_sheet(wb, w2, 'Por agente');
+    XLSX.writeFile(wb, `fluxo-resumo-${isCR ? 'recebimentos' : 'pagamentos'}-${dataIni}${dataIni === dataFim ? '' : '_a_' + dataFim}.xlsx`);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-[60] p-3">
+      <div className="bg-ink-900 rounded-lg w-[95vw] max-w-[1200px] max-h-[92vh] flex flex-col border border-prim-700/30 shadow-2xl">
+        <div className="flex items-start justify-between p-5 border-b border-ink-700">
+          <div>
+            <h3 className={`text-xl font-bold ${cor}`}>Resumo de {isCR ? 'Recebimentos' : 'Pagamentos'} · {periodo}</h3>
+            <div className="text-xs text-gray-400 mt-1">
+              Filial(is): <b className="text-gray-200">{filiais === '0' ? 'Todas' : filiais}</b>
+              <span className="mx-2">·</span>Total: <b className={cor}>{fmt(total)}</b>
+              <span className="mx-2">·</span><b className="text-gray-200">{fmtN(r?.total?.qt)}</b> título(s)
+              <span className="mx-2">·</span><b className="text-gray-200">{fmtN(r?.total?.agentes)}</b> {isCR ? 'cliente(s)' : 'fornecedor(es)'}
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              Mesmas regras da matriz{isCR && v3.d1 === 'S' ? ' (com D+1)' : ''}{v3.grupo === 'N' ? ' · sem empresas do grupo' : ''}{isCR && v3.classes ? ` · sem clientes classe ${v3.classes}` : ''} — o total é a soma das células de {isCR ? 'Recebimento' : 'Pagamento'} do período.
+            </div>
+          </div>
+          <button className="text-gray-400 hover:text-white" onClick={onClose}><X size={22}/></button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 p-3 border-b border-ink-800 bg-ink-900/40">
+          {[{ k: 'CR', l: 'Recebimentos' }, { k: 'CP', l: 'Pagamentos' }].map(t => (
+            <button key={t.k} onClick={() => setTipo(t.k)}
+              className={`px-3 py-1 rounded text-sm font-semibold transition ${tipo === t.k ? 'bg-prim-600 text-white' : 'bg-ink-800 hover:bg-ink-700 text-gray-300'}`}>{t.l}</button>
+          ))}
+          {busy && <span className="text-xs text-gray-500 ml-1">calculando…</span>}
+          <div className="flex-1" />
+          <button className="btn-ghost" onClick={exportXlsx} disabled={busy || !r}><FileSpreadsheet size={14}/> Excel</button>
+        </div>
+
+        {erro && <div className="m-3 bg-red-900/40 text-red-200 text-sm rounded p-3">{erro}</div>}
+
+        <div className={`flex-1 overflow-hidden grid gap-0 ${isCR ? 'md:grid-cols-5' : 'grid-cols-1'}`}>
+          {isCR && (
+            <div className="md:col-span-2 overflow-auto border-r border-ink-800">
+              <div className="px-4 py-2 text-xs uppercase text-gray-400 bg-ink-900/70 sticky top-0">Por tipo de cobrança</div>
+              <table className="w-full text-sm">
+                <thead className="text-gray-500 uppercase text-[10px]">
+                  <tr><th className="text-left p-2 pl-4">Tipo de cobrança</th><th className="text-right p-2">Títulos</th><th className="text-right p-2">Clientes</th><th className="text-right p-2 pr-4">Valor</th></tr>
+                </thead>
+                <tbody>
+                  {(r?.por_forma || []).map(f => (
+                    <tr key={f.forma} className="border-t border-ink-800">
+                      <td className="p-2 pl-4">
+                        <div className="text-gray-200 text-xs">{f.forma}</div>
+                        <div className="h-1.5 mt-1 rounded bg-ink-800 overflow-hidden"><div className={`h-full ${barra}`} style={{ width: `${Math.min(100, pct(f.valor))}%` }} /></div>
+                      </td>
+                      <td className="p-2 text-right font-mono text-xs text-gray-400">{fmtN(f.qt)}</td>
+                      <td className="p-2 text-right font-mono text-xs text-gray-400">{fmtN(f.agentes)}</td>
+                      <td className="p-2 pr-4 text-right font-mono">
+                        <div className={cor}>{fmt(f.valor)}</div>
+                        <div className="text-[10px] text-gray-500">{pct(f.valor).toFixed(1)}%</div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!busy && (r?.por_forma || []).length === 0 && <tr><td colSpan={4} className="p-6 text-center text-gray-500 text-xs">Sem títulos no período.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className={`${isCR ? 'md:col-span-3' : ''} overflow-auto`}>
+            <div className="px-4 py-2 text-xs uppercase text-gray-400 bg-ink-900/70 sticky top-0 flex items-center gap-3 z-10">
+              <span>Por {isCR ? 'cliente' : 'fornecedor'} {!isCR && <span className="normal-case text-gray-500">(o Mega não guarda modalidade no contas a pagar)</span>}</span>
+              <div className="ml-auto flex items-center gap-2 bg-ink-800 px-2 rounded normal-case">
+                <Search size={13} className="text-gray-500" />
+                <input className="bg-transparent outline-none py-1 text-xs w-52" placeholder="Buscar nome ou código..." value={busca} onChange={e => setBusca(e.target.value)} />
+              </div>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="text-gray-500 uppercase text-[10px]">
+                <tr><th className="text-left p-2 pl-4">{isCR ? 'Cliente' : 'Fornecedor'}</th><th className="text-right p-2">Títulos</th><th className="text-right p-2 pr-4">Valor</th></tr>
+              </thead>
+              <tbody>
+                {agentes.map(a => (
+                  <tr key={a.agn_id} className="border-t border-ink-800 hover:bg-ink-800/40">
+                    <td className="p-2 pl-4">
+                      <div className="text-xs"><span className="text-gray-500">{a.agn_id}</span> <span className="text-gray-200">{a.nome}</span>
+                        {isCR && a.classe && <span className={`ml-1 text-[9px] px-1 py-0.5 rounded font-bold ${'DE'.includes(a.classe) ? 'bg-rose-900/50 text-rose-300' : a.classe === 'C' ? 'bg-amber-900/40 text-amber-300' : 'bg-ink-700 text-gray-400'}`}>{a.classe}</span>}
+                      </div>
+                      <div className="h-1 mt-1 rounded bg-ink-800 overflow-hidden"><div className={`h-full ${barra}`} style={{ width: `${Math.min(100, pct(a.valor))}%` }} /></div>
+                    </td>
+                    <td className="p-2 text-right font-mono text-xs text-gray-400">{fmtN(a.qt)}</td>
+                    <td className="p-2 pr-4 text-right font-mono">
+                      <div className={cor}>{fmt(a.valor)}</div>
+                      <div className="text-[10px] text-gray-500">{pct(a.valor).toFixed(1)}%</div>
+                    </td>
+                  </tr>
+                ))}
+                {!busy && agentes.length === 0 && <tr><td colSpan={3} className="p-6 text-center text-gray-500 text-xs">Nada encontrado.</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -734,6 +885,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', v3 = {}, onClose }) 
   const [tpdFiltro,   setTpdFiltro]   = useState('todos');
   const [sort,        setSort]        = useState({ k: 'valor', asc: false });   // maior valor primeiro
   const [pagina,      setPagina]      = useState(1);
+  const [verResumo,   setVerResumo]   = useState(false);   // tela sintetica DESTE dia
 
   const isCR = tipo === 'CR';
   const titulo = isCR ? 'Recebimentos' : 'Pagamentos';
@@ -960,6 +1112,10 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', v3 = {}, onClose }) 
             </button>
           )}
           <div className="flex-1"/>
+          <button className="btn-ghost" onClick={() => setVerResumo(true)} disabled={busy || docs.length === 0}
+                  title={`Tela sintética deste dia: total por ${isCR ? 'tipo de cobrança e por cliente' : 'fornecedor'}`}>
+            <TrendingUp size={14}/> Resumo
+          </button>
           <button className="btn-ghost" onClick={exportXlsx} disabled={busy || docs.length === 0}>
             <FileSpreadsheet size={14}/> Excel
           </button>
@@ -1082,6 +1238,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', v3 = {}, onClose }) 
           )}
         </div>
       </div>
+      {verResumo && <ModalResumo dataIni={data} dataFim={data} tipo={tipo} filiais={filiais} prev={prev} v3={v3} onClose={() => setVerResumo(false)} />}
     </div>
   );
 }

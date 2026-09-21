@@ -195,6 +195,13 @@ export default function FluxoCaixa() {
             <span className="text-xs text-gray-500 ml-2">({filiais.length} consolidada{filiais.length>1?'s':''})</span>
           )}
         </div>
+
+        {/* [21/09/2026 - Alexandre Carvalho] V2 (pedido Renata/Quality): deixa visivel a regra que a matriz aplica */}
+        <div className="text-[11px] text-gray-400 leading-relaxed border-t border-ink-800 pt-2">
+          <b className="text-gray-300">Como a matriz soma:</b> de hoje em diante entram só títulos <b className="text-gray-300">em aberto</b>, pelo saldo
+          (o que já foi recebido ou pago está no saldo bancário) · a data é o <b className="text-gray-300">vencimento prorrogado</b> ·
+          vencimentos em <b className="text-gray-300">sábado, domingo e feriado</b> são somados no próximo dia útil · dias já passados mostram o valor cheio dos títulos.
+        </div>
       </div>
 
       {err && <div className="bg-red-900/40 text-red-200 text-sm rounded p-3">{err}</div>}
@@ -518,6 +525,8 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
   const [err,    setErr]    = useState('');
   const [busca,  setBusca]  = useState('');
   const [statusFiltro, setStatusFiltro] = useState('TODOS');
+  // [21/09/2026 - Alexandre Carvalho] V2 do fluxo: de hoje em diante o dia soma so o SALDO EM ABERTO
+  const [soAberto, setSoAberto] = useState(false);
 
   const isCR = tipo === 'CR';
   const titulo = isCR ? 'Recebimentos' : 'Pagamentos';
@@ -526,7 +535,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
   useEffect(() => {
     setBusy(true); setErr('');
     api.fluxoDocs(data, tipo, filiais, prev)
-      .then(r => { setDocs(r.docs || []); setTotais(r.totais || { total:0, qtd:0 }); })
+      .then(r => { setDocs(r.docs || []); setTotais(r.totais || { total:0, qtd:0 }); setSoAberto(!!r.filtro?.so_aberto); })
       .catch(e => setErr(e.message || 'Erro ao carregar documentos'))
       .finally(() => setBusy(false));
   }, [data, tipo, filiais, prev]);
@@ -563,12 +572,15 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
       Agente:       d.nome_agente,
       'CNPJ/CPF':   d.cgc,
       Valor:        d.valor,
+      // [21/09/2026 - Alexandre Carvalho] V2: valor cheio + observacao (parcial / prorrogado / dia nao util)
+      'Valor Titulo': d.valor_titulo,
       'Tipo Doc':   d.tipo_doc,
       'Tipo Fat':   d.tipo_fatura,
       Status:       d.status,
       Caixa:        d.caixa_nome ? `${d.caixa_id} - ${d.caixa_nome}` : '',
       Acao:         d.acao,
-      Historico:    d.historico
+      Historico:    d.historico,
+      Obs:          [d.parcial && 'baixa parcial', d.prorrogado && 'prorrogado', d.rolado && 'veio de dia nao util'].filter(Boolean).join('; ')
     }));
     linhas.push({});
     linhas.push({ Documento:'TOTAL', Valor: totais.total, Status:`${totais.qtd} doc` });
@@ -576,7 +588,7 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
     const ws = XLSX.utils.json_to_sheet(linhas);
     ws['!cols'] = [
       {wch:14},{wch:8},{wch:11},{wch:11},{wch:11},{wch:11},{wch:7},{wch:9},
-      {wch:35},{wch:18},{wch:14},{wch:9},{wch:9},{wch:11},{wch:35},{wch:8},{wch:40}
+      {wch:35},{wch:18},{wch:14},{wch:14},{wch:9},{wch:9},{wch:11},{wch:35},{wch:8},{wch:40},{wch:32}
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, titulo);
@@ -643,6 +655,22 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
               <span className="mx-2">|</span>
               <span className="text-amber-400">Previsto {fmt(totais.previsto)} ({totais.qtd_previsto})</span>
             </div>
+            {/* [21/09/2026 - Alexandre Carvalho] V2: explica o que entra no dia (pedido Renata/Quality) */}
+            <div className="text-[11px] text-gray-400 mt-1.5 leading-relaxed">
+              {soAberto
+                ? <>Só títulos <b className="text-gray-200">em aberto</b>, pelo <b className="text-gray-200">saldo a {isCR ? 'receber' : 'pagar'}</b> — o que já foi {isCR ? 'recebido' : 'pago'} está no saldo bancário.</>
+                : <>Dia já passado: mostra os títulos pelo valor cheio, {isCR ? 'recebidos' : 'pagos'} ou não.</>}
+              {' '}A data considerada é o <b className="text-gray-200">vencimento prorrogado</b>; sábado, domingo e feriado somam no próximo dia útil.
+              {(totais.qtd_rolados > 0 || totais.qtd_prorrogados > 0 || totais.qtd_parciais > 0) && (
+                <span className="ml-1 text-sky-300">
+                  ({[
+                    totais.qtd_rolados     > 0 && `${totais.qtd_rolados} trazido${totais.qtd_rolados === 1 ? '' : 's'} de dia não útil`,
+                    totais.qtd_prorrogados > 0 && `${totais.qtd_prorrogados} prorrogado${totais.qtd_prorrogados === 1 ? '' : 's'}`,
+                    totais.qtd_parciais    > 0 && `${totais.qtd_parciais} com baixa parcial`
+                  ].filter(Boolean).join(' · ')})
+                </span>
+              )}
+            </div>
           </div>
           <button className="text-gray-400 hover:text-white" onClick={onClose}><X size={22}/></button>
         </div>
@@ -707,7 +735,15 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                     <td className="p-2 pl-4 font-mono">{d.documento}</td>
                     <td className="p-2 text-center font-mono text-gray-400">{d.parcela}</td>
                     <td className="p-2 text-center font-mono">{fmtBr(d.vencimento)}</td>
-                    <td className="p-2 text-center font-mono text-gray-400">{fmtBr(d.venc_pror)}</td>
+                    {/* [21/09/2026 - Alexandre Carvalho] V2: prorrogado em destaque; marca quando veio de dia nao util */}
+                    <td className={`p-2 text-center font-mono ${d.prorrogado ? 'text-amber-300' : 'text-gray-400'}`}
+                        title={d.prorrogado ? 'Título prorrogado: entra no fluxo pela data nova' : ''}>
+                      {fmtBr(d.venc_pror)}
+                      {d.rolado && (
+                        <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-sky-900/50 text-sky-300 border border-sky-700/40 font-sans"
+                              title={`Vence em ${fmtBr(d.data_base)} (dia não útil) — somado em ${fmtBr(data)}`}>dia útil</span>
+                      )}
+                    </td>
                     <td className="p-2 text-center font-mono text-gray-500">{fmtBr(d.emissao)}</td>
                     <td className="p-2 text-center font-mono text-gray-500">{fmtBr(d.entrada)}</td>
                     <td className="p-2 text-center font-mono text-gray-300">{d.filial}</td>
@@ -717,6 +753,12 @@ function ModalDocumentos({ data, tipo, filiais, prev = 'N', onClose }) {
                     <td className="p-2 font-mono text-gray-400">{d.cgc}</td>
                     <td className={`p-2 text-right font-mono font-semibold ${isCR ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {fmt(d.valor)}
+                      {/* [21/09/2026 - Alexandre Carvalho] V2: baixa parcial - conta o saldo, mostra o valor cheio embaixo */}
+                      {d.parcial && (
+                        <div className="text-[10px] font-normal text-gray-500" title="Título com baixa parcial: o fluxo soma só o saldo em aberto">
+                          de {fmt(d.valor_titulo)}
+                        </div>
+                      )}
                     </td>
                     <td className="p-2 text-center">
                       <span className={`text-[10px] px-2 py-0.5 rounded ${

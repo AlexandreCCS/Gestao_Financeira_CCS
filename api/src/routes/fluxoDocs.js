@@ -71,6 +71,15 @@ export default async function fluxoDocsRoutes(app) {
                  AND AG.AGN_PAD_IN_CODIGO = B.AGN_PAD_IN_CODIGO
                  AND AG.AGN_IN_CODIGO     = B.AGN_IN_CODIGO)`;
 
+    // [21/09/2026 - Alexandre Carvalho] Espelha a V2 da CCS_F_GFIN_FLUXO_PREVIO (pedido Renata/Quality):
+    //   (a) data base = vencimento PRORROGADO; (b) o dia da celula e o dia ROLADO para o proximo dia util;
+    //   (c) de hoje em diante so entra titulo com SALDO EM ABERTO e o valor que conta e o saldo
+    //       (titulo quitado ja esta no saldo bancario). Dia passado segue pelo valor do titulo.
+    //   A celula da matriz e o total deste modal TEM que bater - qualquer mudanca aqui vale la tambem.
+    const dtCel   = `TO_DATE('${data}','YYYY-MM-DD')`;
+    const dtBase  = `NVL(M.MOV_DT_PRORROGADO, M.MOV_DT_VENCTO)`;
+    const futuro  = `${dtCel} >= TRUNC(SYSDATE)`;
+
     const sql = `
       SELECT M.MOV_ST_DOCUMENTO                                AS DOCUMENTO,
              M.MOV_ST_PARCELA                                  AS PARCELA,
@@ -82,7 +91,11 @@ export default async function fluxoDocsRoutes(app) {
              M.AGN_IN_CODIGO                                   AS COD_AGENTE,
              SUBSTR(AGN.AGN_ST_NOME, 1, 60)                    AS NOME_AGENTE,
              SUBSTR(NVL(AGN.AGN_ST_CGC,''), 1, 20)             AS CGC,
-             M.MOV_RE_VALOR                                    AS VALOR,
+             CASE WHEN ${futuro} THEN NVL(M.SALDO_EM_ABERTO,0)
+                  ELSE NVL(M.MOV_RE_VALOR,0) END               AS VALOR,
+             NVL(M.MOV_RE_VALOR,0)                             AS VALOR_TITULO,
+             NVL(M.SALDO_EM_ABERTO,0)                          AS SALDO_ABERTO,
+             TO_CHAR(${dtBase}, 'YYYY-MM-DD')                  AS DATA_BASE,
              M.TPD_ST_CODIGO                                   AS TIPO_DOC,
              M.${colTpdFatura}                                 AS TIPO_FATURA,
              CASE WHEN M.TPD_ST_CODIGO IN ('PDV','PREVPDC')
@@ -95,7 +108,9 @@ export default async function fluxoDocsRoutes(app) {
        WHERE M.AGN_TAB_IN_CODIGO = AGN.AGN_TAB_IN_CODIGO(+)
          AND M.AGN_PAD_IN_CODIGO = AGN.AGN_PAD_IN_CODIGO(+)
          AND M.AGN_IN_CODIGO     = AGN.AGN_IN_CODIGO(+)
-         AND MEGA.F_PROXDIAUTIL(M.MOV_DT_VENCTO, 1, 200) = TO_DATE('${data}','YYYY-MM-DD')
+         AND ${dtBase} BETWEEN ${dtCel} - 15 AND ${dtCel}
+         AND MEGA.F_PROXDIAUTIL(${dtBase}, 1, 200) = ${dtCel}
+         AND (NOT (${futuro}) OR NVL(M.SALDO_EM_ABERTO,0) > 0)
          AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C'
          AND ${filtroFil}
          AND ${filtroPrev}
@@ -115,6 +130,16 @@ export default async function fluxoDocsRoutes(app) {
       nome_agente:  r.NOME_AGENTE || '',
       cgc:          r.CGC || '',
       valor:        Number(r.VALOR || 0),
+      // [21/09/2026 - Alexandre Carvalho] V2: valor = o que CONTA no fluxo (saldo em aberto de hoje em
+      // diante). valor_titulo = valor cheio. parcial = titulo com baixa parcial. rolado = a data base
+      // (prorrogado) caiu em sabado/domingo/feriado e foi somada neste dia util. prorrogado = o
+      // vencimento original e diferente da data base.
+      valor_titulo: Number(r.VALOR_TITULO || 0),
+      saldo_aberto: Number(r.SALDO_ABERTO || 0),
+      data_base:    r.DATA_BASE || '',
+      parcial:      Number(r.VALOR || 0) + 0.005 < Number(r.VALOR_TITULO || 0),
+      rolado:       !!r.DATA_BASE && r.DATA_BASE !== data,
+      prorrogado:   !!r.DATA_BASE && !!r.VENCIMENTO && r.DATA_BASE !== r.VENCIMENTO,
       tipo_doc:     r.TIPO_DOC || '',
       tipo_fatura:  r.TIPO_FATURA || '',
       status:       r.STATUS || '',
@@ -130,11 +155,19 @@ export default async function fluxoDocsRoutes(app) {
       realizado: docs.filter(d => d.status === 'REALIZADO').reduce((s, d) => s + d.valor, 0),
       previsto:  docs.filter(d => d.status === 'PREVISTO' ).reduce((s, d) => s + d.valor, 0),
       qtd_realizado: docs.filter(d => d.status === 'REALIZADO').length,
-      qtd_previsto:  docs.filter(d => d.status === 'PREVISTO' ).length
+      qtd_previsto:  docs.filter(d => d.status === 'PREVISTO' ).length,
+      // [21/09/2026 - Alexandre Carvalho] V2: contadores para o aviso da tela
+      qtd_rolados:     docs.filter(d => d.rolado).length,
+      qtd_prorrogados: docs.filter(d => d.prorrogado).length,
+      qtd_parciais:    docs.filter(d => d.parcial).length
     };
 
+    // [21/09/2026 - Alexandre Carvalho] so_aberto = dia de hoje em diante (regra do saldo em aberto ativa).
+    // Data no fuso de Recife para nao virar o dia 3h antes quando o container roda em UTC.
+    const hojeBr = new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Recife' });
+
     return {
-      filtro: { data, tipo, filiais, prev },
+      filtro: { data, tipo, filiais, prev, so_aberto: data >= hojeBr },
       totais,
       docs
     };

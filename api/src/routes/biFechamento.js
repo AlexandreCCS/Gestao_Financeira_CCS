@@ -2,7 +2,8 @@
 //
 // Vem do briefing "BI Fechamento.xlsx". A descoberta que sustenta o modelo: "NF" e "PRO" nao sao tipo
 // de documento, sao PARES DE FILIAIS - a filial com CNPJ real emite nota, a espelho (CNPJ fake, o proprio
-// numero) e a operacao sem nota. O cadastro do par esta em MEGA.CCS_TB_GFIN_BI_EMPRESA.
+// numero) e a operacao PRO. O cadastro do par esta em MEGA.CCS_TB_GFIN_BI_EMPRESA.
+// [23/09/2026] REGRA DO ALEXANDRE: o termo e sempre PRO - nunca escrever "sem nota".
 //
 // Regras fechadas com o Alexandre em 23/09:
 //   - faturamento = nota cuja ACAO gera contas a receber (ACAO_BO_CREC='S'), saida, nao cancelada;

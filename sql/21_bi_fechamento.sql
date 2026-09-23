@@ -4,7 +4,7 @@
 --
 -- DESCOBERTA QUE SUSTENTA O MODELO: "NF" e "PRO" do briefing NAO sao tipo de documento - sao PARES DE
 -- FILIAIS. A filial com CNPJ real emite nota (NF); a filial espelho, com CNPJ fake (o proprio numero),
--- e a operacao sem nota (PRO). Ex.: 200 Quality IND (NF) x 700 PRO Quality (PRO); 401 Casa do
+-- e a operacao PRO. Ex.: 200 Quality IND (NF) x 700 PRO Quality (PRO); 401 Casa do
 -- Serralheiro (NF) x 501 (PRO). Por isso toda linha do briefing e "Total | NF | PRO".
 --
 -- DECISOES DO ALEXANDRE (23/09):
@@ -20,7 +20,7 @@ CREATE TABLE MEGA.CCS_TB_GFIN_BI_EMPRESA (
   FIL_IN_CODIGO       NUMBER        NOT NULL,
   EMP_ST_NOME         VARCHAR2(40)  NOT NULL,   -- nome curto que aparece no painel
   EMP_ST_SIGLA        VARCHAR2(12),             -- QLT, FRD, CS, CA, AA, GA, CD...
-  EMP_CH_TIPO         CHAR(3)       NOT NULL,   -- 'NF' (CNPJ real) ou 'PRO' (espelho sem nota)
+  EMP_CH_TIPO         CHAR(3)       NOT NULL,   -- 'NF' (CNPJ real) ou 'PRO' (filial espelho)
   EMP_IN_FIL_PAR      NUMBER,                   -- a filial par (200<->700, 401<->501...)
   EMP_ST_SEGMENTO     VARCHAR2(10)  NOT NULL,   -- IND, VAR, CD, DIST, SERV
   EMP_BO_TOTAL_GRUPO  CHAR(1) DEFAULT 'S' NOT NULL,  -- entra no total do GRUPO?

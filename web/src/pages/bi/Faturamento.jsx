@@ -1,7 +1,8 @@
 // [23/09/2026 - Alexandre Carvalho] BI FECHAMENTO (GRUPO) > FATURAMENTO — primeira tela do dashboard.
 //
 // Vem do briefing "BI Fechamento.xlsx". O que sustenta a tela: "NF" e "PRO" nao sao tipo de documento,
-// sao PARES DE FILIAIS (a de CNPJ real emite nota; a espelho, com CNPJ fake, e a operacao sem nota).
+// sao PARES DE FILIAIS (a de CNPJ real emite nota; a espelho, com CNPJ fake, e a operacao PRO).
+// [23/09/2026] REGRA DO ALEXANDRE: nunca escrever "sem nota" em lugar nenhum - o termo e sempre PRO.
 // Por isso cada empresa aparece uma vez, com o valor aberto em NF e PRO.
 //
 // Regras fechadas com o Alexandre: faturamento = nota que gera contas a receber; o total do grupo e
@@ -60,7 +61,7 @@ function BarraNfPro({ nfv, prov }) {
       </div>
       <div className="mt-1 flex justify-between text-[11px] text-slate-400">
         <span><b className="text-sky-300">NF</b> {brl(nfv)}</span>
-        <span><b className="text-amber-300">PRO</b> {brl(prov)}</span>
+        <span><b className="text-amber-300">PRÓ</b> {brl(prov)}</span>
       </div>
     </div>
   );
@@ -105,7 +106,7 @@ export default function BiFaturamento() {
         <h1 className="mt-1 text-2xl font-semibold text-slate-50">Faturamento</h1>
         <p className="mt-1 max-w-3xl text-sm text-slate-400">
           Venda que gera contas a receber, consolidada por empresa. Cada empresa soma a filial que emite nota e a
-          filial espelho sem nota. O total do grupo é líquido: a venda entre empresas do grupo aparece separada.
+          filial PRÓ. O total do grupo é líquido: a venda entre empresas do grupo aparece separada.
         </p>
       </header>
 
@@ -158,7 +159,7 @@ export default function BiFaturamento() {
             </Kpi>
             <Kpi titulo="Intragrupo" valor={brl(g.intra)}
                  hint={`${pct(g.total > 0 ? g.intra / g.total : 0)} do bruto · venda de uma empresa para outra`} />
-            <Kpi titulo="Sem nota (PRO)" valor={brl(g.pro)} hint={`${pct(g.percPro)} do faturamento bruto`} />
+            <Kpi titulo="PRÓ" valor={brl(g.pro)} hint={`${pct(g.percPro)} do faturamento bruto`} />
           </div>
 
           {/* empresas */}
@@ -166,7 +167,7 @@ export default function BiFaturamento() {
             <div className="flex items-center gap-2 border-b border-slate-700/60 bg-slate-800/60 px-4 py-2.5">
               <Building2 size={15} className="text-sky-400" />
               <h2 className="text-sm font-semibold text-slate-100">Por empresa</h2>
-              <span className="text-xs text-slate-400">NF + PRO consolidados</span>
+              <span className="text-xs text-slate-400">NF + PRÓ consolidados</span>
             </div>
             <table className="w-full text-sm">
               <thead className="bg-slate-800/40 text-xs uppercase tracking-wide text-slate-400">
@@ -175,7 +176,7 @@ export default function BiFaturamento() {
                   <th className="px-3 py-2 text-left font-medium">Filiais</th>
                   <th className="px-3 py-2 text-right font-medium">Bruto</th>
                   <th className="px-3 py-2 text-right font-medium">NF</th>
-                  <th className="px-3 py-2 text-right font-medium">PRO</th>
+                  <th className="px-3 py-2 text-right font-medium">PRÓ</th>
                   <th className="px-3 py-2 text-right font-medium">Intragrupo</th>
                   <th className="px-3 py-2 text-right font-medium">Líquido</th>
                   <th className="px-3 py-2 text-right font-medium">Notas</th>
@@ -257,7 +258,7 @@ export default function BiFaturamento() {
                   <th className="px-3 py-2 text-left font-medium">Participação</th>
                   <th className="px-3 py-2 text-right font-medium">Valor</th>
                   <th className="px-3 py-2 text-right font-medium">NF</th>
-                  <th className="px-3 py-2 text-right font-medium">PRO</th>
+                  <th className="px-3 py-2 text-right font-medium">PRÓ</th>
                   <th className="px-3 py-2 text-right font-medium">Quantidade</th>
                   <th className="px-4 py-2 text-right font-medium">vs. ano ant.</th>
                 </tr>

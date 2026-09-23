@@ -80,6 +80,13 @@ export const api = {
   logout: () => req('/auth/logout', { method:'POST' }),
   me:     () => req('/auth/me'),
 
+  // [23/09/2026 - Alexandre Carvalho] BI Fechamento (grupo)
+  biFaturamento: (ini, fim, segmento = '') =>
+    req(`/bi/faturamento?ini=${ini}&fim=${fim}${segmento ? `&segmento=${segmento}` : ''}`),
+  biFaturamentoLinha: (ini, fim, linha = '', segmento = '') =>
+    req(`/bi/faturamento/linha?ini=${ini}&fim=${fim}${linha ? `&linha=${encodeURIComponent(linha)}` : ''}${segmento ? `&segmento=${segmento}` : ''}`),
+  biEmpresas: () => req('/bi/empresas'),
+
   // fluxo de caixa
   fluxoCaixa: (data_ini, data_fim, periodo, fil = 0) =>
     req(`/fluxo-caixa?data_ini=${data_ini}&data_fim=${data_fim}&periodo=${periodo}&fil=${fil}`),

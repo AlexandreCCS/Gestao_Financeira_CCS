@@ -23,6 +23,7 @@ import LiberacaoExcAlt from './pages/LiberacaoExcAlt.jsx';
 import LiberacaoAgentes from './pages/LiberacaoAgentes.jsx';
 // [21/09/2026 - Alexandre Carvalho] menu Baixas/Conciliacao
 import ExtratoBancoPage from './pages/baixas/ExtratoBancoPage.jsx';
+import BiFaturamento from './pages/bi/Faturamento.jsx';
 import Shell         from './components/Shell.jsx';
 
 // [14/05/2026 - Alexandre Carvalho] Tela exibida quando o usuario logou mas nao
@@ -88,6 +89,8 @@ createRoot(document.getElementById('root')).render(
       {/* [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes — permissao propria */}
       <Route path="/liberacao-agentes" element={<Protect modulo="LIBERACAO_AGENTES"><LiberacaoAgentes /></Protect>} />
       <Route path="/baixas-conciliacao/extrato" element={<Protect modulo="BAIXAS_CONCILIACAO"><ExtratoBancoPage /></Protect>} />
+      {/* [23/09/2026 - Alexandre Carvalho] BI Fechamento do grupo */}
+      <Route path="/bi/faturamento" element={<Protect modulo="BI_FECHAMENTO"><BiFaturamento /></Protect>} />
       <Route path="/admin"        element={<Protect adminOnly><AdminUsuarios /></Protect>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

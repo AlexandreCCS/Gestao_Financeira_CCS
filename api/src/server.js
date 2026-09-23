@@ -23,6 +23,8 @@ import liberacaoBaixaRoutes from './routes/liberacaoBaixa.js';
 import liberacaoAgentesRoutes from './routes/liberacaoAgentes.js';
 // [21/09/2026 - Alexandre Carvalho] Baixas/Conciliacao: baixa automatica de contas a pagar pelo extrato do banco
 import baixasExtratoRoutes from './routes/baixasExtrato.js';
+// [23/09/2026 - Alexandre Carvalho] BI Fechamento (grupo) - dashboard consolidado
+import biFechamentoRoutes from './routes/biFechamento.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -61,6 +63,7 @@ app.get('/health', async () => ({
 
 // Rotas
 await app.register(authRoutes);
+await app.register(biFechamentoRoutes);
 await app.register(saldosBancoRoutes);
 await app.register(conciliacaoRoutes);
 await app.register(fluxoPrevioRoutes);

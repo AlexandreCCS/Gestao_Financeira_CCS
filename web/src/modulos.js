@@ -7,6 +7,15 @@
 // A permissao continua sendo por modulo: quem enxerga "Inadimplencia" enxerga
 // todos os submenus dela.
 export const MODULOS = {
+  // [23/09/2026 - Alexandre Carvalho] BI Fechamento do grupo (briefing "BI Fechamento.xlsx").
+  // Comeca pelo Faturamento; Financeiro, Despesas, Fiscal e Result entram como submenus.
+  BI_FECHAMENTO: {
+    label: 'BI Fechamento',
+    rota:  '/bi/faturamento',
+    submenus: [
+      { rota: '/bi/faturamento', label: 'Faturamento' },
+    ],
+  },
   SALDOS:      { rota: '/saldos-banco', label: 'Saldos Bancários' },
   CONCILIACAO: { rota: '/conciliacao',  label: 'Conciliação Bancária' },
   FLUXO:       { rota: '/fluxo-caixa',  label: 'Fluxo de Caixa' },

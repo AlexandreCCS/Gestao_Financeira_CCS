@@ -3,26 +3,95 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './index.css';
 import { getSession } from './api/client';
-import Login        from './pages/Login.jsx';
-import SaldosBanco  from './pages/SaldosBanco.jsx';
-import Conciliacao  from './pages/Conciliacao.jsx';
-import FluxoCaixa   from './pages/FluxoCaixa.jsx';
-import Shell        from './components/Shell.jsx';
+import { modulosDoUsuario, podeVerModulo } from './modulos';
+import Login         from './pages/Login.jsx';
+import SaldosBanco   from './pages/SaldosBanco.jsx';
+import Conciliacao   from './pages/Conciliacao.jsx';
+import FluxoCaixa    from './pages/FluxoCaixa.jsx';
+import AdminUsuarios from './pages/AdminUsuarios.jsx';
+import Bloqueios     from './pages/inadimplencia/Bloqueios.jsx';
+import ClientesAtraso from './pages/inadimplencia/ClientesAtraso.jsx';
+import CarteiraCredito from './pages/credito/CarteiraCredito.jsx';
+import FichaCliente    from './pages/credito/FichaCliente.jsx';
+import ParametrosScore from './pages/credito/ParametrosScore.jsx';
+import AjudaCredito    from './pages/credito/Ajuda.jsx';
+import PainelExecutivo from './pages/credito/PainelExecutivo.jsx';
+// [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa
+import LiberacaoBaixa from './pages/LiberacaoBaixa.jsx';
+import LiberacaoExcAlt from './pages/LiberacaoExcAlt.jsx';
+// [06/08/2026 - Alexandre Carvalho] modulo Liberacao de Agentes
+import LiberacaoAgentes from './pages/LiberacaoAgentes.jsx';
+// [21/09/2026 - Alexandre Carvalho] menu Baixas/Conciliacao
+import ExtratoBancoPage from './pages/baixas/ExtratoBancoPage.jsx';
+import BiFaturamento from './pages/bi/Faturamento.jsx';
+import Shell         from './components/Shell.jsx';
 
-function Protect({ children }) {
+// [14/05/2026 - Alexandre Carvalho] Tela exibida quando o usuario logou mas nao
+// tem permissao para o recurso/modulo acessado.
+function SemAcesso({ msg }) {
+  return (
+    <div className="flex items-center justify-center h-[70vh]">
+      <div className="card p-8 max-w-md text-center">
+        <h2 className="text-lg font-bold text-prim-400 mb-2">Sem acesso</h2>
+        <p className="text-sm text-gray-300">{msg || 'Você não tem permissão para este recurso.'}</p>
+        <p className="text-xs text-gray-500 mt-3">
+          Solicite a um administrador do Gestor Financeiro CCS.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// Protege rota: exige login; opcionalmente exige modulo liberado ou ser admin.
+function Protect({ children, modulo, adminOnly }) {
   const s = getSession();
   if (!s?.accessToken) return <Navigate to="/login" replace />;
+  const u = s.user;
+  if (adminOnly && u?.perm !== 'A')
+    return <Shell><SemAcesso msg="Esta área é restrita a administradores." /></Shell>;
+  if (modulo && !podeVerModulo(u, modulo))
+    return <Shell><SemAcesso msg="Você não tem acesso a este módulo do portal." /></Shell>;
   return <Shell>{children}</Shell>;
+}
+
+// Landing: vai pro primeiro modulo disponivel; admin sem modulo vai pra /admin;
+// usuario sem nada ve a tela de "sem modulos liberados".
+function Home() {
+  const s = getSession();
+  if (!s?.accessToken) return <Navigate to="/login" replace />;
+  const u = s.user;
+  const mods = modulosDoUsuario(u);
+  if (mods.length > 0) return <Navigate to={mods[0].rota} replace />;
+  if (u?.perm === 'A')  return <Navigate to="/admin" replace />;
+  return <Shell><SemAcesso msg="Nenhum módulo liberado para o seu usuário ainda." /></Shell>;
 }
 
 createRoot(document.getElementById('root')).render(
   <BrowserRouter>
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route path="/"             element={<Protect><SaldosBanco /></Protect>} />
-      <Route path="/saldos-banco" element={<Protect><SaldosBanco /></Protect>} />
-      <Route path="/conciliacao"  element={<Protect><Conciliacao /></Protect>} />
-      <Route path="/fluxo-caixa"  element={<Protect><FluxoCaixa /></Protect>} />
+      <Route path="/"             element={<Home />} />
+      <Route path="/saldos-banco" element={<Protect modulo="SALDOS"><SaldosBanco /></Protect>} />
+      <Route path="/conciliacao"  element={<Protect modulo="CONCILIACAO"><Conciliacao /></Protect>} />
+      <Route path="/fluxo-caixa"  element={<Protect modulo="FLUXO"><FluxoCaixa /></Protect>} />
+      {/* [14/05/2026 - Alexandre Carvalho] modulo Inadimplencia: menu com submenus */}
+      <Route path="/inadimplencia/bloqueios"       element={<Protect modulo="INADIMPLENCIA"><Bloqueios /></Protect>} />
+      <Route path="/inadimplencia/clientes-atraso" element={<Protect modulo="INADIMPLENCIA"><ClientesAtraso /></Protect>} />
+      {/* [14/05/2026 - Alexandre Carvalho] modulo Inteligencia de Credito */}
+      <Route path="/credito/painel"       element={<Protect modulo="CREDITO"><PainelExecutivo /></Protect>} />
+      <Route path="/credito/carteira"     element={<Protect modulo="CREDITO"><CarteiraCredito /></Protect>} />
+      <Route path="/credito/cliente/:agn" element={<Protect modulo="CREDITO"><FichaCliente /></Protect>} />
+      <Route path="/credito/parametros"   element={<Protect modulo="CREDITO" adminOnly><ParametrosScore /></Protect>} />
+      <Route path="/credito/ajuda"        element={<Protect modulo="CREDITO"><AjudaCredito /></Protect>} />
+      {/* [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa */}
+      <Route path="/liberacao-baixa" element={<Protect modulo="LIBERACAO_BAIXA"><LiberacaoBaixa /></Protect>} />
+      <Route path="/liberacao-exc-alt" element={<Protect modulo="LIBERACAO_BAIXA"><LiberacaoExcAlt /></Protect>} />
+      {/* [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes — permissao propria */}
+      <Route path="/liberacao-agentes" element={<Protect modulo="LIBERACAO_AGENTES"><LiberacaoAgentes /></Protect>} />
+      <Route path="/baixas-conciliacao/extrato" element={<Protect modulo="BAIXAS_CONCILIACAO"><ExtratoBancoPage /></Protect>} />
+      {/* [23/09/2026 - Alexandre Carvalho] BI Fechamento do grupo */}
+      <Route path="/bi/faturamento" element={<Protect modulo="BI_FECHAMENTO"><BiFaturamento /></Protect>} />
+      <Route path="/admin"        element={<Protect adminOnly><AdminUsuarios /></Protect>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   </BrowserRouter>

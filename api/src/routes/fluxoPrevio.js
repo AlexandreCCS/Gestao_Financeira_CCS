@@ -5,6 +5,24 @@ import { megaQuery, megaExec } from '../soap/mega.js';
 // Escapa string para SQL inline (basico - so aspas simples).
 const sqlEsc = s => String(s ?? '').replace(/'/g, "''");
 
+// [21/09/2026 - Alexandre Carvalho] Parametros da V3 do fluxo, compartilhados pela matriz e pelo drilldown
+// (fluxoDocs.js importa daqui para as duas rotas validarem IGUAL):
+//   grupo   'S' (padrao) inclui empresas do grupo | 'N' tira do CR e do CP
+//   classes lista de classes de credito a desconsiderar no CR: so letras A-E separadas por virgula
+//   d1      'S' = CR pela data do credito em conta (prazo da forma) | 'N' (padrao)
+export function paramsV3(query) {
+  const grupo = String(query.grupo || 'S').toUpperCase() === 'N' ? 'N' : 'S';
+  const d1    = String(query.d1    || 'N').toUpperCase() === 'S' ? 'S' : 'N';
+  const cl    = [...new Set(String(query.classes || '').toUpperCase().split(',').map(s => s.trim()).filter(s => /^[A-E]$/.test(s)))];
+  return { grupo, d1, classes: cl.join(',') };
+}
+
+async function adminOnly(req, reply) {
+  if (req.user?.perm !== 'A') {
+    return reply.code(403).send({ error: 'Apenas administradores podem alterar os prazos de credito.' });
+  }
+}
+
 export default async function fluxoPrevioRoutes(app) {
 
   // ==========================================================================
@@ -17,6 +35,9 @@ export default async function fluxoPrevioRoutes(app) {
     const fils    = String(req.query.filiais || '0').replace(/[^0-9,]/g, '') || '0';
     const sim     = (String(req.query.sim || 'S').toUpperCase() === 'S') ? 'S' : 'N';
     const prev    = (String(req.query.prev || 'N').toUpperCase() === 'S') ? 'S' : 'N';
+    // [21/09/2026 - Alexandre Carvalho] V3 (pedido Renata/Quality): empresas do grupo, classes de credito
+    // desconsideradas e D+1 por forma. Sem os parametros a rota responde como antes.
+    const { grupo, classes, d1 } = paramsV3(req.query);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dataIni) || !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
       const e = new Error('data_ini e data_fim sao obrigatorios');
       e.statusCode = 400; throw e;
@@ -35,7 +56,10 @@ export default async function fluxoPrevioRoutes(app) {
                      '${sqlEsc(fils)}',
                      '${sim}',
                      200,
-                     '${prev}'))
+                     '${prev}',
+                     '${grupo}',
+                     ${classes ? `'${classes}'` : 'NULL'},
+                     '${d1}'))
        ORDER BY DT_DIA, CATEGORIA, FIL_IN_CODIGO, AGN_IN_CODIGO`;
 
     const rows = await megaQuery(sql);
@@ -93,7 +117,7 @@ export default async function fluxoPrevioRoutes(app) {
     });
 
     return {
-      filtro: { data_ini: dataIni, data_fim: dataFim, filiais: fils, simulacoes: sim, previsao: prev },
+      filtro: { data_ini: dataIni, data_fim: dataFim, filiais: fils, simulacoes: sim, previsao: prev, grupo, classes, d1 },
       saldo_inicial: saldoInicial,
       saldo_final:   saldoAcumulado,
       categorias_ordem: CATS,
@@ -225,5 +249,65 @@ export default async function fluxoPrevioRoutes(app) {
         COMMIT;
       END;`);
     return { ok: true };
+  });
+
+  // ==========================================================================
+  // [21/09/2026 - Alexandre Carvalho] PRAZO DE CREDITO POR FORMA DE RECEBIMENTO ("D+1") - sql/17
+  // GET /fluxo-previo/prazos          - lista (qualquer autenticado)
+  // PUT /fluxo-previo/prazos {itens}  - altera (so admin); itens: [{ id, corridos, uteis }]
+  // A linha e identificada pelo ROWID (ASCII): a descricao da forma tem acento e o SOAP corrompe
+  // acento em literal - nenhuma descricao trafega dentro de SQL.
+  // ==========================================================================
+  app.get('/fluxo-previo/prazos', { preHandler: [app.authenticate] }, async (req) => {
+    // Forma nova que apareceu nos titulos e ainda nao esta na tabela entra com prazo 0 (credito no dia).
+    // INSERT ... SELECT sem literal; idempotente.
+    await megaExec(`BEGIN
+        INSERT INTO MEGA.CCS_TB_GFIN_FLX_PRAZO (FORMA_ST_DESCRICAO, PRZ_ST_USU)
+        SELECT F, 'AUTO (FORMA NOVA)'
+          FROM (SELECT DISTINCT UPPER(TRIM(HCOB_ST_DESCRICAO)) F
+                  FROM MEGA.FIN_VW_CONTASRECEBER
+                 WHERE HCOB_ST_DESCRICAO IS NOT NULL AND NVL(SALDO_EM_ABERTO,0) > 0) X
+         WHERE NOT EXISTS (SELECT 1 FROM MEGA.CCS_TB_GFIN_FLX_PRAZO P WHERE P.FORMA_ST_DESCRICAO = X.F);
+        COMMIT;
+      END;`);
+    const rows = await megaQuery(`
+      SELECT ROWIDTOCHAR(P.ROWID) AS ID, P.FORMA_ST_DESCRICAO, P.PRZ_IN_DIAS_CORRIDOS, P.PRZ_IN_DIAS_UTEIS,
+             TO_CHAR(P.PRZ_DT_ALTERACAO,'YYYY-MM-DD HH24:MI') AS DT_ALT, P.PRZ_ST_USU,
+             (SELECT COUNT(*) FROM MEGA.FIN_VW_CONTASRECEBER C
+               WHERE NVL(C.SALDO_EM_ABERTO,0) > 0 AND NVL(C.MOV_CH_SITUACAO,'A') <> 'C' AND C.TPD_ST_CODIGO <> 'PDV'
+                 AND NVL(UPPER(TRIM(C.HCOB_ST_DESCRICAO)),'(SEM FORMA)') = P.FORMA_ST_DESCRICAO) AS QT_ABERTOS
+        FROM MEGA.CCS_TB_GFIN_FLX_PRAZO P
+       ORDER BY 7 DESC, 2`);
+    return {
+      pode_editar: req.user?.perm === 'A',
+      itens: rows.map(r => ({
+        id: r.ID, forma: r.FORMA_ST_DESCRICAO,
+        corridos: Number(r.PRZ_IN_DIAS_CORRIDOS || 0), uteis: Number(r.PRZ_IN_DIAS_UTEIS || 0),
+        qt_abertos: Number(r.QT_ABERTOS || 0), dt_alteracao: r.DT_ALT || '', usuario: r.PRZ_ST_USU || ''
+      }))
+    };
+  });
+
+  app.put('/fluxo-previo/prazos', {
+    preHandler: [app.authenticate, adminOnly],
+    schema: { body: { type: 'object', required: ['itens'], properties: { itens: { type: 'array', maxItems: 200, items: {
+      type: 'object', required: ['id', 'corridos', 'uteis'],
+      properties: { id: { type: 'string', pattern: '^[A-Za-z0-9+/]{18}$' },
+                    corridos: { type: 'integer', minimum: 0, maximum: 120 },
+                    uteis:    { type: 'integer', minimum: 0, maximum: 10 } } } } } } }
+  }, async (req) => {
+    const usu  = parseInt(req.user?.sub || 0, 10) || 0;
+    const nome = sqlEsc(String(req.user?.nome || '').normalize('NFD').replace(/[^\x20-\x7E]/g, '').slice(0, 60));
+    // So carimba a linha cujo valor DIFERE (mesmo padrao do PUT de parametros da Liberacao).
+    const upd = req.body.itens.map(i => `
+        UPDATE MEGA.CCS_TB_GFIN_FLX_PRAZO
+           SET PRZ_IN_DIAS_CORRIDOS = ${i.corridos}, PRZ_IN_DIAS_UTEIS = ${i.uteis},
+               PRZ_DT_ALTERACAO = SYSDATE, PRZ_IN_USU = ${usu}, PRZ_ST_USU = '${nome}'
+         WHERE ROWID = CHARTOROWID('${i.id}')
+           AND (PRZ_IN_DIAS_CORRIDOS <> ${i.corridos} OR PRZ_IN_DIAS_UTEIS <> ${i.uteis});`).join('');
+    if (upd) await megaExec(`BEGIN ${upd}
+        COMMIT;
+      END;`);
+    return { ok: true, qtd: req.body.itens.length };
   });
 }

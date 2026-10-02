@@ -8,6 +8,9 @@
 // CCS_TB_LIBERA_EXC_ALT_EXEC (U=alteração / D=exclusão).
 // Aba "Histórico de liberações": tudo que foi liberado, status, execuções,
 // revogação — espelho da tela de Data de Baixa.
+// [02/10/2026 - Alexandre Carvalho] Aba "Contas a pagar": mesma tela para os títulos do CP baixados (a trava
+// V9 passou a cobrir a baixa do CP, vínculo BXCPA). Mesma liberação e mesmo histórico; a coluna de forma de
+// recebimento vira "Pagamentos" (tipo + documento do pagamento, ex.: PGTOM 151, como aparece no Mega).
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FileSpreadsheet, Search, Wallet, CheckCircle2, CircleDollarSign, Users,
@@ -42,9 +45,16 @@ const SORTS = {
   saldo:     t => t.saldo
 };
 const iso = d => d.toISOString().slice(0, 10);
+// [02/10/2026 - Alexandre Carvalho] rótulos por carteira (cr = contas a receber, cp = contas a pagar)
+const ROT = {
+  cr: { agente: 'Cliente', agentes: 'Clientes', mov: 'Recebido', forma: 'Forma Receb.', formas: 'Todas as formas de receb.',
+        busca: 'Buscar cliente, código ou documento...', aba: 'Títulos baixados' },
+  cp: { agente: 'Fornecedor', agentes: 'Fornecedores', mov: 'Pago', forma: 'Pagamentos', formas: null,
+        busca: 'Buscar fornecedor, código, documento ou pagamento...', aba: 'Contas a pagar' }
+};
 
 export default function LiberacaoExcAlt() {
-  const [aba, setAba] = useState('titulos');   // titulos | historico
+  const [aba, setAba] = useState('titulos');   // titulos | cp | historico
   const [ctx,   setCtx]   = useState(null);    // {x, y, titulo}
   const [modal, setModal] = useState(null);    // titulo em liberação
   const [refreshHist, setRefreshHist] = useState(0);
@@ -81,13 +91,16 @@ export default function LiberacaoExcAlt() {
       <div className="flex gap-1 border-b border-ink-700">
         <Aba ativo={aba === 'titulos'} onClick={() => setAba('titulos')}
              icon={<ListChecks size={15} />} label="Títulos baixados" />
+        <Aba ativo={aba === 'cp'} onClick={() => setAba('cp')}
+             icon={<Wallet size={15} />} label="Contas a pagar" />
         <Aba ativo={aba === 'historico'} onClick={() => setAba('historico')}
              icon={<History size={15} />} label="Histórico de liberações" />
       </div>
 
-      {aba === 'titulos'
-        ? <AbaBaixados onContexto={(e, t) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, titulo: t }); }} />
-        : <AbaHistorico refresh={refreshHist} />}
+      {aba === 'historico'
+        ? <AbaHistorico refresh={refreshHist} />
+        : <AbaBaixados key={aba} tipo={aba === 'cp' ? 'cp' : 'cr'}
+            onContexto={(e, t) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, titulo: t }); }} />}
 
       {/* Menu de contexto */}
       {ctx && (
@@ -121,7 +134,8 @@ function Aba({ ativo, onClick, icon, label }) {
 }
 
 /* ------------------------------------------------------------- baixados */
-function AbaBaixados({ onContexto }) {
+function AbaBaixados({ onContexto, tipo = 'cr' }) {
+  const R = ROT[tipo];
   const hoje = new Date();
   const [ini, setIni] = useState(iso(new Date(hoje.getTime() - 60 * 86400000)));
   const [fim, setFim] = useState(iso(hoje));
@@ -137,7 +151,7 @@ function AbaBaixados({ onContexto }) {
 
   async function carregar(pIni = ini, pFim = fim) {
     setBusy(true); setErro('');
-    try { setResp(await api.liberacaoBaixaBaixados(pIni, pFim)); }
+    try { setResp(await api.liberacaoBaixaBaixados(pIni, pFim, tipo)); }
     catch (e) { setErro(e.message || 'Erro ao carregar títulos baixados'); setResp(null); }
     finally { setBusy(false); }
   }
@@ -160,7 +174,8 @@ function AbaBaixados({ onContexto }) {
       arr = arr.filter(t =>
         String(t.agn_id).includes(q) ||
         (t.cliente   || '').toLowerCase().includes(q) ||
-        (t.documento || '').toLowerCase().includes(q));
+        (t.documento || '').toLowerCase().includes(q) ||
+        (tipo === 'cp' && (t.forma_receb || '').toLowerCase().includes(q)));
     }
     const ex = SORTS[sort.k] || SORTS.emissao;
     arr = [...arr].sort((a, b) => {
@@ -169,7 +184,7 @@ function AbaBaixados({ onContexto }) {
       return sort.asc ? c : -c;
     });
     return arr;
-  }, [resp, sit, fil, forma, busca, sort]);
+  }, [resp, sit, fil, forma, busca, sort, tipo]);
 
   useEffect(() => { setPagina(1); }, [sit, fil, forma, busca, sort]);
 
@@ -181,19 +196,19 @@ function AbaBaixados({ onContexto }) {
 
   function exportXlsx() {
     const dados = linhas.map(t => ({
-      'Cód. Cliente': t.agn_id, Cliente: t.cliente, Filial: t.fil_id,
+      [`Cód. ${R.agente}`]: t.agn_id, [R.agente]: t.cliente, Filial: t.fil_id,
       Documento: t.documento, Parcela: t.parcela, Tipo: t.tipo,
-      'Forma Receb.': t.forma_receb, 'Emissão': fmtBr(t.emissao),
+      [R.forma]: t.forma_receb, 'Emissão': fmtBr(t.emissao),
       Vencimento: fmtBr(t.prorrogado || t.vencto),
       'Situação': t.baixa_total ? 'Baixa total' : 'Baixa parcial',
-      'Valor original': t.valor, Recebido: t.recebido, 'Saldo em aberto': t.saldo
+      'Valor original': t.valor, [R.mov]: t.recebido, 'Saldo em aberto': t.saldo
     }));
     const ws = XLSX.utils.json_to_sheet(dados);
     ws['!cols'] = [{wch:12},{wch:48},{wch:7},{wch:14},{wch:8},{wch:10},{wch:24},
                    {wch:11},{wch:11},{wch:13},{wch:14},{wch:14},{wch:15}];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Títulos baixados');
-    XLSX.writeFile(wb, `liberacao-exc-alt-baixados-${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, R.aba);
+    XLSX.writeFile(wb, `liberacao-exc-alt-${tipo === 'cp' ? 'cp' : 'baixados'}-${new Date().toISOString().slice(0,10)}.xlsx`);
   }
 
   const kpi = resp?.kpi;
@@ -221,13 +236,13 @@ function AbaBaixados({ onContexto }) {
 
       {kpi && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Kpi icon={<Wallet size={16} />} label="Recebido no período" value={fmt(kpi.vl_recebido)}
+          <Kpi icon={<Wallet size={16} />} label={`${R.mov} no período`} value={fmt(kpi.vl_recebido)}
                sub={`${fmtN(kpi.qt_titulos)} título(s) baixado(s)`} color="prim" />
           <Kpi icon={<CheckCircle2 size={16} />} label="Baixa total" value={fmt(kpi.vl_baixa_total)}
                sub={`${fmtN(kpi.qt_baixa_total)} título(s)`} color="prim" />
           <Kpi icon={<CircleDollarSign size={16} />} label="Baixa parcial" value={fmt(kpi.vl_parcial)}
                sub={`${fmtN(kpi.qt_parcial)} título(s) · saldo ${fmt(kpi.saldo_parcial)}`} color="acc" />
-          <Kpi icon={<Users size={16} />} label="Clientes" value={fmtN(kpi.qt_clientes)}
+          <Kpi icon={<Users size={16} />} label={R.agentes} value={fmtN(kpi.qt_clientes)}
                sub={`período ${fmtBr(resp.periodo.ini)} a ${fmtBr(resp.periodo.fim)}`} color="prim" />
         </div>
       )}
@@ -250,15 +265,17 @@ function AbaBaixados({ onContexto }) {
               <option value="todas">Todas as filiais</option>
               {filiais.map(f => <option key={f} value={String(f)}>Filial {f}</option>)}
             </select>
-            <select className="bg-ink-800 text-xs text-gray-300 rounded px-2 py-1.5 outline-none max-w-[220px]"
-                    value={forma} onChange={e => setForma(e.target.value)}>
-              <option value="todas">Todas as formas de receb.</option>
-              {formas.map(f => <option key={f} value={f}>{f}</option>)}
-            </select>
+            {R.formas && (
+              <select className="bg-ink-800 text-xs text-gray-300 rounded px-2 py-1.5 outline-none max-w-[220px]"
+                      value={forma} onChange={e => setForma(e.target.value)}>
+                <option value="todas">{R.formas}</option>
+                {formas.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
+            )}
             <div className="ml-auto flex items-center gap-2 bg-ink-800 px-2 rounded">
               <Search size={14} className="text-gray-500" />
               <input className="bg-transparent outline-none py-1 text-sm w-56"
-                     placeholder="Buscar cliente, código ou documento..."
+                     placeholder={R.busca}
                      value={busca} onChange={e => setBusca(e.target.value)} />
             </div>
             <button className="btn-ghost" onClick={exportXlsx} disabled={linhas.length === 0}>
@@ -268,7 +285,7 @@ function AbaBaixados({ onContexto }) {
 
           <div className="px-4 py-2 bg-ink-900/50 border-b border-ink-700 text-xs text-gray-400 flex flex-wrap gap-4 items-center">
             <span>{fmtN(linhas.length)} título(s) no filtro</span>
-            <span>Recebido: <span className="text-prim-400 font-mono">{fmt(somaFiltro)}</span></span>
+            <span>{R.mov}: <span className="text-prim-400 font-mono">{fmt(somaFiltro)}</span></span>
             <span className="text-gray-500 hidden md:inline">botão direito num título → liberar alteração/exclusão</span>
             {busy && <span className="text-gray-500">atualizando…</span>}
             <Pager pagina={pagina} total={totPaginas} onChange={setPagina} />
@@ -278,23 +295,23 @@ function AbaBaixados({ onContexto }) {
             <table className="w-full text-sm">
               <thead className="bg-ink-900/70 text-gray-400 uppercase text-xs sticky top-0 z-10">
                 <tr>
-                  <Th k="cliente"   sort={sort} onSort={alternaSort} className="text-left pl-4">Cliente</Th>
+                  <Th k="cliente"   sort={sort} onSort={alternaSort} className="text-left pl-4">{R.agente}</Th>
                   <Th k="fil_id"    sort={sort} onSort={alternaSort} className="text-center">Filial</Th>
                   <Th k="documento" sort={sort} onSort={alternaSort} className="text-left">Documento</Th>
                   <Th k="tipo"      sort={sort} onSort={alternaSort} className="text-left">Tipo</Th>
-                  <Th k="forma"     sort={sort} onSort={alternaSort} className="text-left">Forma Receb.</Th>
+                  <Th k="forma"     sort={sort} onSort={alternaSort} className="text-left">{R.forma}</Th>
                   <Th k="emissao"   sort={sort} onSort={alternaSort} className="text-center">Emissão</Th>
                   <Th k="vencto"    sort={sort} onSort={alternaSort} className="text-center">Vencimento</Th>
                   <Th k="situacao"  sort={sort} onSort={alternaSort} className="text-center">Situação</Th>
                   <Th k="valor"     sort={sort} onSort={alternaSort} className="text-right">Valor</Th>
-                  <Th k="recebido"  sort={sort} onSort={alternaSort} className="text-right">Recebido</Th>
+                  <Th k="recebido"  sort={sort} onSort={alternaSort} className="text-right">{R.mov}</Th>
                   <Th k="saldo"     sort={sort} onSort={alternaSort} className="text-right pr-4">Saldo em aberto</Th>
                 </tr>
               </thead>
               <tbody>
                 {visiveis.map((t, i) => (
                   <tr key={i} className="border-t border-ink-700 hover:bg-ink-800/40 cursor-context-menu"
-                      onContextMenu={e => onContexto(e, t)}>
+                      onContextMenu={e => onContexto(e, { ...t, carteira: tipo })}>
                     <td className="p-2 pl-4">
                       <div className="text-gray-200">{t.cliente}</div>
                       <div className="text-xs text-gray-500 font-mono">cód. {t.agn_id}</div>
@@ -339,6 +356,7 @@ function AbaBaixados({ onContexto }) {
 
 /* --------------------------------------------------- modal de liberação */
 function ModalLiberacaoExc({ titulo, onClose }) {
+  const rot = ROT[titulo.carteira === 'cp' ? 'cp' : 'cr'];
   const [motivo, setMotivo] = useState('');
   const [libs,   setLibs]   = useState(null);
   const [busy,   setBusy]   = useState(false);
@@ -397,13 +415,14 @@ function ModalLiberacaoExc({ titulo, onClose }) {
 
         <div className="p-5 space-y-4">
           <div className="bg-ink-900/60 rounded-lg p-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
-            <Info rotulo="Cliente" valor={`${titulo.cliente}`} span2 />
-            <Info rotulo="Cód. cliente" valor={titulo.agn_id} mono />
+            <Info rotulo={rot.agente} valor={`${titulo.cliente}`} span2 />
+            <Info rotulo={`Cód. ${rot.agente.toLowerCase()}`} valor={titulo.agn_id} mono />
             <Info rotulo="Filial" valor={titulo.fil_id} mono />
             <Info rotulo="Documento" valor={`${titulo.documento}${titulo.parcela ? '/' + titulo.parcela : ''}`} mono />
             <Info rotulo="Tipo" valor={titulo.tipo} />
             <Info rotulo="Situação" valor={titulo.baixa_total ? 'Baixa total' : 'Baixa parcial'} />
-            <Info rotulo="Recebido" valor={fmt(titulo.recebido)} destaque />
+            {titulo.carteira === 'cp' && <Info rotulo="Pagamentos" valor={titulo.forma_receb || '—'} mono />}
+            <Info rotulo={rot.mov} valor={fmt(titulo.recebido)} destaque />
           </div>
 
           <div className="space-y-2">

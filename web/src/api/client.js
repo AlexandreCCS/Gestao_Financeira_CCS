@@ -178,8 +178,9 @@ export const api = {
     req('/liberacao-baixa/parametros', { method: 'PUT', body: JSON.stringify(dados) }),
   liberacaoBaixaParametrosHistorico: () => req('/liberacao-baixa/parametros/historico'),
   // [23/07/2026 - Alexandre Carvalho] Liberacao de Exc./Alt. — titulos baixados (industria)
-  liberacaoBaixaBaixados: (ini, fim) =>
-    req(`/liberacao-baixa/baixados?ini=${ini || ''}&fim=${fim || ''}`),
+  // [02/10/2026 - Alexandre Carvalho] tipo 'cp' = contas a pagar (aba nova da Liberação de Exc./Alt.)
+  liberacaoBaixaBaixados: (ini, fim, tipo = 'cr') =>
+    req(`/liberacao-baixa/baixados?ini=${ini || ''}&fim=${fim || ''}&tipo=${tipo}`),
   liberacaoExcLiberar: (dados) =>
     req('/liberacao-exc/liberar', { method: 'POST', body: JSON.stringify(dados) }),
   liberacaoExcRevogar: (id) =>

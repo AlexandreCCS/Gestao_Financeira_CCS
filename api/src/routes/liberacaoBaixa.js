@@ -167,7 +167,12 @@ export default async function liberacaoBaixaRoutes(app) {
   // fora). Periodo por data de EMISSAO (ini/fim, default ultimos 60 dias) para
   // nao carregar o historico inteiro (~114 mil titulos). PDV fora; IMPCREC
   // segue o mesmo parametro da tela de Data de Baixa.
+  // [02/10/2026 - Alexandre Carvalho] tipo=cp -> titulos do CONTAS A PAGAR baixados (trava V9 cobre o
+  // vinculo BXCPA). Mesma liberacao (CCS_TB_LIBERA_EXC_ALT, chave FIL+AGN+DOC+PARCELA do titulo). Sem forma
+  // de recebimento no CP: a coluna vira PAGAMENTOS (tipo + documento das linhas de pagamento ligadas pelo
+  // BXCPA, ex.: "PGTOM 151"), que e o que o usuario ve na tela de movimento do Mega.
   app.get('/liberacao-baixa/baixados', guard, async (req) => {
+    const cp   = req.query.tipo === 'cp';
     const hoje = new Date();
     const d60  = new Date(hoje.getTime() - 60 * 86400000);
     const ini  = RX_DATA.test(req.query.ini || '') ? req.query.ini : d60.toISOString().slice(0, 10);
@@ -176,7 +181,18 @@ export default async function liberacaoBaixaRoutes(app) {
     const par = await megaQuery(`
       SELECT PARAM_RE_VALOR V FROM MEGA.CCS_TB_GFIN_PARAM
        WHERE PARAM_ST_CHAVE = 'LIB_BAIXA_MOSTRA_IMPCREC'`);
-    const filtroImpcrec = num(par[0]?.V) === 1 ? '' : `AND C.TPD_ST_CODIGO <> 'IMPCREC'`;
+    const filtroImpcrec = num(par[0]?.V) === 1 || cp ? '' : `AND C.TPD_ST_CODIGO <> 'IMPCREC'`;
+
+    const colForma = cp
+      ? `(SELECT SUBSTR(LISTAGG(TRIM(P.TPD_ST_CODIGO) || ' ' || TRIM(P.MOV_ST_DOCUMENTO), ', ' ON OVERFLOW TRUNCATE)
+                         WITHIN GROUP (ORDER BY P.MOV_DT_DATADOCTO), 1, 120)
+                FROM MEGA.FIN_REFERENCIAFIN R, MEGA.FIN_MOVIMENTO P
+               WHERE R.REF_ST_TIPO = 'BXCPA'
+                 AND R.REF_ORG_IN_CODIGO = C.ORG_IN_CODIGO AND R.REF_MOV_TAB_IN_CODIGO = C.MOV_TAB_IN_CODIGO
+                 AND R.REF_MOV_SEQ_IN_CODIGO = C.MOV_SEQ_IN_CODIGO AND R.REF_MOV_IN_NUMLANCTO = C.MOV_IN_NUMLANCTO
+                 AND P.ORG_IN_CODIGO = R.ORI_ORG_IN_CODIGO AND P.MOV_TAB_IN_CODIGO = R.ORI_MOV_TAB_IN_CODIGO
+                 AND P.MOV_SEQ_IN_CODIGO = R.ORI_MOV_SEQ_IN_CODIGO AND P.MOV_IN_NUMLANCTO = R.ORI_MOV_IN_NUMLANCTO)`
+      : `SUBSTR(NVL(C.HCOB_ST_DESCRICAO, ''), 1, 60)`;
 
     const rows = await megaQuery(`
       SELECT C.AGN_IN_CODIGO                                   AS AGN,
@@ -185,13 +201,13 @@ export default async function liberacaoBaixaRoutes(app) {
              C.MOV_ST_DOCUMENTO                                AS DOC,
              C.MOV_ST_PARCELA                                  AS PARC,
              C.TPD_ST_CODIGO                                   AS TPD,
-             SUBSTR(NVL(C.HCOB_ST_DESCRICAO, ''), 1, 60)       AS FORMA_RECEB,
+             ${colForma}                                       AS FORMA_RECEB,
              TO_CHAR(C.MOV_DT_DATADOCTO, 'YYYY-MM-DD')         AS EMISSAO,
              TO_CHAR(C.MOV_DT_VENCTO,    'YYYY-MM-DD')         AS VENCTO,
              TO_CHAR(C.MOV_DT_PRORROGADO,'YYYY-MM-DD')         AS PRORROGADO,
              C.MOV_RE_VALOR                                    AS VALOR,
              NVL(C.SALDO_EM_ABERTO, 0)                         AS SALDO
-        FROM MEGA.FIN_VW_CONTASRECEBER C,
+        FROM MEGA.${cp ? 'FIN_VW_CONTASPAGAR' : 'FIN_VW_CONTASRECEBER'} C,
              MEGA.GLO_AGENTES           G
        WHERE (C.MOV_RE_VALOR - NVL(C.SALDO_EM_ABERTO, 0)) > 0.005
          AND C.FIL_IN_CODIGO NOT IN (401,402,403,404,501,502,503,504)
@@ -226,6 +242,7 @@ export default async function liberacaoBaixaRoutes(app) {
     const tot  = titulos.filter(t => t.baixa_total);
     const parc = titulos.filter(t => !t.baixa_total);
     return {
+      tipo: cp ? 'cp' : 'cr',
       periodo: { ini, fim },
       total: titulos.length,
       kpi: {

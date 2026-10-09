@@ -179,6 +179,7 @@ function TabelaDesbloqueados({ desb }) {
             <th className="text-center px-3 py-2 w-24">Hora</th>
             <th className="text-left px-3 py-2">Cliente</th>
             <th className="text-left px-3 py-2">Desbloqueado por</th>
+            <th className="text-left px-3 py-2">Justificativa</th>
           </tr>
         </thead>
         <tbody>
@@ -190,8 +191,12 @@ function TabelaDesbloqueados({ desb }) {
                 <div className="text-[11px] text-gray-500">cód {it.agn_id}</div>
               </td>
               <td className="px-3 py-2">
-                <span className="text-emerald-300">{it.usuario}</span>
-                <span className="text-[11px] text-gray-500"> · usuário Mega {it.usu_id}</span>
+                {/* [09/10/2026 - Alexandre Carvalho] quem clicou no Gestor (Liberacao de Agentes) tem prioridade */}
+                <span className="text-emerald-300">{it.usuario_portal || it.usuario}</span>
+                <span className="text-[11px] text-gray-500">{it.usuario_portal ? ' · Liberação de Agentes' : ` · usuário Mega ${it.usu_id}`}</span>
+              </td>
+              <td className="px-3 py-2 text-gray-300">
+                {it.motivo || <span className="text-[11px] text-amber-400/80">sem justificativa</span>}
               </td>
             </tr>
           ))}

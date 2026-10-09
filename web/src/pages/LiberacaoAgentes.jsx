@@ -21,17 +21,21 @@ export default function LiberacaoAgentes() {
   const [buscando, setBuscando]   = useState(false);
   const [modal, setModal]         = useState(null);   // { agente, acao: 'liberar'|'revogar' }
   const [hist, setHist]           = useState(null);
-  const [histDias, setHistDias]   = useState(30);
+  const [histDias, setHistDias]   = useState(30);   // 0 = periodo personalizado (histIni/histFim)
+  const [histIni, setHistIni]     = useState('');
+  const [histFim, setHistFim]     = useState('');
   const [aba, setAba]             = useState('liberados');  // liberados | historico
   const [erro, setErro]           = useState('');
 
   const carregaLiberados = () =>
     api.liberacaoAgnLiberados().then(r => setLiberados(r.liberados)).catch(() => setLiberados([]));
+  // [09/10/2026 - Alexandre Carvalho] periodo personalizado (de/ate) alem dos atalhos de N dias
   const carregaHist = (d) =>
-    api.liberacaoAgnHistorico(d).then(r => setHist(r.eventos)).catch(() => setHist([]));
+    api.liberacaoAgnHistorico(d || 30, d === 0 ? histIni : '', d === 0 ? histFim : '')
+      .then(r => setHist(r.eventos)).catch(() => setHist([]));
 
   useEffect(() => { carregaLiberados(); }, []);
-  useEffect(() => { if (aba === 'historico') carregaHist(histDias); }, [aba, histDias]);
+  useEffect(() => { if (aba === 'historico') carregaHist(histDias); }, [aba, histDias, histIni, histFim]);
 
   const buscar = () => {
     const q = busca.trim();
@@ -170,7 +174,16 @@ export default function LiberacaoAgentes() {
               <option value={30}>Últimos 30 dias</option>
               <option value={90}>Últimos 90 dias</option>
               <option value={365}>Último ano</option>
+              <option value={0}>Período…</option>
             </select>
+          )}
+          {aba === 'historico' && histDias === 0 && (
+            <span className="flex items-center gap-1 text-xs text-gray-400">
+              de <input type="date" className="bg-ink-800 text-gray-300 rounded px-2 py-1 outline-none" value={histIni}
+                        max={histFim || undefined} onChange={e => setHistIni(e.target.value)} />
+              até <input type="date" className="bg-ink-800 text-gray-300 rounded px-2 py-1 outline-none" value={histFim}
+                        min={histIni || undefined} onChange={e => setHistFim(e.target.value)} />
+            </span>
           )}
         </div>
 
@@ -283,14 +296,19 @@ function ModalConfirma({ modal, onFecha, onConfirma }) {
           </p>
         )}
         <div>
-          <label className="text-xs text-gray-400 block mb-1">Motivo (opcional)</label>
+          {/* [09/10/2026 - Alexandre Carvalho] justificativa obrigatoria no desbloqueio (aparece no BI) */}
+          <label className="text-xs text-gray-400 block mb-1">
+            {liberando ? <>Justificativa <b className="text-rose-300">(obrigatória)</b></> : 'Motivo (opcional)'}
+          </label>
           <input className="w-full bg-ink-800 rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-prim-500"
                  maxLength={200} value={motivo} onChange={e => setMotivo(e.target.value)}
                  placeholder="Ex.: autorizado pelo financeiro — pagamento confirmado" />
         </div>
         <div className="flex justify-end gap-2">
           <button className="btn-ghost" onClick={onFecha}>Cancelar</button>
-          <button className={liberando ? 'btn-prim' : 'btn-prim bg-rose-600 hover:bg-rose-500'}
+          <button className={liberando ? 'btn-prim disabled:opacity-40 disabled:cursor-not-allowed' : 'btn-prim bg-rose-600 hover:bg-rose-500'}
+                  disabled={liberando && motivo.trim().length < 5}
+                  title={liberando && motivo.trim().length < 5 ? 'Escreva a justificativa (mínimo 5 caracteres)' : ''}
                   onClick={() => onConfirma(motivo.trim())}>
             {liberando ? 'Confirmar liberação' : 'Confirmar revogação'}
           </button>

@@ -101,7 +101,17 @@ export default async function inadimplenciaRoutes(app) {
              O.USU_IN_CODIGO                                  AS USU,
              U.NOME                                           AS USUARIO,
              A.AGN_IN_CODIGO_NEW                              AS AGN,
-             G.AGN_ST_NOME                                    AS CLIENTE
+             G.AGN_ST_NOME                                    AS CLIENTE,
+             -- [09/10/2026 - Alexandre Carvalho] desde 06/08 o desbloqueio e feito pela Liberacao de Agentes
+             -- do Gestor: a justificativa e quem clicou ficam no log dela (mesmo agente, +-5 min da auditoria)
+             (SELECT MAX(L.LOG_ST_MOTIVO) KEEP (DENSE_RANK LAST ORDER BY L.LOG_IN_CODIGO)
+                FROM MEGA.CCS_TB_GFIN_LIBERA_AGN_LOG L
+               WHERE L.AGN_IN_CODIGO = A.AGN_IN_CODIGO_NEW AND L.LOG_CH_PARA = 'S'
+                 AND L.LOG_DT_DATA BETWEEN O.ADO_DT_INCLUSAO - 5/1440 AND O.ADO_DT_INCLUSAO + 5/1440) AS MOTIVO,
+             (SELECT MAX(L.LOG_ST_USU) KEEP (DENSE_RANK LAST ORDER BY L.LOG_IN_CODIGO)
+                FROM MEGA.CCS_TB_GFIN_LIBERA_AGN_LOG L
+               WHERE L.AGN_IN_CODIGO = A.AGN_IN_CODIGO_NEW AND L.LOG_CH_PARA = 'S'
+                 AND L.LOG_DT_DATA BETWEEN O.ADO_DT_INCLUSAO - 5/1440 AND O.ADO_DT_INCLUSAO + 5/1440) AS USU_PORTAL
         FROM MEGA.A#GLO_AGENTESCMPESP A,
              MEGA.ADT_OCORRENCIA      O,
              MEGA.GLO_AGENTES         G,
@@ -120,7 +130,9 @@ export default async function inadimplenciaRoutes(app) {
       usu_id:  Number(r.USU),
       usuario: r.USUARIO || `usuario ${r.USU}`,
       agn_id:  Number(r.AGN),
-      cliente: r.CLIENTE || `Cliente ${r.AGN}`
+      cliente: r.CLIENTE || `Cliente ${r.AGN}`,
+      motivo:  r.MOTIVO || '',
+      usuario_portal: r.USU_PORTAL || ''
     }));
     return { data, total: itens.length, itens };
   });
@@ -159,6 +171,10 @@ export default async function inadimplenciaRoutes(app) {
              TRUNC(SYSDATE) - TRUNC(C.MOV_DT_PRORROGADO)       AS DIAS,
              C.HCOB_IN_SEQUENCIA                               AS FORMA_ID,
              SUBSTR(C.HCOB_ST_DESCRICAO,1,60)                  AS FORMA,
+             -- [09/10/2026 - Alexandre Carvalho] segmento da filial (IND/VAR/CD/DIST/SERV) - mesma
+             -- tabela do BI Fechamento (CCS_TB_GFIN_BI_EMPRESA). Filial fora do cadastro = '(sem)'
+             (SELECT MAX(E.EMP_ST_SEGMENTO) FROM MEGA.CCS_TB_GFIN_BI_EMPRESA E
+               WHERE E.FIL_IN_CODIGO = C.FIL_IN_CODIGO)         AS SEG,
              (SELECT SUBSTR(NVL(O.ORG_ST_FANTASIA, O.ORG_ST_NOME),1,40)
                 FROM MEGA.GLO_VW_ORGANIZACAO O
                WHERE O.ORG_IN_CODIGO = C.FIL_IN_CODIGO AND ROWNUM = 1) AS FIL_NOME,
@@ -195,6 +211,7 @@ export default async function inadimplenciaRoutes(app) {
         cliente:     r.CLIENTE || `Cliente ${agn}`,
         fil_id:      Number(r.FIL || 0),
         fil_nome:    r.FIL_NOME || '',
+        segmento:    r.SEG || '(sem)',   // [09/10/2026 - Alexandre Carvalho] IND x VAR
         // [21/09/2026 - Alexandre Carvalho] forma de recebimento; titulo sem forma vira '(sem forma)'
         forma_id:    r.FORMA_ID ? Number(r.FORMA_ID) : null,
         forma:       (r.FORMA || '').trim() || '(sem forma)',

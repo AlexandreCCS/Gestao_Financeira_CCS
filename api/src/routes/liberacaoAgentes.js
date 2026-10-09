@@ -114,16 +114,21 @@ export default async function liberacaoAgentesRoutes(app) {
   });
 
   // Libera o agente (flag 'S' — vale ate o reset diario das 03:00) + log
+  // [09/10/2026 - Alexandre Carvalho] pedido do financeiro: justificativa OBRIGATORIA no desbloqueio
+  // (para aparecer no BI). Minimo 5 caracteres uteis; a revogacao continua com motivo opcional.
   app.post('/liberacao-agentes/liberar', {
     ...guard,
     schema: {
       body: {
-        type: 'object', required: ['agn'],
-        properties: { agn: { type: 'number' }, motivo: { type: 'string', maxLength: 200 } }
+        type: 'object', required: ['agn', 'motivo'],
+        properties: { agn: { type: 'number' }, motivo: { type: 'string', minLength: 5, maxLength: 200 } }
       }
     }
   }, async (req, reply) => {
     const { agn, motivo } = req.body;
+    if (String(motivo || '').trim().length < 5) {
+      return reply.code(400).send({ error: 'Informe a justificativa do desbloqueio (mínimo 5 caracteres).' });
+    }
     try {
       await megaExec(`
         DECLARE
@@ -213,8 +218,15 @@ export default async function liberacaoAgentesRoutes(app) {
   });
 
   // Historico de liberacoes/revogacoes
+  // [09/10/2026 - Alexandre Carvalho] periodo livre (ini/fim AAAA-MM-DD); sem eles, "ultimos N dias" como antes
   app.get('/liberacao-agentes/historico', guard, async (req) => {
     const dias = Math.min(Math.max(num(req.query.dias) || 30, 1), 365);
+    const RX = /^\d{4}-\d{2}-\d{2}$/;
+    const ini = RX.test(req.query.ini || '') ? req.query.ini : null;
+    const fim = RX.test(req.query.fim || '') ? req.query.fim : null;
+    const filtroData = ini || fim
+      ? `L.LOG_DT_DATA >= TO_DATE('${ini || '2000-01-01'}','YYYY-MM-DD') AND L.LOG_DT_DATA < TO_DATE('${fim || '2999-12-31'}','YYYY-MM-DD') + 1`
+      : `L.LOG_DT_DATA >= TRUNC(SYSDATE) - ${dias}`;
     const rows = await megaQuery(`
       SELECT * FROM (
         SELECT L.LOG_IN_CODIGO                              AS ID,
@@ -227,9 +239,9 @@ export default async function liberacaoAgentesRoutes(app) {
                L.LOG_ST_USU                                 AS USU,
                TO_CHAR(L.LOG_DT_DATA, 'YYYY-MM-DD HH24:MI') AS DT
           FROM MEGA.CCS_TB_GFIN_LIBERA_AGN_LOG L
-         WHERE L.LOG_DT_DATA >= TRUNC(SYSDATE) - ${dias}
+         WHERE ${filtroData}
          ORDER BY L.LOG_IN_CODIGO DESC)
-       WHERE ROWNUM <= 500`);
+       WHERE ROWNUM <= 2000`);
     return {
       eventos: rows.map(r => ({
         id:      num(r.ID),

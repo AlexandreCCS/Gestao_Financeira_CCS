@@ -195,5 +195,5 @@ export const api = {
     req('/liberacao-agentes/liberar', { method: 'POST', body: JSON.stringify(dados) }),
   liberacaoAgnRevogar: (dados) =>
     req('/liberacao-agentes/revogar', { method: 'POST', body: JSON.stringify(dados) }),
-  liberacaoAgnHistorico: (dias) => req(`/liberacao-agentes/historico?dias=${dias || 30}`)
+  liberacaoAgnHistorico: (dias, ini, fim) => req(`/liberacao-agentes/historico?dias=${dias || 30}${ini ? `&ini=${ini}` : ''}${fim ? `&fim=${fim}` : ''}`)
 };

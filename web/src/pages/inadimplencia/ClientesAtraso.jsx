@@ -5,7 +5,7 @@
 // hardcoded) e clientes em grupo de credito isento (GCR_ST_NAOBLOQUEIA='S').
 // Esses ficam ocultos por padrao - ha um toggle para inclui-los. Export Excel.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Filter, FileSpreadsheet, Search, AlertTriangle, Users, Clock, ShieldOff } from 'lucide-react';
+import { Filter, FileSpreadsheet, Search, AlertTriangle, Users, Clock, ShieldOff, ChevronUp, ChevronDown } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { api } from '../../api/client';
 
@@ -32,6 +32,36 @@ const SEGMENTOS = [
   { k: 'geral',       l: 'Todos' }
 ];
 
+// [09/10/2026 - Alexandre Carvalho] Segmento da FILIAL (CCS_TB_GFIN_BI_EMPRESA, a mesma do BI Fechamento).
+// Nao confundir com o "Segmento" acima (codigo de acao / receita).
+const SEG_NOME = { IND: 'Indústria', VAR: 'Varejo', CD: 'CD', DIST: 'Distribuidora', SERV: 'Serviços', '(sem)': 'Sem segmento' };
+const segLabel = k => (SEG_NOME[k] ? `${k} - ${SEG_NOME[k]}` : k);
+
+// [09/10/2026 - Alexandre Carvalho] Ordenacao por coluna (pedido do financeiro: "nao consigo ordenar por
+// cliente, vencimento, valor"). Mesmo padrao do LiberacaoBaixa (SORTS + Th).
+const SORTS = {
+  cliente:   t => (t.cliente || '').toLowerCase(),
+  fil_id:    t => t.fil_id,
+  segmento:  t => t.segmento,
+  documento: t => t.documento,
+  tipo:      t => t.tipo,
+  forma:     t => (t.forma || '').toLowerCase(),
+  vencto:    t => t.prorrogado || t.vencto || '',
+  dias:      t => t.dias_atraso,
+  saldo:     t => t.saldo
+};
+const SORTS_CLI = {
+  cliente: c => (c.cliente || '').toLowerCase(),
+  total:   c => c.total,
+  qt:      c => c.qt,
+  atraso:  c => Math.max(...c.formas.map(f => f.maior_atraso))
+};
+const ordena = (arr, ex, asc) => [...arr].sort((a, b) => {
+  const va = ex(a), vb = ex(b);
+  const c = va < vb ? -1 : va > vb ? 1 : 0;
+  return asc ? c : -c;
+});
+
 export default function ClientesAtraso() {
   const [resp,     setResp]     = useState(null);
   const [busy,     setBusy]     = useState(true);
@@ -47,7 +77,12 @@ export default function ClientesAtraso() {
   const [dtFim,  setDtFim]  = useState('');         // vencimento ate ('' = sem limite)
   const [filial, setFilial] = useState('todas');
   const [forma,  setForma]  = useState('todas');
-  const [visao,  setVisao]  = useState('titulos');  // 'titulos' | 'clientes'
+  const [visao,  setVisao]  = useState('titulos');  // 'titulos' | 'clientes' | 'segmentos'
+  const [seg,    setSeg]    = useState('todos');    // [09/10/2026] IND x VAR (segmento da filial)
+  const [sort,    setSort]    = useState({ k: 'saldo', asc: false });   // grade de titulos
+  const [sortCli, setSortCli] = useState({ k: 'total', asc: false });   // grade cliente x forma
+  const alternaSort    = k => setSort(s => s.k === k ? { k, asc: !s.asc } : { k, asc: k === 'cliente' || k === 'documento' });
+  const alternaSortCli = k => setSortCli(s => s.k === k ? { k, asc: !s.asc } : { k, asc: k === 'cliente' });
 
   async function carregar() {
     setBusy(true); setErro('');
@@ -59,14 +94,16 @@ export default function ClientesAtraso() {
 
   // [21/09/2026 - Alexandre Carvalho] opcoes dos selects saem dos proprios titulos (com contagem)
   const opcoes = useMemo(() => {
-    const fil = new Map(), frm = new Map();
+    const fil = new Map(), frm = new Map(), sgs = new Map();
     for (const t of resp?.titulos || []) {
+      sgs.set(t.segmento, (sgs.get(t.segmento) || 0) + 1);
       const f = fil.get(t.fil_id) || { id: t.fil_id, nome: t.fil_nome, qt: 0 }; f.qt++; fil.set(t.fil_id, f);
       const m = frm.get(t.forma)  || { nome: t.forma, qt: 0 };                  m.qt++; frm.set(t.forma, m);
     }
     return {
       filiais: [...fil.values()].sort((a, b) => a.id - b.id),
-      formas:  [...frm.values()].sort((a, b) => b.qt - a.qt)
+      formas:  [...frm.values()].sort((a, b) => b.qt - a.qt),
+      segmentos: [...sgs.entries()].map(([k, qt]) => ({ k, qt })).sort((a, b) => b.qt - a.qt)
     };
   }, [resp]);
 
@@ -79,13 +116,14 @@ export default function ClientesAtraso() {
       const venc = t.prorrogado || t.vencto || '';
       if (dtIni && venc < dtIni) return false;
       if (dtFim && venc > dtFim) return false;
+      if (seg !== 'todos' && t.segmento !== seg) return false;
       if (filial !== 'todas' && String(t.fil_id) !== filial) return false;
       if (forma  !== 'todas' && t.forma !== forma) return false;
       return true;
     });
-  }, [resp, dtIni, dtFim, filial, forma]);
+  }, [resp, dtIni, dtFim, filial, forma, seg]);
 
-  const filtroAtivo = !!(dtIni || dtFim || filial !== 'todas' || forma !== 'todas');
+  const filtroAtivo = !!(dtIni || dtFim || filial !== 'todas' || forma !== 'todas' || seg !== 'todos');
 
   const linhas = useMemo(() => {
     if (!resp) return [];
@@ -100,8 +138,8 @@ export default function ClientesAtraso() {
         (t.documento || '').toLowerCase().includes(q)
       );
     }
-    return arr;
-  }, [resp, universo, incluirIsentos, faixa, busca]);
+    return ordena(arr, SORTS[sort.k] || SORTS.saldo, sort.asc);
+  }, [resp, universo, incluirIsentos, faixa, busca, sort]);
 
   const totalFiltrado = useMemo(() => linhas.reduce((s, t) => s + t.saldo, 0), [linhas]);
 
@@ -116,8 +154,22 @@ export default function ClientesAtraso() {
       f.qt++; f.saldo += t.saldo; f.maior_atraso = Math.max(f.maior_atraso, t.dias_atraso);
       c.formas.set(t.forma, f); cli.set(t.agn_id, c);
     }
-    return [...cli.values()].sort((a, b) => b.total - a.total)
-      .map(c => ({ ...c, formas: [...c.formas.values()].sort((a, b) => b.saldo - a.saldo) }));
+    const arr = [...cli.values()].map(c => ({ ...c, formas: [...c.formas.values()].sort((a, b) => b.saldo - a.saldo) }));
+    return ordena(arr, SORTS_CLI[sortCli.k] || SORTS_CLI.total, sortCli.asc);
+  }, [linhas, sortCli]);
+
+  // [09/10/2026 - Alexandre Carvalho] Visao SEGMENTO x FILIAL: subtotal por segmento (IND/VAR/...) com as filiais dentro
+  const porSegmento = useMemo(() => {
+    const sm = new Map();
+    for (const t of linhas) {
+      const s = sm.get(t.segmento) || { seg: t.segmento, total: 0, qt: 0, clientes: new Set(), filiais: new Map() };
+      s.total += t.saldo; s.qt++; s.clientes.add(t.agn_id);
+      const f = s.filiais.get(t.fil_id) || { fil_id: t.fil_id, fil_nome: t.fil_nome, total: 0, qt: 0, clientes: new Set(), v90: 0 };
+      f.total += t.saldo; f.qt++; f.clientes.add(t.agn_id); if (t.faixa === 'd90p') f.v90 += t.saldo;
+      s.filiais.set(t.fil_id, f); sm.set(t.segmento, s);
+    }
+    return [...sm.values()].sort((a, b) => b.total - a.total)
+      .map(s => ({ ...s, filiais: [...s.filiais.values()].sort((a, b) => b.total - a.total) }));
   }, [linhas]);
 
   // KPIs sobre o UNIVERSO (mesma regra do servidor: so quem a regra bloqueia; isentos a parte).
@@ -136,7 +188,17 @@ export default function ClientesAtraso() {
   function exportXlsx() {
     const wb = XLSX.utils.book_new();
     // [21/09/2026 - Alexandre Carvalho] exporta a visao que esta na tela; a aba de titulos ganhou Filial (nome) e Forma
-    if (visao === 'clientes') {
+    if (visao === 'segmentos') {
+      const dados = porSegmento.flatMap(sg => [
+        { Segmento: segLabel(sg.seg), Filial: 'TOTAL', 'Nome da filial': '', Clientes: sg.clientes.size, 'Títulos': sg.qt,
+          'Vencidos 90+': sg.filiais.reduce((s, f) => s + f.v90, 0), 'Saldo em atraso': sg.total },
+        ...sg.filiais.map(f => ({ Segmento: segLabel(sg.seg), Filial: f.fil_id, 'Nome da filial': f.fil_nome, Clientes: f.clientes.size,
+          'Títulos': f.qt, 'Vencidos 90+': f.v90, 'Saldo em atraso': f.total }))
+      ]);
+      const ws = XLSX.utils.json_to_sheet(dados);
+      ws['!cols'] = [ {wch:22},{wch:8},{wch:30},{wch:10},{wch:9},{wch:16},{wch:16} ];
+      XLSX.utils.book_append_sheet(wb, ws, 'Segmento x Filial');
+    } else if (visao === 'clientes') {
       const dados = grupos.flatMap(c => c.formas.map(f => ({
         'Cód. Cliente':        c.agn_id,
         Cliente:               c.cliente,
@@ -156,6 +218,7 @@ export default function ClientesAtraso() {
         Cliente:          t.cliente,
         Filial:           t.fil_id,
         'Nome da filial': t.fil_nome,
+        Segmento:         segLabel(t.segmento),
         Documento:        t.documento,
         Parcela:          t.parcela,
         Tipo:             t.tipo,
@@ -167,10 +230,10 @@ export default function ClientesAtraso() {
         'Isento do bloqueio': t.isento ? (ISENTO_LABEL[t.isento_motivo] || 'Sim') : 'Não'
       }));
       const ws = XLSX.utils.json_to_sheet(dados);
-      ws['!cols'] = [ {wch:12},{wch:48},{wch:8},{wch:28},{wch:14},{wch:8},{wch:10},{wch:30},{wch:12},{wch:16},{wch:14},{wch:16},{wch:18} ];
+      ws['!cols'] = [ {wch:12},{wch:48},{wch:8},{wch:28},{wch:20},{wch:14},{wch:8},{wch:10},{wch:30},{wch:12},{wch:16},{wch:14},{wch:16},{wch:18} ];
       XLSX.utils.book_append_sheet(wb, ws, 'Clientes em Atraso');
     }
-    XLSX.writeFile(wb, `clientes-em-atraso-${visao === 'clientes' ? 'por-cliente-' : ''}${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb, `clientes-em-atraso-${visao === 'clientes' ? 'por-cliente-' : visao === 'segmentos' ? 'por-segmento-' : ''}${new Date().toISOString().slice(0,10)}.xlsx`);
   }
 
   return (
@@ -213,10 +276,19 @@ export default function ClientesAtraso() {
             <input type="date" className="input mt-1" value={dtFim} min={dtIni || undefined} onChange={e => setDtFim(e.target.value)} />
           </label>
           <label className="block">
+            <span className="text-xs text-gray-300">Indústria × Varejo</span>
+            <select className="input mt-1" value={seg} onChange={e => { setSeg(e.target.value); setFilial('todas'); }}>
+              <option value="todos">Todos os segmentos</option>
+              {opcoes.segmentos.map(s => (
+                <option key={s.k} value={s.k}>{segLabel(s.k)} ({fmtN(s.qt)})</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
             <span className="text-xs text-gray-300">Filial</span>
             <select className="input mt-1" value={filial} onChange={e => setFilial(e.target.value)}>
               <option value="todas">Todas</option>
-              {opcoes.filiais.map(f => (
+              {opcoes.filiais.filter(f => seg === 'todos' || (resp.titulos.find(t => t.fil_id === f.id) || {}).segmento === seg).map(f => (
                 <option key={f.id} value={String(f.id)}>{f.id}{f.nome ? ` - ${f.nome}` : ''} ({fmtN(f.qt)})</option>
               ))}
             </select>
@@ -231,7 +303,7 @@ export default function ClientesAtraso() {
             </select>
           </label>
           {filtroAtivo && (
-            <button className="btn-ghost mb-0.5" onClick={() => { setDtIni(''); setDtFim(''); setFilial('todas'); setForma('todas'); }}>
+            <button className="btn-ghost mb-0.5" onClick={() => { setDtIni(''); setDtFim(''); setFilial('todas'); setForma('todas'); setSeg('todos'); }}>
               Limpar filtros
             </button>
           )}
@@ -263,7 +335,7 @@ export default function ClientesAtraso() {
           <div className="bg-ink-900 px-4 py-3 border-b border-ink-700 flex flex-wrap gap-2 items-center">
             {/* [21/09/2026 - Alexandre Carvalho] visao por titulo ou agrupada cliente x forma de recebimento */}
             <div className="flex gap-1 mr-2">
-              {[{ k: 'titulos', l: 'Títulos' }, { k: 'clientes', l: 'Por cliente × forma' }].map(v => (
+              {[{ k: 'titulos', l: 'Títulos' }, { k: 'clientes', l: 'Por cliente × forma' }, { k: 'segmentos', l: 'Por segmento × filial' }].map(v => (
                 <button key={v.k}
                   className={`px-3 py-1 rounded text-sm font-semibold transition
                     ${visao === v.k ? 'bg-prim-600 text-white' : 'bg-ink-800 hover:bg-ink-700 text-gray-300'}`}
@@ -310,11 +382,11 @@ export default function ClientesAtraso() {
               <table className="w-full text-sm">
                 <thead className="bg-ink-900/70 text-gray-400 uppercase text-xs sticky top-0">
                   <tr>
-                    <th className="text-left p-2 pl-4">Cliente</th>
-                    <th className="text-right p-2">Total do cliente</th>
+                    <Th k="cliente" sort={sortCli} onSort={alternaSortCli} className="text-left pl-4">Cliente</Th>
+                    <Th k="total" sort={sortCli} onSort={alternaSortCli} className="text-right">Total do cliente</Th>
                     <th className="text-left p-2 pl-6">Forma de recebimento</th>
-                    <th className="text-right p-2">Títulos</th>
-                    <th className="text-right p-2">Maior atraso</th>
+                    <Th k="qt" sort={sortCli} onSort={alternaSortCli} className="text-right">Títulos</Th>
+                    <Th k="atraso" sort={sortCli} onSort={alternaSortCli} className="text-right">Maior atraso</Th>
                     <th className="text-right p-2 pr-4">Saldo na forma</th>
                   </tr>
                 </thead>
@@ -359,19 +431,67 @@ export default function ClientesAtraso() {
             </div>
           )}
 
+          {/* [09/10/2026 - Alexandre Carvalho] Visao SEGMENTO x FILIAL (IND x VAR) com subtotais */}
+          {visao === 'segmentos' && (
+            <div className="overflow-auto max-h-[58vh]">
+              <table className="w-full text-sm">
+                <thead className="bg-ink-900/70 text-gray-400 uppercase text-xs sticky top-0">
+                  <tr>
+                    <th className="text-left p-2 pl-4">Segmento / Filial</th>
+                    <th className="text-right p-2">Clientes</th>
+                    <th className="text-right p-2">Títulos</th>
+                    <th className="text-right p-2">Vencidos 90+</th>
+                    <th className="text-right p-2">% do total</th>
+                    <th className="text-right p-2 pr-4">Saldo em atraso</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {porSegmento.map(sg => (
+                    <React.Fragment key={sg.seg}>
+                      <tr className="border-t-2 border-ink-600 bg-ink-800/60">
+                        <td className="p-2 pl-4 font-semibold text-prim-300">{segLabel(sg.seg)}</td>
+                        <td className="p-2 text-right font-mono text-gray-300">{fmtN(sg.clientes.size)}</td>
+                        <td className="p-2 text-right font-mono text-gray-300">{fmtN(sg.qt)}</td>
+                        <td className="p-2 text-right font-mono text-gray-300">{fmt(sg.filiais.reduce((s, f) => s + f.v90, 0))}</td>
+                        <td className="p-2 text-right font-mono text-gray-300">{totalFiltrado > 0 ? (sg.total / totalFiltrado * 100).toFixed(1) : '0.0'}%</td>
+                        <td className="p-2 pr-4 text-right font-mono font-bold text-rose-300">{fmt(sg.total)}</td>
+                      </tr>
+                      {sg.filiais.map(f => (
+                        <tr key={`${sg.seg}-${f.fil_id}`} className="border-t border-ink-700 hover:bg-ink-800/40">
+                          <td className="p-2 pl-10 text-xs text-gray-300"><span className="font-mono text-gray-400">{f.fil_id}</span>{f.fil_nome ? ` - ${f.fil_nome}` : ''}</td>
+                          <td className="p-2 text-right font-mono text-xs text-gray-400">{fmtN(f.clientes.size)}</td>
+                          <td className="p-2 text-right font-mono text-xs text-gray-400">{fmtN(f.qt)}</td>
+                          <td className="p-2 text-right font-mono text-xs text-gray-400">{fmt(f.v90)}</td>
+                          <td className="p-2 text-right font-mono text-xs text-gray-400">{totalFiltrado > 0 ? (f.total / totalFiltrado * 100).toFixed(1) : '0.0'}%</td>
+                          <td className="p-2 pr-4 text-right font-mono text-rose-300">{fmt(f.total)}</td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))}
+                  {porSegmento.length === 0 && (
+                    <tr><td colSpan={6} className="p-8 text-center text-gray-500">
+                      {busy ? 'Carregando...' : 'Nenhum título no filtro selecionado.'}
+                    </td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {visao === 'titulos' && (
           <div className="overflow-auto max-h-[58vh]">
             <table className="w-full text-sm">
               <thead className="bg-ink-900/70 text-gray-400 uppercase text-xs sticky top-0">
                 <tr>
-                  <th className="text-left p-2 pl-4">Cliente</th>
-                  <th className="text-center p-2">Filial</th>
-                  <th className="text-left p-2">Documento</th>
-                  <th className="text-left p-2">Tipo</th>
-                  <th className="text-left p-2">Forma receb.</th>
-                  <th className="text-center p-2">Vencimento</th>
-                  <th className="text-right p-2">Dias atraso</th>
-                  <th className="text-right p-2 pr-4">Saldo em aberto</th>
+                  <Th k="cliente"   sort={sort} onSort={alternaSort} className="text-left pl-4">Cliente</Th>
+                  <Th k="fil_id"    sort={sort} onSort={alternaSort} className="text-center">Filial</Th>
+                  <Th k="segmento"  sort={sort} onSort={alternaSort} className="text-center">Seg.</Th>
+                  <Th k="documento" sort={sort} onSort={alternaSort} className="text-left">Documento</Th>
+                  <Th k="tipo"      sort={sort} onSort={alternaSort} className="text-left">Tipo</Th>
+                  <Th k="forma"     sort={sort} onSort={alternaSort} className="text-left">Forma receb.</Th>
+                  <Th k="vencto"    sort={sort} onSort={alternaSort} className="text-center">Vencimento</Th>
+                  <Th k="dias"      sort={sort} onSort={alternaSort} className="text-right">Dias atraso</Th>
+                  <Th k="saldo"     sort={sort} onSort={alternaSort} className="text-right pr-4">Saldo em aberto</Th>
                 </tr>
               </thead>
               <tbody>
@@ -389,6 +509,7 @@ export default function ClientesAtraso() {
                       <div className="text-xs text-gray-500 font-mono">cód. {t.agn_id}</div>
                     </td>
                     <td className="p-2 text-center font-mono text-xs text-gray-400" title={t.fil_nome || ''}>{t.fil_id}</td>
+                    <td className="p-2 text-center text-[11px] text-gray-400" title={SEG_NOME[t.segmento] || ''}>{t.segmento}</td>
                     <td className="p-2 font-mono text-xs text-gray-300">
                       {t.documento}{t.parcela ? <span className="text-gray-500">/{t.parcela}</span> : ''}
                     </td>
@@ -408,7 +529,7 @@ export default function ClientesAtraso() {
                   </tr>
                 ))}
                 {linhas.length === 0 && (
-                  <tr><td colSpan={8} className="p-8 text-center text-gray-500">
+                  <tr><td colSpan={9} className="p-8 text-center text-gray-500">
                     {busy ? 'Carregando...' : 'Nenhum título no filtro selecionado.'}
                   </td></tr>
                 )}
@@ -437,5 +558,19 @@ function Kpi({ icon, label, value, sub, color = 'prim' }) {
       <div className={`kpi-value ${c.text}`}>{value}</div>
       {sub && <div className="text-xs text-gray-500 mt-0.5">{sub}</div>}
     </div>
+  );
+}
+
+// [09/10/2026 - Alexandre Carvalho] cabecalho clicavel (mesmo do LiberacaoBaixa)
+function Th({ k, sort, onSort, className = '', children }) {
+  const ativo = sort.k === k;
+  return (
+    <th className={`p-2 select-none cursor-pointer whitespace-nowrap hover:text-gray-200 ${className}`}
+        onClick={() => onSort(k)} title="Clique para ordenar">
+      <span className="inline-flex items-center gap-0.5">
+        {children}
+        {ativo && (sort.asc ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+      </span>
+    </th>
   );
 }

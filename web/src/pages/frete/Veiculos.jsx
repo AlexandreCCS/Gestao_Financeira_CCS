@@ -4,15 +4,20 @@
 // Quality: são informação do Gestor (CCS_TB_GFIN_VEICULO), marcada Sim/Não na própria linha; a propriedade vem do
 // cadastro do Mega e, quando ele não diz, pode ser informada no Gestor (painel de detalhe). O cadastro do ERP não muda.
 // Etiquetas: PRÓPRIO / TERCEIRO / NÃO IDENTIFICADO · CONTROLADO: SIM/NÃO/NI · POSTO PRÓPRIO: SIM/NÃO/NI.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Truck, Search, Download, Info, AlertTriangle, X, ChevronLeft, ChevronRight, Building2, Users, Fuel, Droplets, Ban, HelpCircle
+  Truck, Search, Download, Info, AlertTriangle, X, ChevronLeft, ChevronRight, Building2, Users, Fuel, Droplets, Ban, HelpCircle,
+  Settings2, History, CheckCircle2
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { api } from '../../api/client';
 
 const fmtN  = v => Number(v || 0).toLocaleString('pt-BR');
+const fmt   = v => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtBr = s => (s ? s.slice(0, 10).split('-').reverse().join('/') : '—');
+const fmtBrHr = s => (s ? `${s.slice(0, 10).split('-').reverse().join('/')} ${s.slice(11, 16)}` : '—');
+// aceita "350", "350,50", "1.250,00"
+const parseBrl = s => { const t = String(s).trim().replace(/\./g, '').replace(',', '.'); if (t === '') return null; const n = Number(t); return Number.isFinite(n) ? Math.round(n * 100) / 100 : NaN; };
 const POR_PAG = 50;
 
 // valor de etiqueta: 'S' | 'N' | 'NI' (não identificado)
@@ -33,9 +38,13 @@ export default function Veiculos() {
   const [verLimites, setVerLimites] = useState(true);
   const [detalhe, setDetalhe] = useState(null);   // veículo com o painel de detalhes aberto
   const [gravando, setGravando] = useState('');   // `${seq}:${campo}` em gravação
+  const [modalParam, setModalParam] = useState(false);
+  const [param, setParam] = useState(null);       // { posto_padrao, ... }
 
+  const carregaParam = () => api.veiculosParametros().then(setParam).catch(() => setParam(null));
   useEffect(() => {
     api.veiculos().then(setDados).catch(() => { setDados({ veiculos: [], limitacoes: {} }); setErro('Falha ao carregar os veículos.'); });
+    carregaParam();
   }, []);
 
   // Grava uma informação do Gestor (combustível, posto próprio, propriedade) e reflete na lista sem recarregar tudo.
@@ -53,6 +62,11 @@ export default function Veiculos() {
           const n = { ...x, gestor: { ...x.gestor, em, por: 'você' } };
           if (campo === 'COMBUSTIVEL')   n.combustivel   = valor === 'S' ? true : valor === 'N' ? false : null;
           if (campo === 'POSTO_PROPRIO') n.posto_proprio = valor === 'S' ? true : valor === 'N' ? false : null;
+          if (campo === 'VALOR_COMBUSTIVEL') n.vale_valor = valor == null ? null : Number(valor);
+          if (campo === 'DESCONTA_FRETE') {
+            n.desconta_frete = valor || '';
+            n.desconta_efetivo = valor || (x.propriedade === 'TERCEIRO' ? 'S' : x.propriedade === 'PROPRIO' ? 'N' : '');
+          }
           if (campo === 'PROPRIEDADE') {
             n.gestor.propriedade = valor || '';
             if (x.propriedade_fonte !== 'MEGA') {
@@ -120,6 +134,7 @@ export default function Veiculos() {
       'Tipo (CCS/frete)': v.tipo_ccs || '', 'Carroceria': v.carroceria || '', 'UF': v.uf,
       'Propriedade': rotProp(v.propriedade), 'Motivo da propriedade': v.propriedade_motivo,
       'Combustível controlado': rotSn(sn(v.combustivel)), 'Posto próprio': rotSn(sn(v.posto_proprio)),
+      'Vale-combustível (R$)': v.vale_valor ?? '', 'Desconta do frete': v.desconta_efetivo === 'S' ? 'Sim' : v.desconta_efetivo === 'N' ? 'Não' : '',
       'Romaneios 12 meses': v.rom_12m, 'Romaneios (total)': v.rom_total, 'Último romaneio': fmtBr(v.ult_rom),
       'Tara': v.tara ?? '', 'Cap. kg': v.capkg ?? '', 'Cap. m³': v.capm3 ?? '', 'RENAVAM': v.renavam
     }));
@@ -139,13 +154,17 @@ export default function Veiculos() {
             <Truck size={20} className="text-prim-400" /> Veículos
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            Frota cadastrada no Mega (VEN_VEICULO + campos específicos). Combustível e posto próprio são marcados aqui, no Gestor;
-            nada é alterado no ERP.
+            Frota cadastrada no Mega (VEN_VEICULO + campos específicos). Combustível, posto próprio e vale-combustível são marcados
+            aqui, no Gestor; nada é alterado no ERP.
+            {param && <> Posto padrão do vale: <b className="text-gray-300">{param.posto_padrao ? `${param.posto_padrao.agn} · ${param.posto_padrao.nome}` : 'não definido'}</b>.</>}
           </p>
         </div>
         <div className="flex gap-2">
           <button className="btn-ghost !py-1.5" onClick={() => setVerLimites(x => !x)} title="O que o Mega não tem">
             <Info size={14} /> Limitações
+          </button>
+          <button className="btn-ghost !py-1.5" onClick={() => setModalParam(true)} title="Posto padrão do vale-combustível">
+            <Settings2 size={14} /> Parâmetros
           </button>
           <button className="btn-ghost !py-1.5" onClick={exportar} disabled={!lista || filtrados.length === 0}>
             <Download size={14} /> Excel
@@ -242,13 +261,14 @@ export default function Veiculos() {
                 <th className="p-2 text-left">Propriedade</th>
                 <th className="p-2 text-left">Combustível</th>
                 <th className="p-2 text-left">Posto próprio</th>
+                <th className="p-2 text-left" title="Valor fixo do vale por viagem; abaixo, se desconta do frete (terceiro desconta, frota própria não, salvo exceção)">Vale-combustível</th>
                 <th className="p-2 text-left" title="Não há situação cadastral no Mega; mostra o uso em romaneios de expedição">Uso</th>
                 <th className="p-2"></th>
               </tr>
             </thead>
             <tbody>
-              {!lista && <tr><td colSpan={9} className="p-4 text-center text-gray-500">Carregando veículos…</td></tr>}
-              {lista && visiveis.length === 0 && <tr><td colSpan={9} className="p-4 text-center text-gray-500">Nenhum veículo com esses filtros.</td></tr>}
+              {!lista && <tr><td colSpan={10} className="p-4 text-center text-gray-500">Carregando veículos…</td></tr>}
+              {lista && visiveis.length === 0 && <tr><td colSpan={10} className="p-4 text-center text-gray-500">Nenhum veículo com esses filtros.</td></tr>}
               {visiveis.map(v => (
                 <tr key={v.seq} className="border-t border-ink-800 hover:bg-ink-800/40">
                   <td className="p-2">
@@ -269,6 +289,13 @@ export default function Veiculos() {
                   <td className="p-2">
                     <EtqSn prefixo="POSTO PRÓPRIO" valor={sn(v.posto_proprio)} />
                     <SimNao valor={v.posto_proprio} ocupado={gravando === `${v.seq}:POSTO_PROPRIO`} onChange={val => gravaCampo(v, 'POSTO_PROPRIO', val)} />
+                  </td>
+                  <td className="p-2">
+                    <ValeInput valor={v.vale_valor} ocupado={gravando === `${v.seq}:VALOR_COMBUSTIVEL`} onSave={val => gravaCampo(v, 'VALOR_COMBUSTIVEL', val)} />
+                    <div className="text-[10px] text-gray-500 mt-0.5">
+                      {v.desconta_efetivo === 'S' ? 'desconta do frete' : v.desconta_efetivo === 'N' ? 'não desconta' : 'desconta: defina a propriedade'}
+                      {v.desconta_frete ? ' (exceção)' : ''}
+                    </div>
                   </td>
                   <td className="p-2 text-xs text-gray-300">
                     {v.rom_total > 0
@@ -294,6 +321,120 @@ export default function Veiculos() {
       </div>
 
       {detalhe && <ModalDetalhe v={detalhe} onClose={() => setDetalhe(null)} gravando={gravando} gravaCampo={gravaCampo} />}
+      {modalParam && <ModalParametros onClose={(mudou) => { setModalParam(false); if (mudou) carregaParam(); }} />}
+    </div>
+  );
+}
+
+// Valor fixo do vale-combustível por viagem: digita, Enter ou sair do campo grava; vazio limpa
+function ValeInput({ valor, ocupado, onSave }) {
+  const [txt, setTxt] = useState(valor == null ? '' : Number(valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  useEffect(() => { setTxt(valor == null ? '' : Number(valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })); }, [valor]);
+  const salvar = () => {
+    const n = parseBrl(txt);
+    if (Number.isNaN(n)) { setTxt(valor == null ? '' : String(valor)); return; }
+    if ((n == null && valor == null) || (n != null && valor != null && Math.abs(n - valor) < 0.005)) return;
+    onSave(n);
+  };
+  return (
+    <div className={`flex items-center bg-ink-900 border border-ink-700 rounded px-1.5 w-28 focus-within:border-prim-500 ${ocupado ? 'opacity-50' : ''}`}>
+      <span className="text-[11px] text-gray-500 mr-1">R$</span>
+      <input value={txt} disabled={ocupado} inputMode="decimal" placeholder="—"
+             onChange={e => setTxt(e.target.value)} onBlur={salvar} onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+             className="w-full bg-transparent py-0.5 text-xs text-right font-mono outline-none" />
+    </div>
+  );
+}
+
+// Engrenagem da tela: posto padrão do vale-combustível (agente fornecedor do Mega). Salvar é restrito a administradores.
+function ModalParametros({ onClose }) {
+  const [info, setInfo] = useState(null);
+  const [busca, setBusca] = useState('');
+  const [lista, setLista] = useState(null);
+  const [escolhido, setEscolhido] = useState(null);
+  const [hist, setHist] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [erro, setErro] = useState('');
+  const [okMsg, setOkMsg] = useState('');
+  const mudou = useRef(false);
+
+  const carregaHist = () => api.veiculosParametrosHistorico().then(r => setHist(r.historico)).catch(() => setHist([]));
+  useEffect(() => {
+    api.veiculosParametros().then(r => { setInfo(r); setEscolhido(r.posto_padrao); }).catch(() => setErro('Não foi possível carregar os parâmetros.'));
+    carregaHist();
+  }, []);
+  useEffect(() => {
+    const q = busca.trim();
+    if (q.length < 2) { setLista(null); return; }
+    const t = setTimeout(() => api.veiculosFornecedores(q).then(r => setLista(r.fornecedores)).catch(() => setLista([])), 350);
+    return () => clearTimeout(t);
+  }, [busca]);
+
+  async function salvar(agn) {
+    setErro(''); setOkMsg(''); setBusy(true);
+    try {
+      await api.veiculosSalvarParametros({ posto_padrao_agn: agn });
+      mudou.current = true;
+      setOkMsg(agn ? 'Posto padrão salvo.' : 'Posto padrão removido.');
+      const r = await api.veiculosParametros(); setInfo(r); setEscolhido(r.posto_padrao);
+      carregaHist();
+    } catch (e) {
+      setErro(e.message === 'admin_only' ? 'Somente administradores podem alterar os parâmetros.' : (e.message || 'Erro ao salvar'));
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => onClose(mudou.current)}>
+      <div className="card w-full max-w-lg shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-900 rounded-t-lg">
+          <h2 className="font-semibold text-prim-400 flex items-center gap-2"><Settings2 size={16} /> Parâmetros</h2>
+          <button className="text-gray-500 hover:text-gray-200" onClick={() => onClose(mudou.current)}><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="space-y-2">
+            <label className="text-xs uppercase tracking-wider text-gray-400">Posto padrão do vale-combustível</label>
+            <div className="bg-ink-900/60 rounded-lg px-3 py-2 text-sm flex items-center gap-2">
+              <Fuel size={14} className="text-acc-500" />
+              {escolhido
+                ? <span className="text-gray-200">{escolhido.agn} · {escolhido.nome} <span className="text-gray-500 text-xs">{escolhido.cgc}</span></span>
+                : <span className="text-gray-500">não definido</span>}
+              {escolhido && <button className="ml-auto text-xs text-gray-500 hover:text-rose-400" disabled={busy} onClick={() => salvar(0)}>remover</button>}
+            </div>
+            <p className="text-xs text-gray-500">Agente <b>fornecedor</b> do Mega onde os veículos abastecem por padrão. Vai no recibo do vale.</p>
+            <div className="flex items-center gap-2 bg-ink-900 border border-ink-700 rounded-lg px-3 focus-within:border-prim-500">
+              <Search size={14} className="text-gray-500" />
+              <input className="bg-transparent outline-none py-2 text-sm w-full" placeholder="Buscar fornecedor por nome ou código…" value={busca} onChange={e => setBusca(e.target.value)} />
+            </div>
+            {lista && (
+              <div className="max-h-48 overflow-y-auto rounded-lg border border-ink-700 divide-y divide-ink-800">
+                {lista.length === 0 && <div className="text-xs text-gray-500 p-2">Nenhum fornecedor encontrado.</div>}
+                {lista.map(f => (
+                  <button key={f.agn} disabled={busy} className="w-full text-left px-3 py-1.5 text-xs hover:bg-ink-800 flex gap-2"
+                          onClick={() => { setBusca(''); setLista(null); salvar(f.agn); }}>
+                    <span className="font-mono text-gray-400 w-14 shrink-0">{f.agn}</span>
+                    <span className="text-gray-200 truncate">{f.nome}</span>
+                    <span className="text-gray-500 ml-auto whitespace-nowrap">{f.cgc}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {info?.alterado_em && <p className="text-[11px] text-gray-500">Última alteração: {fmtBrHr(info.alterado_em)}{info.alterado_por ? ` por ${info.alterado_por}` : ''}</p>}
+            {erro  && <div className="text-rose-300 text-xs bg-rose-900/30 rounded p-2">{erro}</div>}
+            {okMsg && <div className="text-prim-300 text-xs bg-prim-600/15 rounded p-2 flex items-center gap-1.5"><CheckCircle2 size={14} /> {okMsg}</div>}
+          </div>
+          <div>
+            <div className="text-xs uppercase tracking-wider text-gray-400 mb-1.5 flex items-center gap-1.5"><History size={13} /> Histórico de alterações {hist && hist.length > 0 && `(${hist.length})`}</div>
+            {!hist && <div className="text-xs text-gray-500">carregando…</div>}
+            {hist && hist.length === 0 && <div className="text-xs text-gray-500">Nenhuma alteração registrada.</div>}
+            {hist && hist.slice(0, 8).map((h, i) => (
+              <div key={i} className="bg-ink-900/60 rounded-lg px-3 py-2 text-xs flex items-center gap-3 mb-1">
+                <span className="font-mono text-gray-200 truncate">{h.de || '—'} <span className="text-gray-500">→</span> <span className="text-prim-400 font-semibold">{h.para}</span></span>
+                <span className="text-gray-500 whitespace-nowrap ml-auto">por {h.usuario} · {fmtBrHr(h.quando)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -390,6 +531,21 @@ function ModalDetalhe({ v, onClose, gravando, gravaCampo }) {
                   </span>} />
             <L k="Combustível controlado" c={<SimNao valor={v.combustivel} ocupado={gravando === `${v.seq}:COMBUSTIVEL`} onChange={val => gravaCampo(v, 'COMBUSTIVEL', val)} />} />
             <L k="Posto próprio" c={<SimNao valor={v.posto_proprio} ocupado={gravando === `${v.seq}:POSTO_PROPRIO`} onChange={val => gravaCampo(v, 'POSTO_PROPRIO', val)} />} />
+            <L k="Vale-combustível por viagem" c={<ValeInput valor={v.vale_valor} ocupado={gravando === `${v.seq}:VALOR_COMBUSTIVEL`} onSave={val => gravaCampo(v, 'VALOR_COMBUSTIVEL', val)} />} />
+            <L k="Desconta do frete" c={
+              <span className="inline-flex items-center gap-2">
+                <span className="inline-flex rounded overflow-hidden border border-ink-700">
+                  {[['S', 'Sim'], ['N', 'Não']].map(([val, rot]) => (
+                    <button key={val} disabled={!!gravando || v.desconta_frete === val}
+                            className={`px-2 py-0.5 text-[11px] font-semibold ${v.desconta_frete === val ? (val === 'S' ? 'bg-prim-600 text-white' : 'bg-rose-600 text-white') : 'bg-ink-800 text-gray-400 hover:bg-ink-700'}`}
+                            onClick={() => gravaCampo(v, 'DESCONTA_FRETE', val)}>{rot}</button>
+                  ))}
+                  {v.desconta_frete && <button className="px-2 py-0.5 text-[11px] bg-ink-800 text-gray-500 hover:text-gray-200" disabled={!!gravando} onClick={() => gravaCampo(v, 'DESCONTA_FRETE', null)} title="Voltar à regra padrão">×</button>}
+                </span>
+                <span className="text-gray-500 text-[11px]">
+                  {v.desconta_frete ? 'exceção marcada' : `regra padrão: ${v.desconta_efetivo === 'S' ? 'terceiro desconta' : v.desconta_efetivo === 'N' ? 'frota própria não desconta' : 'defina a propriedade'}`}
+                </span>
+              </span>} />
             {v.gestor?.em && <L k="Última marcação" c={`${fmtBrHr(v.gestor.em)} por ${v.gestor.por}`} />}
           </div>
           <div>

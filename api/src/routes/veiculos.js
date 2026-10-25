@@ -32,10 +32,22 @@ const num = v => Number(v || 0);
 const lit = (s, max) => String(s ?? '').slice(0, max).replace(/'/g, "''");
 const oraMsg = e => { const m = String(e?.message || e).match(/ORA-209\d\d:\s*([^\n]+)/); return m ? m[1].replace(/\s*ORA-\d+.*$/, '').trim() : null; };
 const CAMPOS = {
-  PROPRIEDADE:   { coluna: 'VEI_CH_PROPRIEDADE',   valores: ['P', 'T'] },
-  COMBUSTIVEL:   { coluna: 'VEI_CH_COMBUSTIVEL',   valores: ['S', 'N'] },
-  POSTO_PROPRIO: { coluna: 'VEI_CH_POSTO_PROPRIO', valores: ['S', 'N'] }
+  PROPRIEDADE:       { coluna: 'VEI_CH_PROPRIEDADE',       valores: ['P', 'T'] },
+  COMBUSTIVEL:       { coluna: 'VEI_CH_COMBUSTIVEL',       valores: ['S', 'N'] },
+  POSTO_PROPRIO:     { coluna: 'VEI_CH_POSTO_PROPRIO',     valores: ['S', 'N'] },
+  // [25/10/2026 - Alexandre Carvalho] vale-combustivel: valor FIXO por viagem (R$) e se desconta do frete (S/N; vazio = regra
+  // padrao: terceiro desconta, frota propria nao)
+  VALOR_COMBUSTIVEL: { coluna: 'VEI_RE_VALOR_COMBUSTIVEL', numerico: true },
+  DESCONTA_FRETE:    { coluna: 'VEI_CH_DESCONTA_FRETE',    valores: ['S', 'N'] }
 };
+const PARAM_POSTO = 'FRETE_POSTO_PADRAO_AGN';
+
+// preHandler: bloqueia quem nao for admin (mesmo padrao do admin.js)
+async function adminOnly(req, reply) {
+  if (req.user?.perm !== 'A') {
+    return reply.code(403).send({ error: 'admin_only', message: 'Acesso restrito a administradores do Gestor Financeiro CCS.' });
+  }
+}
 
 // dominios do Mega (comentarios das colunas em ALL_COL_COMMENTS)
 const RODADO = { '01': 'Truck', '02': 'Toco', '03': 'Cavalo Mecânico', '04': 'VAN', '05': 'Utilitário', '06': 'Outros' };
@@ -77,6 +89,8 @@ export default async function veiculosRoutes(app) {
              G.VEI_CH_PROPRIEDADE                                 AS G_PROP,
              G.VEI_CH_COMBUSTIVEL                                 AS G_COMB,
              G.VEI_CH_POSTO_PROPRIO                               AS G_POSTO,
+             G.VEI_RE_VALOR_COMBUSTIVEL                           AS G_VALOR,
+             G.VEI_CH_DESCONTA_FRETE                              AS G_DESC,
              G.VEI_ST_OBS                                         AS G_OBS,
              TO_CHAR(G.VEI_DT_ALTERACAO, 'YYYY-MM-DD HH24:MI')    AS G_EM,
              G.VEI_ST_USU                                         AS G_POR
@@ -144,6 +158,10 @@ export default async function veiculosRoutes(app) {
           combustivel:   r.G_COMB  === 'S' ? true : r.G_COMB  === 'N' ? false : null,
           posto_proprio: r.G_POSTO === 'S' ? true : r.G_POSTO === 'N' ? false : null,
           gestor: { propriedade: r.G_PROP || '', obs: r.G_OBS || '', em: r.G_EM || '', por: r.G_POR || '' },
+          // vale-combustivel (Gestor): valor fixo por viagem; desconta do frete = marcado no veiculo ou regra padrao pela propriedade
+          vale_valor:     r.G_VALOR == null || r.G_VALOR === '' ? null : num(r.G_VALOR),
+          desconta_frete: r.G_DESC || '',                                        // S | N | '' (padrao)
+          desconta_efetivo: r.G_DESC || (prop.valor === 'TERCEIRO' ? 'S' : prop.valor === 'PROPRIO' ? 'N' : ''),
           situacao:    null,                     // sem campo no Mega
           rom_12m:     num(r.ROM_12M),
           rom_total:   num(r.ROM_TOTAL),
@@ -160,27 +178,36 @@ export default async function veiculosRoutes(app) {
       params: { type: 'object', required: ['seq'], properties: { seq: { type: 'integer', minimum: 1 } } },
       body: { type: 'object', required: ['campo'],
               properties: { campo: { type: 'string', enum: Object.keys(CAMPOS) },
-                            valor: { type: ['string', 'null'], maxLength: 1 },
+                            valor: { type: ['string', 'number', 'null'], maxLength: 20 },
                             motivo: { type: 'string', maxLength: 200 } } }
     }
   }, async (req, reply) => {
     const seq = num(req.params.seq);
     const def = CAMPOS[req.body.campo];
-    const valor = req.body.valor ? String(req.body.valor).toUpperCase() : null;
-    if (valor && !def.valores.includes(valor)) return reply.code(400).send({ error: `Valor inválido para ${req.body.campo}: use ${def.valores.join(' ou ')}.` });
+    let valor = null, v = 'NULL';
+    if (def.numerico) {
+      if (req.body.valor !== null && req.body.valor !== '' && req.body.valor !== undefined) {
+        valor = Math.round(Number(req.body.valor) * 100) / 100;
+        if (!Number.isFinite(valor) || valor < 0 || valor > 99999) return reply.code(400).send({ error: `Valor inválido para ${req.body.campo}: informe um valor em reais.` });
+        v = String(valor);
+      }
+    } else {
+      valor = req.body.valor ? String(req.body.valor).toUpperCase() : null;
+      if (valor && !def.valores.includes(valor)) return reply.code(400).send({ error: `Valor inválido para ${req.body.campo}: use ${def.valores.join(' ou ')}.` });
+      v = valor ? `'${valor}'` : 'NULL';
+    }
     const motivo = String(req.body.motivo || '').trim();
-    const v = valor ? `'${valor}'` : 'NULL';
     try {
       await megaExec(`
         DECLARE
-          V_QTD NUMBER; V_DE VARCHAR2(1);
+          V_QTD NUMBER; V_DE VARCHAR2(60);
         BEGIN
           SELECT COUNT(*) INTO V_QTD FROM MEGA.VEN_VEICULO V WHERE V.VCL_IN_SEQUENCIA = ${seq};
           IF V_QTD = 0 THEN
             RAISE_APPLICATION_ERROR(-20921, 'VEICULO ${seq} NAO ENCONTRADO NO CADASTRO DO MEGA.');
           END IF;
-          SELECT MAX(G.${def.coluna}) INTO V_DE FROM MEGA.CCS_TB_GFIN_VEICULO G WHERE G.VCL_IN_SEQUENCIA = ${seq};
-          IF NVL(V_DE, '-') = NVL(${v}, '-') THEN
+          SELECT MAX(TO_CHAR(G.${def.coluna})) INTO V_DE FROM MEGA.CCS_TB_GFIN_VEICULO G WHERE G.VCL_IN_SEQUENCIA = ${seq};
+          IF NVL(V_DE, '-') = NVL(TO_CHAR(${v}), '-') THEN
             RAISE_APPLICATION_ERROR(-20922, 'VEICULO JA ESTA COM ESSE VALOR.');
           END IF;
 
@@ -195,7 +222,7 @@ export default async function veiculosRoutes(app) {
           INSERT INTO MEGA.CCS_TB_GFIN_VEICULO_LOG
             (LOG_IN_CODIGO, VCL_IN_SEQUENCIA, LOG_ST_CAMPO, LOG_ST_DE, LOG_ST_PARA, LOG_ST_MOTIVO, LOG_IN_USU, LOG_ST_USU)
           VALUES
-            (MEGA.CCS_SEQ_GFIN_VEICULO_LOG.NEXTVAL, ${seq}, '${req.body.campo}', V_DE, ${v},
+            (MEGA.CCS_SEQ_GFIN_VEICULO_LOG.NEXTVAL, ${seq}, '${req.body.campo}', V_DE, TO_CHAR(${v}),
              ${motivo ? `'${lit(motivo, 200)}'` : 'NULL'}, ${num(req.user.sub)}, '${lit(req.user.login, 60)}');
           COMMIT;
         END;`);
@@ -218,9 +245,83 @@ export default async function veiculosRoutes(app) {
          AND U.GRU_IN_CODIGO (+) = L.LOG_IN_USU
        ORDER BY L.LOG_IN_CODIGO DESC
        FETCH FIRST 200 ROWS ONLY`);
-    const rot = v => ({ S: 'Sim', N: 'Não', P: 'Próprio', T: 'Terceiro' }[v] || (v ? v : '—'));
-    const campo = c => ({ PROPRIEDADE: 'Propriedade', COMBUSTIVEL: 'Combustível controlado', POSTO_PROPRIO: 'Posto próprio' }[c] || c);
-    return { historico: rows.map(r => ({ id: num(r.ID), campo: campo(r.CAMPO), de: rot(r.DE), para: rot(r.PARA), motivo: r.MOTIVO || '', usuario: r.USUARIO || '—', quando: r.QUANDO })) };
+    const brl = v => Number(String(v).replace(',', '.')).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const rot = (c, v) => !v ? '—' : c === 'VALOR_COMBUSTIVEL' ? brl(v) : ({ S: 'Sim', N: 'Não', P: 'Próprio', T: 'Terceiro' }[v] || v);
+    const campo = c => ({ PROPRIEDADE: 'Propriedade', COMBUSTIVEL: 'Combustível controlado', POSTO_PROPRIO: 'Posto próprio',
+                          VALOR_COMBUSTIVEL: 'Vale-combustível (R$)', DESCONTA_FRETE: 'Desconta do frete' }[c] || c);
+    return { historico: rows.map(r => ({ id: num(r.ID), campo: campo(r.CAMPO), de: rot(r.CAMPO, r.DE), para: rot(r.CAMPO, r.PARA), motivo: r.MOTIVO || '', usuario: r.USUARIO || '—', quando: r.QUANDO })) };
+  });
+
+  // Parametros da tela (engrenagem): posto padrao do vale-combustivel = agente FORNECEDOR do Mega (GLO_AGENTES_ID TAU 'F').
+  // GET aberto a autenticados; PUT so admin. Historico pela trigger CCS_T_GFIN_PARAM_HIST (sql/13).
+  app.get('/veiculos/parametros', guard, async () => {
+    const rows = await megaQuery(`
+      SELECT P.PARAM_RE_VALOR AS AGN,
+             TO_CHAR(P.PARAM_DT_ALTERACAO, 'YYYY-MM-DD HH24:MI') AS ALTERADO_EM,
+             P.PARAM_ST_USU AS ALTERADO_POR,
+             (SELECT MAX(NVL(A.AGN_ST_FANTASIA, A.AGN_ST_NOME)) FROM MEGA.GLO_AGENTES A WHERE A.AGN_IN_CODIGO = P.PARAM_RE_VALOR) AS NOME,
+             (SELECT MAX(A.AGN_ST_CGC) FROM MEGA.GLO_AGENTES A WHERE A.AGN_IN_CODIGO = P.PARAM_RE_VALOR) AS CGC
+        FROM MEGA.CCS_TB_GFIN_PARAM P
+       WHERE P.PARAM_ST_CHAVE = '${PARAM_POSTO}'`);
+    const r = rows[0];
+    const agn = num(r?.AGN);
+    return { posto_padrao: agn ? { agn, nome: r.NOME || `Agente ${agn}`, cgc: r.CGC || '' } : null,
+             alterado_em: r?.ALTERADO_EM || null, alterado_por: r?.ALTERADO_POR || null };
+  });
+
+  app.get('/veiculos/parametros/historico', guard, async () => {
+    const rows = await megaQuery(`
+      SELECT H.HIST_RE_VALOR_ANT AS DE, H.HIST_RE_VALOR_NOVO AS PARA,
+             (SELECT MAX(NVL(A.AGN_ST_FANTASIA, A.AGN_ST_NOME)) FROM MEGA.GLO_AGENTES A WHERE A.AGN_IN_CODIGO = H.HIST_RE_VALOR_ANT)  AS DE_NOME,
+             (SELECT MAX(NVL(A.AGN_ST_FANTASIA, A.AGN_ST_NOME)) FROM MEGA.GLO_AGENTES A WHERE A.AGN_IN_CODIGO = H.HIST_RE_VALOR_NOVO) AS PARA_NOME,
+             NVL(NVL(U.GRU_ST_NOMECOMPLETO, U.GRU_ST_NOME), H.HIST_ST_USU) AS USUARIO,
+             TO_CHAR(H.HIST_DT_ALTERACAO, 'YYYY-MM-DD HH24:MI') AS QUANDO
+        FROM MEGA.CCS_TB_GFIN_PARAM_HIST H, MEGA.GLO_GRUPO_USUARIO U
+       WHERE H.PARAM_ST_CHAVE = '${PARAM_POSTO}' AND U.GRU_IN_CODIGO (+) = H.HIST_IN_USU
+       ORDER BY H.HIST_IN_CODIGO DESC FETCH FIRST 200 ROWS ONLY`);
+    const nome = (agn, n) => (num(agn) ? `${num(agn)} ${n || ''}`.trim() : null);
+    return { historico: rows.map(r => ({ parametro: 'Posto padrão', de: nome(r.DE, r.DE_NOME), para: nome(r.PARA, r.PARA_NOME) || '—', usuario: r.USUARIO || '—', quando: r.QUANDO })) };
+  });
+
+  app.put('/veiculos/parametros', {
+    preHandler: [app.authenticate, adminOnly],
+    schema: { body: { type: 'object', required: ['posto_padrao_agn'], properties: { posto_padrao_agn: { type: 'integer', minimum: 0 } } } }
+  }, async (req, reply) => {
+    const agn = num(req.body.posto_padrao_agn);
+    if (agn) {
+      const ok = await megaQuery(`
+        SELECT COUNT(*) QT FROM MEGA.GLO_AGENTES A, MEGA.GLO_AGENTES_ID I
+         WHERE A.AGN_IN_CODIGO = ${agn} AND I.AGN_IN_CODIGO = A.AGN_IN_CODIGO AND I.AGN_TAB_IN_CODIGO = A.AGN_TAB_IN_CODIGO
+           AND I.AGN_PAD_IN_CODIGO = A.AGN_PAD_IN_CODIGO AND I.AGN_TAU_ST_CODIGO = 'F'`);
+      if (!num(ok[0]?.QT)) return reply.code(400).send({ error: `O agente ${agn} não é fornecedor no Mega.` });
+    }
+    await megaExec(`
+      BEGIN
+        UPDATE MEGA.CCS_TB_GFIN_PARAM
+           SET PARAM_RE_VALOR = ${agn}, PARAM_DT_ALTERACAO = SYSDATE,
+               PARAM_IN_USU = ${num(req.user.sub)}, PARAM_ST_USU = '${lit(req.user.login, 60)}'
+         WHERE PARAM_ST_CHAVE = '${PARAM_POSTO}' AND PARAM_RE_VALOR <> ${agn};
+        COMMIT;
+      END;`);
+    return { ok: true, posto_padrao_agn: agn };
+  });
+
+  // Busca de fornecedor (posto) por codigo ou trecho do nome/fantasia
+  app.get('/veiculos/fornecedores', guard, async (req) => {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return { fornecedores: [] };
+    const cond = /^\d+$/.test(q) ? `A.AGN_IN_CODIGO = ${num(q)}`
+      : `(UPPER(A.AGN_ST_NOME) LIKE '%${lit(q.toUpperCase(), 60)}%' OR UPPER(A.AGN_ST_FANTASIA) LIKE '%${lit(q.toUpperCase(), 60)}%')`;
+    const rows = await megaQuery(`
+      SELECT * FROM (
+        SELECT A.AGN_IN_CODIGO AGN, NVL(A.AGN_ST_FANTASIA, A.AGN_ST_NOME) NOME, A.AGN_ST_NOME RAZAO, A.AGN_ST_CGC CGC
+          FROM MEGA.GLO_AGENTES A, MEGA.GLO_AGENTES_ID I
+         WHERE I.AGN_IN_CODIGO = A.AGN_IN_CODIGO AND I.AGN_TAB_IN_CODIGO = A.AGN_TAB_IN_CODIGO
+           AND I.AGN_PAD_IN_CODIGO = A.AGN_PAD_IN_CODIGO AND I.AGN_TAU_ST_CODIGO = 'F'
+           AND ${cond}
+         ORDER BY A.AGN_ST_NOME)
+       WHERE ROWNUM <= 20`);
+    return { fornecedores: rows.map(r => ({ agn: num(r.AGN), nome: r.NOME || '', razao: r.RAZAO || '', cgc: r.CGC || '' })) };
   });
 }
 

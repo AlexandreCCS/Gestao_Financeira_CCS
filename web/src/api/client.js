@@ -210,6 +210,10 @@ export const api = {
   veiculos: () => req('/veiculos'),
   veiculosCampo: (seq, dados) => req(`/veiculos/${seq}/campo`, { method: 'POST', body: JSON.stringify(dados) }),
   veiculosHistorico: (seq) => req(`/veiculos/${seq}/historico`),
+  veiculosParametros: () => req('/veiculos/parametros'),
+  veiculosParametrosHistorico: () => req('/veiculos/parametros/historico'),
+  veiculosSalvarParametros: (dados) => req('/veiculos/parametros', { method: 'PUT', body: JSON.stringify(dados) }),
+  veiculosFornecedores: (q) => req(`/veiculos/fornecedores?q=${encodeURIComponent(q)}`),
 
   // [06/08/2026 - Alexandre Carvalho] liberacao de agentes (flag de bloqueio por atraso)
   liberacaoAgnLiberados: () => req('/liberacao-agentes/liberados'),

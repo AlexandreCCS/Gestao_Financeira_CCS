@@ -31,6 +31,8 @@ import biFechamentoRoutes from './routes/biFechamento.js';
 import motoristasRoutes from './routes/motoristas.js';
 // [25/10/2026 - Alexandre Carvalho] Frete > Veiculos (frota do Mega, so leitura)
 import veiculosRoutes from './routes/veiculos.js';
+// [25/10/2026 - Alexandre Carvalho] Fase 2 Quality: Baixar e conciliar (motor, execucao, encargos, de-para, comprovante OCR, robo)
+import baixarConciliarRoutes from './routes/baixarConciliar.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -84,6 +86,7 @@ await app.register(liberacaoFormaRecRoutes);
 await app.register(baixasExtratoRoutes);
 await app.register(motoristasRoutes);
 await app.register(veiculosRoutes);
+await app.register(baixarConciliarRoutes);
 
 const port = parseInt(process.env.PORT || '3000', 10);
 app.listen({ host: '0.0.0.0', port })

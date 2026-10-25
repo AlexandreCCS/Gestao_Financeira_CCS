@@ -24,6 +24,10 @@ import LiberacaoFormaRec from './pages/LiberacaoFormaRec.jsx';
 import LiberacaoAgentes from './pages/LiberacaoAgentes.jsx';
 // [21/09/2026 - Alexandre Carvalho] menu Baixas/Conciliacao
 import ExtratoBancoPage from './pages/baixas/ExtratoBancoPage.jsx';
+// [25/10/2026 - Alexandre Carvalho] Fase 2 Quality: Baixar e conciliar + Configurar + Liberacao de Encargos
+import BaixarConciliar from './pages/baixas/BaixarConciliar.jsx';
+import ConfigBaixarConciliar from './pages/baixas/ConfigBaixarConciliar.jsx';
+import LiberacaoEncargos from './pages/baixas/LiberacaoEncargos.jsx';
 import BiFaturamento from './pages/bi/Faturamento.jsx';
 // [25/10/2026 - Alexandre Carvalho] menu Frete
 import Motoristas    from './pages/frete/Motoristas.jsx';
@@ -94,6 +98,10 @@ createRoot(document.getElementById('root')).render(
       {/* [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes — permissao propria */}
       <Route path="/liberacao-agentes" element={<Protect modulo="LIBERACAO_AGENTES"><LiberacaoAgentes /></Protect>} />
       <Route path="/baixas-conciliacao/extrato" element={<Protect modulo="BAIXAS_CONCILIACAO"><ExtratoBancoPage /></Protect>} />
+      {/* [25/10/2026 - Alexandre Carvalho] Fase 2 Quality */}
+      <Route path="/baixas-conciliacao/baixar" element={<Protect modulo="BAIXAS_CONCILIACAO"><BaixarConciliar /></Protect>} />
+      <Route path="/baixas-conciliacao/config" element={<Protect modulo="BAIXAS_CONCILIACAO" adminOnly><ConfigBaixarConciliar /></Protect>} />
+      <Route path="/liberacao-encargos" element={<Protect modulo="LIBERA_ENCARGOS"><LiberacaoEncargos /></Protect>} />
       {/* [25/10/2026 - Alexandre Carvalho] Frete — permissao propria */}
       <Route path="/frete/motoristas" element={<Protect modulo="FRETE"><Motoristas /></Protect>} />
       <Route path="/frete/veiculos"   element={<Protect modulo="FRETE"><Veiculos /></Protect>} />

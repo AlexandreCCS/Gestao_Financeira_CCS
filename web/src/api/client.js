@@ -222,5 +222,39 @@ export const api = {
     req('/liberacao-agentes/liberar', { method: 'POST', body: JSON.stringify(dados) }),
   liberacaoAgnRevogar: (dados) =>
     req('/liberacao-agentes/revogar', { method: 'POST', body: JSON.stringify(dados) }),
-  liberacaoAgnHistorico: (dias, ini, fim) => req(`/liberacao-agentes/historico?dias=${dias || 30}${ini ? `&ini=${ini}` : ''}${fim ? `&fim=${fim}` : ''}`)
+  liberacaoAgnHistorico: (dias, ini, fim) => req(`/liberacao-agentes/historico?dias=${dias || 30}${ini ? `&ini=${ini}` : ''}${fim ? `&fim=${fim}` : ''}`),
+
+  // [25/10/2026 - Alexandre Carvalho] Fase 2 Quality: Baixar e conciliar (api/src/routes/baixarConciliar.js)
+  bxcContas: () => req('/bxc/contas'),
+  bxcPendentes: (params) => req(`/bxc/pendentes?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
+  bxcExecutar: (body) => req('/bxc/executar', { method: 'POST', body: JSON.stringify(body) }),
+  bxcConciliar: (body) => req('/bxc/conciliar', { method: 'POST', body: JSON.stringify(body) }),
+  bxcReal: (body) => req('/bxc/real', { method: 'POST', body: JSON.stringify(body) }),
+  bxcEstornar: (log_id) => req('/bxc/estornar', { method: 'POST', body: JSON.stringify({ log_id }) }),
+  bxcFeitas: (params) => req(`/bxc/feitas?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
+  bxcIgnorar: (cba, motivo) => req('/bxc/ignorar', { method: 'POST', body: JSON.stringify({ cba, motivo }) }),
+  bxcDesignorar: (cba) => req(`/bxc/ignorar/${cba}`, { method: 'DELETE' }),
+  bxcIgnoradas: (conta) => req(`/bxc/ignoradas${conta ? `?conta=${conta}` : ''}`),
+  bxcDepara: () => req('/bxc/depara'),
+  bxcDeparaSalvar: (row) => req('/bxc/depara', { method: 'POST', body: JSON.stringify(row) }),
+  bxcDeparaExcluir: (id) => req(`/bxc/depara/${id}`, { method: 'DELETE' }),
+  bxcConfig: () => req('/bxc/config'),
+  bxcConfigSalvar: (body) => req('/bxc/config', { method: 'PUT', body: JSON.stringify(body) }),
+  bxcContasMega: (q) => req(`/bxc/contas-mega?q=${encodeURIComponent(q || '')}`),
+  bxcPedidos: (status, dias) => req(`/bxc/pedidos?status=${status || 'P'}${dias ? `&dias=${dias}` : ''}`),
+  bxcPedidoCriar: (body) => req('/bxc/pedidos', { method: 'POST', body: JSON.stringify(body) }),
+  bxcPedidoLiberar: (id, body) => req(`/bxc/pedidos/${id}/liberar`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  bxcPedidoNegar: (id, body) => req(`/bxc/pedidos/${id}/negar`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  // multipart: o navegador define o Content-Type com o boundary (req() forcaria JSON), por isso o fetch e direto, com o mesmo token
+  bxcComprovante: async (formData) => {
+    const s = getSession(); const headers = {};
+    if (s?.accessToken) headers['Authorization'] = `Bearer ${s.accessToken}`;
+    if (s?.user?.jti)   headers['X-JTI'] = s.user.jti;
+    const res = await fetch('/api/bxc/comprovante', { method: 'POST', body: formData, headers, credentials: 'include' });
+    if (res.status === 401) { clearSession(); if (location.pathname !== '/login') location.href = '/login'; throw new Error('unauthorized'); }
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || (await res.text().catch(() => '')) || res.statusText);
+    return res.json();
+  },
+  bxcComprovanteUrl: (id) => `/api/bxc/comprovante/${id}`,
+  bxcRoboRodar: () => req('/bxc/robo/rodar', { method: 'POST' })
 };

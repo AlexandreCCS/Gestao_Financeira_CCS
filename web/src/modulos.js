@@ -51,11 +51,25 @@ export const MODULOS = {
   },
   // [21/09/2026 - Alexandre Carvalho] Baixas/Conciliacao: menu proprio (permissao BAIXAS_CONCILIACAO, sql/18) com a tela
   // de arrastar o extrato do banco e ver o que falta baixar e conciliar. Dropdown porque vai receber outras telas.
+  // [25/10/2026 - Alexandre Carvalho] Fase 2 Quality: "Baixar e conciliar" vira a tela principal do menu (baixa pelo extrato,
+  // ja conciliada; robo para o que e certo). "Configurar" e so para administrador (rota adminOnly em main.jsx).
   BAIXAS_CONCILIACAO: {
     label: 'Baixas/Conciliação',
-    rota:  '/baixas-conciliacao/extrato',
+    rota:  '/baixas-conciliacao/baixar',
     submenus: [
+      { rota: '/baixas-conciliacao/baixar',  label: 'Baixar e conciliar' },
       { rota: '/baixas-conciliacao/extrato', label: 'Extrato do banco × Mega' },
+      { rota: '/baixas-conciliacao/config',  label: 'Configurar' },
+    ],
+  },
+  // [25/10/2026 - Alexandre Carvalho] Liberacao de Encargos: permissao PROPRIA (sql/29, modulo LIBERA_ENCARGOS; Odette a
+  // principio), renderizada no mesmo dropdown "Liberação" (merge por label em modulosDoUsuario). Quem tem o modulo edita
+  // juros/multa/desconto direto na baixa; quem nao tem pede e o pedido cai aqui.
+  LIBERA_ENCARGOS: {
+    label: 'Liberação',
+    rota:  '/liberacao-encargos',
+    submenus: [
+      { rota: '/liberacao-encargos', label: 'Liberação de Encargos' },
     ],
   },
   // [25/10/2026 - Alexandre Carvalho] Frete: menu proprio (permissao FRETE, sql/26). Dropdown porque vai receber

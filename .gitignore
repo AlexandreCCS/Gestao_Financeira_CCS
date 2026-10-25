@@ -29,3 +29,7 @@ logs/
 *.swp
 .DS_Store
 Thumbs.db
+
+# [25/10/2026] comprovantes do Baixar e conciliar (api/uploads/bxc)
+uploads/
+api/uploads/

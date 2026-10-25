@@ -19,11 +19,14 @@ import PainelExecutivo from './pages/credito/PainelExecutivo.jsx';
 // [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa
 import LiberacaoBaixa from './pages/LiberacaoBaixa.jsx';
 import LiberacaoExcAlt from './pages/LiberacaoExcAlt.jsx';
+import LiberacaoFormaRec from './pages/LiberacaoFormaRec.jsx';
 // [06/08/2026 - Alexandre Carvalho] modulo Liberacao de Agentes
 import LiberacaoAgentes from './pages/LiberacaoAgentes.jsx';
 // [21/09/2026 - Alexandre Carvalho] menu Baixas/Conciliacao
 import ExtratoBancoPage from './pages/baixas/ExtratoBancoPage.jsx';
 import BiFaturamento from './pages/bi/Faturamento.jsx';
+// [25/10/2026 - Alexandre Carvalho] menu Frete
+import Motoristas    from './pages/frete/Motoristas.jsx';
 import Shell         from './components/Shell.jsx';
 
 // [14/05/2026 - Alexandre Carvalho] Tela exibida quando o usuario logou mas nao
@@ -86,9 +89,12 @@ createRoot(document.getElementById('root')).render(
       {/* [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa */}
       <Route path="/liberacao-baixa" element={<Protect modulo="LIBERACAO_BAIXA"><LiberacaoBaixa /></Protect>} />
       <Route path="/liberacao-exc-alt" element={<Protect modulo="LIBERACAO_BAIXA"><LiberacaoExcAlt /></Protect>} />
+      <Route path="/liberacao-forma-rec" element={<Protect modulo="LIBERACAO_BAIXA"><LiberacaoFormaRec /></Protect>} />
       {/* [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes — permissao propria */}
       <Route path="/liberacao-agentes" element={<Protect modulo="LIBERACAO_AGENTES"><LiberacaoAgentes /></Protect>} />
       <Route path="/baixas-conciliacao/extrato" element={<Protect modulo="BAIXAS_CONCILIACAO"><ExtratoBancoPage /></Protect>} />
+      {/* [25/10/2026 - Alexandre Carvalho] Frete — permissao propria */}
+      <Route path="/frete/motoristas" element={<Protect modulo="FRETE"><Motoristas /></Protect>} />
       {/* [23/09/2026 - Alexandre Carvalho] BI Fechamento do grupo */}
       <Route path="/bi/faturamento" element={<Protect modulo="BI_FECHAMENTO"><BiFaturamento /></Protect>} />
       <Route path="/admin"        element={<Protect adminOnly><AdminUsuarios /></Protect>} />

@@ -36,6 +36,7 @@ export const MODULOS = {
     submenus: [
       { rota: '/liberacao-baixa',   label: 'Liberação de Data de Baixa' },
       { rota: '/liberacao-exc-alt', label: 'Liberação de Exc./Alt.' },
+      { rota: '/liberacao-forma-rec', label: 'Liberação de Forma de Recebimento' },
     ],
   },
   // [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes: modulo com permissao
@@ -55,6 +56,15 @@ export const MODULOS = {
     rota:  '/baixas-conciliacao/extrato',
     submenus: [
       { rota: '/baixas-conciliacao/extrato', label: 'Extrato do banco × Mega' },
+    ],
+  },
+  // [25/10/2026 - Alexandre Carvalho] Frete: menu proprio (permissao FRETE, sql/26). Dropdown porque vai receber
+  // as outras telas da regra de frete/numerario da Quality; a primeira e o cadastro de Motoristas (flag MEI).
+  FRETE: {
+    label: 'Frete',
+    rota:  '/frete/motoristas',
+    submenus: [
+      { rota: '/frete/motoristas', label: 'Motoristas' },
     ],
   },
   CREDITO: {

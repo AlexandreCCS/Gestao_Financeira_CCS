@@ -188,6 +188,25 @@ export const api = {
   liberacaoExcLiberacoes: (agn, documento) =>
     req(`/liberacao-exc/liberacoes${agn ? `?agn=${agn}&documento=${encodeURIComponent(documento)}` : ''}`),
 
+  // [09/10/2026 - Alexandre Carvalho] liberacao de troca de forma de recebimento (trigger CCS_T_LIBERA_FORMA_REC)
+  liberacaoFormaTitulos: () => req('/liberacao-forma/titulos'),
+  liberacaoFormaFormas: (fil) => req(`/liberacao-forma/formas?fil=${fil}`),
+  liberacaoFormaLiberar: (dados) =>
+    req('/liberacao-forma/liberar', { method: 'POST', body: JSON.stringify(dados) }),
+  liberacaoFormaRevogar: (id) =>
+    req('/liberacao-forma/revogar', { method: 'POST', body: JSON.stringify({ id }) }),
+  liberacaoFormaLiberacoes: (org, lanc) =>
+    req(`/liberacao-forma/liberacoes${org ? `?org=${org}&lanc=${lanc}` : ''}`),
+  liberacaoFormaTrocas: (ini, fim) => req(`/liberacao-forma/trocas?ini=${ini || ''}&fim=${fim || ''}`),
+
+  // [25/10/2026 - Alexandre Carvalho] Frete > Motoristas (cadastro do Mega + flag MEI + limite mensal MEI)
+  motoristas: () => req('/motoristas'),
+  motoristasMei: (cdt, dados) => req(`/motoristas/${cdt}/mei`, { method: 'POST', body: JSON.stringify(dados) }),
+  motoristasHistorico: (cdt) => req(`/motoristas/${cdt}/historico`),
+  motoristasParametros: () => req('/motoristas/parametros'),
+  motoristasParametrosHistorico: () => req('/motoristas/parametros/historico'),
+  motoristasSalvarParametros: (dados) => req('/motoristas/parametros', { method: 'PUT', body: JSON.stringify(dados) }),
+
   // [06/08/2026 - Alexandre Carvalho] liberacao de agentes (flag de bloqueio por atraso)
   liberacaoAgnLiberados: () => req('/liberacao-agentes/liberados'),
   liberacaoAgnBusca: (q) => req(`/liberacao-agentes/busca?q=${encodeURIComponent(q)}`),

@@ -206,6 +206,10 @@ export const api = {
   motoristasParametros: () => req('/motoristas/parametros'),
   motoristasParametrosHistorico: () => req('/motoristas/parametros/historico'),
   motoristasSalvarParametros: (dados) => req('/motoristas/parametros', { method: 'PUT', body: JSON.stringify(dados) }),
+  // [25/10/2026 - Alexandre Carvalho] Frete > Veiculos (frota do Mega, so leitura)
+  veiculos: () => req('/veiculos'),
+  veiculosCampo: (seq, dados) => req(`/veiculos/${seq}/campo`, { method: 'POST', body: JSON.stringify(dados) }),
+  veiculosHistorico: (seq) => req(`/veiculos/${seq}/historico`),
 
   // [06/08/2026 - Alexandre Carvalho] liberacao de agentes (flag de bloqueio por atraso)
   liberacaoAgnLiberados: () => req('/liberacao-agentes/liberados'),

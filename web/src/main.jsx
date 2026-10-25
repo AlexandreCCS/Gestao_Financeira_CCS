@@ -27,6 +27,7 @@ import ExtratoBancoPage from './pages/baixas/ExtratoBancoPage.jsx';
 import BiFaturamento from './pages/bi/Faturamento.jsx';
 // [25/10/2026 - Alexandre Carvalho] menu Frete
 import Motoristas    from './pages/frete/Motoristas.jsx';
+import Veiculos      from './pages/frete/Veiculos.jsx';
 import Shell         from './components/Shell.jsx';
 
 // [14/05/2026 - Alexandre Carvalho] Tela exibida quando o usuario logou mas nao
@@ -95,6 +96,7 @@ createRoot(document.getElementById('root')).render(
       <Route path="/baixas-conciliacao/extrato" element={<Protect modulo="BAIXAS_CONCILIACAO"><ExtratoBancoPage /></Protect>} />
       {/* [25/10/2026 - Alexandre Carvalho] Frete — permissao propria */}
       <Route path="/frete/motoristas" element={<Protect modulo="FRETE"><Motoristas /></Protect>} />
+      <Route path="/frete/veiculos"   element={<Protect modulo="FRETE"><Veiculos /></Protect>} />
       {/* [23/09/2026 - Alexandre Carvalho] BI Fechamento do grupo */}
       <Route path="/bi/faturamento" element={<Protect modulo="BI_FECHAMENTO"><BiFaturamento /></Protect>} />
       <Route path="/admin"        element={<Protect adminOnly><AdminUsuarios /></Protect>} />

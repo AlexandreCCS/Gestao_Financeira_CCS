@@ -29,6 +29,8 @@ import baixasExtratoRoutes from './routes/baixasExtrato.js';
 import biFechamentoRoutes from './routes/biFechamento.js';
 // [25/10/2026 - Alexandre Carvalho] Frete > Motoristas (cadastro do Mega + flag MEI + limite mensal MEI)
 import motoristasRoutes from './routes/motoristas.js';
+// [25/10/2026 - Alexandre Carvalho] Frete > Veiculos (frota do Mega, so leitura)
+import veiculosRoutes from './routes/veiculos.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -81,6 +83,7 @@ await app.register(liberacaoAgentesRoutes);
 await app.register(liberacaoFormaRecRoutes);
 await app.register(baixasExtratoRoutes);
 await app.register(motoristasRoutes);
+await app.register(veiculosRoutes);
 
 const port = parseInt(process.env.PORT || '3000', 10);
 app.listen({ host: '0.0.0.0', port })

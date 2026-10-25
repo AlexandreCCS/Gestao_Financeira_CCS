@@ -65,6 +65,7 @@ export const MODULOS = {
     rota:  '/frete/motoristas',
     submenus: [
       { rota: '/frete/motoristas', label: 'Motoristas' },
+      { rota: '/frete/veiculos',   label: 'Veículos' },
     ],
   },
   CREDITO: {

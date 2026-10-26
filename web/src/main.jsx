@@ -26,6 +26,7 @@ import LiberacaoAgentes from './pages/LiberacaoAgentes.jsx';
 import ExtratoBancoPage from './pages/baixas/ExtratoBancoPage.jsx';
 // [25/10/2026 - Alexandre Carvalho] Fase 2 Quality: Baixar e conciliar + Configurar + Liberacao de Encargos
 import BaixarConciliar from './pages/baixas/BaixarConciliar.jsx';
+import ConciliacaoBancaria from './pages/baixas/ConciliacaoBancaria.jsx';   // [26/10/2026] importacao do extrato + conferencia em niveis
 import ConfigBaixarConciliar from './pages/baixas/ConfigBaixarConciliar.jsx';
 import LiberacaoEncargos from './pages/baixas/LiberacaoEncargos.jsx';
 import BiFaturamento from './pages/bi/Faturamento.jsx';
@@ -99,6 +100,7 @@ createRoot(document.getElementById('root')).render(
       <Route path="/liberacao-agentes" element={<Protect modulo="LIBERACAO_AGENTES"><LiberacaoAgentes /></Protect>} />
       <Route path="/baixas-conciliacao/extrato" element={<Protect modulo="BAIXAS_CONCILIACAO"><ExtratoBancoPage /></Protect>} />
       {/* [25/10/2026 - Alexandre Carvalho] Fase 2 Quality */}
+      <Route path="/baixas-conciliacao/conciliacao" element={<Protect modulo="BAIXAS_CONCILIACAO"><ConciliacaoBancaria /></Protect>} />
       <Route path="/baixas-conciliacao/baixar" element={<Protect modulo="BAIXAS_CONCILIACAO"><BaixarConciliar /></Protect>} />
       <Route path="/baixas-conciliacao/config" element={<Protect modulo="BAIXAS_CONCILIACAO" adminOnly><ConfigBaixarConciliar /></Protect>} />
       <Route path="/liberacao-encargos" element={<Protect modulo="LIBERA_ENCARGOS"><LiberacaoEncargos /></Protect>} />

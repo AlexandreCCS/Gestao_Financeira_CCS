@@ -227,6 +227,15 @@ export const api = {
 
   // [25/10/2026 - Alexandre Carvalho] Fase 2 Quality: Baixar e conciliar (api/src/routes/baixarConciliar.js)
   bxcContas: () => req('/bxc/contas'),
+  // [26/10/2026] Conciliacao bancaria: importacao do extrato + conferencia em niveis
+  cbAnalisar: (body) => req('/cb/analisar', { method: 'POST', body: JSON.stringify(body) }),
+  cbPreparar: (body) => req('/cb/preparar', { method: 'POST', body: JSON.stringify(body) }),
+  cbImportar: (id) => req(`/cb/arquivos/${id}/importar`, { method: 'POST' }),
+  cbArquivos: (conta) => req(`/cb/arquivos${conta ? `?conta=${conta}` : ''}`),
+  cbArquivo: (id) => req(`/cb/arquivos/${id}`),
+  cbConferencia: (p) => req(`/cb/conferencia?${new URLSearchParams(p)}`),
+  cbCandidatos: (p) => req(`/cb/candidatos?${new URLSearchParams(p)}`),
+  cbConciliar: (body) => req('/cb/conciliar', { method: 'POST', body: JSON.stringify(body) }),
   bxcPendentes: (params) => req(`/bxc/pendentes?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
   bxcExecutar: (body) => req('/bxc/executar', { method: 'POST', body: JSON.stringify(body) }),
   bxcConciliar: (body) => req('/bxc/conciliar', { method: 'POST', body: JSON.stringify(body) }),

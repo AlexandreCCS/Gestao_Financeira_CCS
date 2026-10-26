@@ -37,14 +37,16 @@ const RX_ID = /^(\d{1,6})\.(\d{1,6})\.(\d{1,12})$/;
 
 // ---------------------------------------------------------------------------------------------------- parametros
 let cacheParams = { t: 0, v: null };
-async function params() {
+export async function params() {
   if (cacheParams.v && Date.now() - cacheParams.t < 60_000) return cacheParams.v;
-  const rows = await megaQuery(`SELECT PARAM_ST_CHAVE K, PARAM_RE_VALOR V FROM MEGA.CCS_TB_GFIN_PARAM WHERE PARAM_ST_CHAVE LIKE 'BXC_%'`);
+  const rows = await megaQuery(`SELECT PARAM_ST_CHAVE K, PARAM_RE_VALOR V FROM MEGA.CCS_TB_GFIN_PARAM WHERE PARAM_ST_CHAVE LIKE 'BXC_%' OR PARAM_ST_CHAVE LIKE 'CB_%'`);
   const v = {};
   for (const r of rows) v[r.K] = num(r.V);
   const p = {
     tolerancia: v.BXC_TOLERANCIA ?? 1, tetoRobo: v.BXC_TETO_ROBO ?? 50000, roboAtivo: (v.BXC_ROBO_ATIVO ?? 0) === 1, usuRobo: v.BXC_USU_ROBO ?? 0,
     janela: v.BXC_JANELA_DIAS ?? 5, titAntes: v.BXC_TIT_DIAS_ANTES ?? 90, titDepois: v.BXC_TIT_DIAS_DEPOIS ?? 30, maxTitulos: v.BXC_MAX_TITULOS ?? 6,
+    // [26/10/2026] conciliacao bancaria: dias aceitos no nivel 2 (com identidade) e janela de sugestao (limitada a janela da procedure)
+    diasForte: v.CB_DIAS_FORTE ?? 2, janelaCb: Math.min(v.CB_JANELA ?? 5, v.BXC_JANELA_DIAS ?? 5),
     exigeComprov: (v.BXC_EXIGE_COMPROV ?? 0) === 1, comprovAcima: v.BXC_COMPROV_ACIMA ?? 0, bruto: v,
   };
   cacheParams = { t: Date.now(), v: p };
@@ -113,7 +115,7 @@ async function contaInfo(agn) {
   return { agn_id: num(k.AGN), nome: k.NOME || '', banco: k.BANCO ? num(k.BANCO) : null, fil_id: num(k.FIL), ativa: k.ATIVA === 'S', robo: k.ROBO === 'S', teto_robo: k.TETO ? num(k.TETO) : null, agn_banco: k.AGN_BANCO ? num(k.AGN_BANCO) : null };
 }
 
-async function linhasPendentes(agn, ini, fim, filtro) {
+export async function linhasPendentes(agn, ini, fim, filtro) {
   const rows = await megaQuery(`
     SELECT * FROM (
       SELECT B.CBA_IN_SEQUENCIA CBA, B.ORG_IN_CODIGO ORG, B.FIL_IN_CODIGO FIL, TO_CHAR(B.CBA_DT_DATA,'YYYY-MM-DD') DT, B.CBA_CH_NATUREZA NAT, B.CBA_RE_VALOR VL,
@@ -129,14 +131,49 @@ async function linhasPendentes(agn, ini, fim, filtro) {
     hist: (r.HIST || '').trim(), doc: (r.DOC || '').trim(), arquivo: r.ARQ || '', banco: r.BCO ? num(r.BCO) : null }));
 }
 
-async function movsPendentes(agn, ini, fim) {
+// [26/10/2026] contraparte do lancamento da conta (cliente/fornecedor do titulo baixado ou conta destino da transferencia), via
+// FIN_REFERENCIAFIN: baixa = ORI, titulo = REF (705/706/adiantamentos); transferencia = MOV (self). Doc: Conciliacao_Bancaria_Contraparte_FIN_REFERENCIAFIN.md
+const subCp = papel => `(SELECT MAX(SUBSTR(AG.AGN_ST_NOME,1,60) || ' ' || SUBSTR(NVL(AG.AGN_ST_FANTASIA,''),1,40)) KEEP (DENSE_RANK FIRST ORDER BY T.MOV_IN_NUMLANCTO)
+     FROM MEGA.FIN_REFERENCIAFIN R, MEGA.FIN_MOVIMENTO T, MEGA.GLO_AGENTES AG
+    WHERE R.${papel}ORG_TAB_IN_CODIGO = M.ORG_TAB_IN_CODIGO AND R.${papel}ORG_PAD_IN_CODIGO = M.ORG_PAD_IN_CODIGO AND R.${papel}ORG_IN_CODIGO = M.ORG_IN_CODIGO
+      AND R.${papel}ORG_TAU_ST_CODIGO = M.ORG_TAU_ST_CODIGO AND R.${papel}MOV_TAB_IN_CODIGO = M.MOV_TAB_IN_CODIGO AND R.${papel}MOV_SEQ_IN_CODIGO = M.MOV_SEQ_IN_CODIGO
+      AND R.${papel}MOV_IN_NUMLANCTO = M.MOV_IN_NUMLANCTO
+      AND T.ORG_TAB_IN_CODIGO = R.REF_ORG_TAB_IN_CODIGO AND T.ORG_PAD_IN_CODIGO = R.REF_ORG_PAD_IN_CODIGO AND T.ORG_IN_CODIGO = R.REF_ORG_IN_CODIGO
+      AND T.ORG_TAU_ST_CODIGO = R.REF_ORG_TAU_ST_CODIGO AND T.MOV_TAB_IN_CODIGO = R.REF_MOV_TAB_IN_CODIGO AND T.MOV_SEQ_IN_CODIGO = R.REF_MOV_SEQ_IN_CODIGO
+      AND T.MOV_IN_NUMLANCTO = R.REF_MOV_IN_NUMLANCTO AND T.AGN_IN_CODIGO <> M.AGN_IN_CODIGO
+      AND AG.AGN_TAB_IN_CODIGO = T.AGN_TAB_IN_CODIGO AND AG.AGN_PAD_IN_CODIGO = T.AGN_PAD_IN_CODIGO AND AG.AGN_IN_CODIGO = T.AGN_IN_CODIGO)`;
+
+export async function movsPendentes(agn, ini, fim) {
   const rows = await megaQuery(`
     SELECT M.ORG_IN_CODIGO ORG, M.MOV_SEQ_IN_CODIGO SEQ, M.MOV_IN_NUMLANCTO LANC, TO_CHAR(M.MOV_DT_DATADOCTO,'YYYY-MM-DD') DT, M.MOV_CH_NATUREZA NAT, M.MOV_RE_VALOR VL,
-           M.TPD_ST_CODIGO TPD, M.MOV_ST_DOCUMENTO DOC, SUBSTR(NVL(M.MOV_ST_COMPLHIST,''),1,100) HIST, M.ACAO_IN_CODIGO ACAO
+           M.TPD_ST_CODIGO TPD, M.MOV_ST_DOCUMENTO DOC, SUBSTR(NVL(M.MOV_ST_COMPLHIST,''),1,100) HIST, M.ACAO_IN_CODIGO ACAO,
+           COALESCE(${subCp('ORI_')}, ${subCp('')}) CP
       FROM MEGA.FIN_MOVIMENTO M
      WHERE M.AGN_IN_CODIGO = ${num(agn)} AND M.AGN_TAU_ST_CODIGO = 'N' AND M.MOV_TAB_IN_CODIGO = 352 AND NVL(M.MOV_CH_CONCILIADO,'N') = 'N' AND M.CON_IN_SEQUENCIAL IS NULL
        AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C' AND NVL(M.MOV_BO_PREVISAO,'N') = 'N' AND M.MOV_DT_DATADOCTO BETWEEN ${dt(ini)} AND ${dt(fim)}`);
-  return rows.map(r => ({ org: num(r.ORG), seq: num(r.SEQ), lancto: num(r.LANC), data: r.DT, nat: r.NAT, vl: r2(r.VL), tpd: r.TPD || '', doc: r.DOC || '', hist: r.HIST || '', acao: num(r.ACAO), usado: false }));
+  return rows.map(r => ({ org: num(r.ORG), seq: num(r.SEQ), lancto: num(r.LANC), data: r.DT, nat: r.NAT, vl: r2(r.VL), tpd: r.TPD || '', doc: r.DOC || '', hist: r.HIST || '', acao: num(r.ACAO),
+    contraparte: (r.CP || '').trim(), usado: false }));
+}
+
+// [26/10/2026] NIVEIS DE CORRESPONDENCIA banco x lancamento ja existente no Mega (Gestor_Financeiro_Conciliacao_Bancaria_Importacao.md §2.2).
+// Pares de tipo MEDIDOS nas conciliacoes 1x1 reais de 180 dias (tipo do banco -> tipos do Mega que o financeiro casou).
+const TPD_COMPAT = {
+  D: { AVDEB: ['PGTOM', 'TRANSFD', 'DINCP'], PGTO: ['PGTOM', 'TRANSFD'], TARBANC: ['PGTOM'], IR: ['PGTOM'], IOF: ['PGTOM'], DOCTEDP: ['PGTOM', 'DOCTEDP', 'TRANSFD'],
+       TRANSFD: ['TRANSFD'], CHP: ['CHP'], PIX: ['PGTOM', 'PIX'] },
+  C: { DOCTEDR: ['PIX', 'ADCLI', 'TRANSFC', 'DEPR', 'DEBITO'], PIX: ['PIX', 'ADCLI', 'DEPR'], AVCRED: ['DEPR', 'ADCLI', 'TRANSFC', 'CARDEB', 'PIX', 'COB', 'DINCR', 'AVCRED'],
+       COB: ['COB'], TRANSFC: ['TRANSFC'], REND2: ['REND2'], DEPR: ['DEPR', 'ADCLI'], CHRD: ['CHRD'] },
+};
+export const tpdCompativel = (natBanco, tpdBanco, tpdMega) => (TPD_COMPAT[natBanco]?.[tpdBanco] || []).includes(tpdMega);
+const docIgual = (a, b) => { const x = String(a || '').replace(/\D/g, '').replace(/^0+/, ''), y = String(b || '').replace(/\D/g, '').replace(/^0+/, ''); return x.length >= 3 && x === y; };
+// nivel 1 = mesma data + unico nos dois sentidos + tipo compativel + identidade; 2 = unico + compativel + (mesma data ou ate CB_DIAS_FORTE com identidade);
+// 3 = qualquer outro par de mesmo valor dentro da janela (ambiguo, data longe ou tipo fora da matriz) -> o usuario escolhe
+export function nivelDoPar(l, m, unico, diasForte) {
+  const d = Math.abs(dias(m.data, l.data));
+  const compat = tpdCompativel(l.nat, l.tpd, m.tpd);
+  const ident = nomeConfere(l.hist, m.contraparte) || docIgual(l.doc, m.doc);
+  if (unico && compat && d === 0 && ident) return { nivel: 1, ident, compat, d };
+  if (unico && compat && (d === 0 || (d <= diasForte && ident))) return { nivel: 2, ident, compat, d };
+  return { nivel: 3, ident, compat, d };
 }
 
 async function deparas() {
@@ -222,10 +259,26 @@ export async function motor(agn, filtro = {}) {
         motivo: ok ? `${dep.historico || dep.tpd}: lanca ${dep.acao === 710 ? 'saida' : 'entrada'} avulsa na classe ${dep.classe} e concilia` : 'De-para sem classe financeira ou sem agente contraparte: configure em Baixar e conciliar > Configuracao' });
       continue;
     }
-    // 3) ja existe o lancamento no Mega: so conciliar
+    // 3) ja existe o lancamento no Mega: so conciliar. [26/10/2026] por NIVEIS (antes: so valor + natureza +-janela, o mais proximo,
+    //    marcado e no robo). Nivel 1 = alta (robo); 2 = media (marcado, confirma); 3 = baixa (o usuario escolhe entre os candidatos).
     const natMega = l.nat === 'D' ? 'C' : 'D';
     const cand = movs.filter(m => !m.usado && m.nat === natMega && Math.abs(m.vl - l.vl) < 0.005 && Math.abs(dias(m.data, l.data)) <= P.janela).sort((a, b) => Math.abs(dias(a.data, l.data)) - Math.abs(dias(b.data, l.data)));
-    if (cand[0]) { cand[0].usado = true; itens.push({ ...it, situacao: 'conciliar', tipo: 'C', confianca: 'alta', selecionado: true, movs: [cand[0]], motivo: `Lancamento ${cand[0].lancto} de ${cand[0].data} ja esta no Mega: falta conciliar` }); continue; }
+    if (cand.length) {
+      const rivais = linhas.filter(o => o.cba !== l.cba && !o.casada && o.nat === l.nat && Math.abs(o.vl - l.vl) < 0.005 && Math.abs(dias(o.data, cand[0].data)) <= P.janela).length;
+      const unico = cand.length === 1 && rivais === 0;
+      const av = nivelDoPar(l, cand[0], unico, P.diasForte);
+      const porque = [av.d === 0 ? 'mesma data' : `${av.d} dia(s) de diferenca`, unico ? 'par unico' : `${cand.length} lancamento(s) e ${rivais + 1} linha(s) do banco com esse valor`,
+        av.compat ? 'tipo compativel' : `tipo ${l.tpd} x ${cand[0].tpd} fora do padrao`, av.ident ? 'nome/documento confere' : 'sem nome no historico'].join(', ');
+      if (av.nivel <= 2) {
+        cand[0].usado = true; l.casada = true;
+        itens.push({ ...it, situacao: 'conciliar', tipo: 'C', nivel: av.nivel, confianca: av.nivel === 1 ? 'alta' : 'media', selecionado: true, movs: [cand[0]],
+          motivo: `Lancamento ${cand[0].lancto} de ${cand[0].data} ja esta no Mega (nivel ${av.nivel}: ${porque})` });
+      } else {
+        itens.push({ ...it, situacao: 'conciliar', tipo: 'C', nivel: 3, confianca: 'baixa', selecionado: false, movs: [], candidatos_mov: cand.slice(0, 8),
+          motivo: `Possivel correspondencia, confirme o lancamento (nivel 3: ${porque})` });
+      }
+      continue;
+    }
     // 4) lote de cobranca: soma das baixas do retorno
     if (l.tpd === 'COB' && l.nat === 'C') {
       const pool = movs.filter(m => !m.usado && m.nat === 'D' && Math.abs(dias(m.data, l.data)) <= P.janela).sort((a, b) => b.vl - a.vl);
@@ -233,7 +286,8 @@ export async function motor(agn, filtro = {}) {
       let achado = null;
       if (mesmoDia.length && Math.abs(mesmoDia.reduce((s, m) => s + m.vl, 0) - l.vl) < 0.005) achado = mesmoDia;
       else if (pool.length && pool.length <= 60) achado = subconjunto(pool, l.vl, 60);
-      if (achado) { achado.forEach(m => (m.usado = true)); itens.push({ ...it, situacao: 'lote', tipo: 'C', confianca: achado === mesmoDia ? 'alta' : 'media', selecionado: true, movs: achado, motivo: `Liquidacao de cobranca = soma de ${achado.length} baixa(s) do retorno` }); continue; }
+      // [26/10/2026] lote: soma exata do mesmo dia = nivel 2 (marcado, confirma); subconjunto de dias diferentes = nivel 3 (o usuario confere)
+      if (achado) { const dia = achado === mesmoDia; achado.forEach(m => (m.usado = true)); itens.push({ ...it, situacao: 'lote', tipo: 'C', nivel: dia ? 2 : 3, confianca: dia ? 'media' : 'baixa', selecionado: dia, movs: achado, motivo: `Liquidacao de cobranca = soma de ${achado.length} baixa(s) do retorno${dia ? ' do mesmo dia' : ' de dias proximos'}` }); continue; }
       itens.push({ ...it, situacao: 'decidir', tipo: 'C', confianca: 'baixa', movs: pool.slice(0, 40), motivo: pool.length ? 'Liquidacao de cobranca sem combinacao exata de baixas do retorno: confira o retorno do banco' : 'Liquidacao de cobranca sem baixas de retorno no Mega: o retorno do banco nao entrou' });
       continue;
     }
@@ -316,7 +370,7 @@ const linhaLog = r => ({ log_id: num(r.LOG_IN_CODIGO), token: r.LOG_ST_TOKEN, ti
   lancto_contra: r.LANCTO_CONTRA ? num(r.LANCTO_CONTRA) : null, con_id: r.CON_IN_SEQUENCIAL ? num(r.CON_IN_SEQUENCIAL) : null, dep_id: r.DEP_IN_CODIGO ? num(r.DEP_IN_CODIGO) : null, comp_id: r.COMP_IN_CODIGO ? num(r.COMP_IN_CODIGO) : null,
   usuario: r.USU_ST_LOGIN || '', usuario_id: r.USU_IN_CODIGO ? num(r.USU_IN_CODIGO) : null, em: r.EM || '', historico: r.EXT_ST_HISTORICO || '', arquivo: r.EXT_ST_ARQUIVO || '', mensagem: r.LOG_ST_MENSAGEM || '', estornado_por: r.EST_USU_ST_LOGIN || '', estornado_em: r.EST_EM || '' });
 
-async function lerLogPorToken(token) {
+export async function lerLogPorToken(token) {
   const r = await megaQuery(`${SQL_LOG} WHERE L.LOG_ST_TOKEN = '${token}'`);
   return r[0] ? linhaLog(r[0]) : null;
 }
@@ -335,11 +389,11 @@ async function executarBaixa(item, ctx) {
     return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'os titulos');
   }
 }
-async function executarConc(item, ctx) {
+export async function executarConc(item, ctx) {
   const token = crypto.randomUUID();
   const movs = item.movs.map(m => `${num(m.seq)}:${num(m.lancto)}`).join(';'), cbas = item.cbas.map(Number).join(',');
   try {
-    await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_CONC('${token}', ${num(item.org)}, ${num(item.conta)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', '${movs}', '${cbas}', '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}'); END;`);
+    await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_CONC('${token}', ${num(item.org)}, ${num(item.conta)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', '${movs}', '${cbas}', '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}', '${item.tipo_conc === 'M' ? 'M' : 'A'}'); END;`);
     return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado desta conciliacao.' };
   } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'a conciliacao'); }
 }
@@ -352,7 +406,7 @@ async function executarReal(item, ctx) {
 }
 
 // organizacao e conta das linhas informadas (nunca confiar so no corpo)
-async function orgDasLinhas(cbas) {
+export async function orgDasLinhas(cbas) {
   const r = await megaQuery(`SELECT MIN(ORG_IN_CODIGO) ORG, MIN(AGN_IN_CODIGO) CTA, MAX(AGN_IN_CODIGO) CTA2, COUNT(*) N, SUM(CBA_RE_VALOR) VL FROM MEGA.FIN_CONCILIACAO WHERE CBA_IN_SEQUENCIA IN (${cbas.map(Number).join(',')})`);
   const x = r[0] || {};
   if (num(x.N) !== cbas.length) throw Object.assign(new Error('Linha do extrato nao encontrada no Mega'), { statusCode: 400 });

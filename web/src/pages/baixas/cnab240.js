@@ -22,7 +22,7 @@ export function lerExtratoCnab240(texto, nomeArquivo = '') {
   const h = linhas.find(l => f(l, 8, 8) === '0');
   if (!h) throw new Error('CNAB 240 sem header de arquivo.');
 
-  const contas = new Map(); let atual = null, lotesExtrato = 0, outrosServicos = 0;
+  const contas = new Map(); let atual = null, lotesExtrato = 0, outrosServicos = 0, invalidos = 0;
   for (const l of linhas) {
     if (l.length !== 240) continue;
     const tipo = f(l, 8, 8);
@@ -36,10 +36,11 @@ export function lerExtratoCnab240(texto, nomeArquivo = '') {
       atual.conta.lotes.push(atual.lote);
     } else if (tipo === '3' && atual && f(l, 14, 14) === 'E') {
       const dc = f(l, 169, 169), valor = val(f(l, 151, 168)), data = iso(f(l, 143, 150)), natureza = f(l, 109, 111).trim();
-      if (!data || !['D', 'C'].includes(dc)) continue;
+      if (!data || !['D', 'C'].includes(dc)) { invalidos++; continue; }   // [26/10/2026] conta as linhas E sem data ou sem D/C
       atual.lote.natureza = atual.lote.natureza || natureza; atual.lote.qt++; atual.lote[dc === 'D' ? 'debitos' : 'creditos'] += valor;
       atual.conta.lancamentos.push({ seq: `${atual.lote.numero}-${f(l, 9, 13)}`, data, valor, dc, natureza, categoria: f(l, 170, 172), cod_hist: f(l, 173, 176),
-                                     historico: f(l, 177, 201).trim(), documento: f(l, 202, 240).trim().replace(/^0+$/, '') });
+                                     historico: f(l, 177, 201).trim(), documento: f(l, 202, 240).trim().replace(/^0+$/, ''),
+                                     doc_bruto: f(l, 202, 240) });   // [26/10/2026] campo cru: o Mega grava o documento por layout do banco
     } else if (tipo === '5' && atual) {
       atual.lote.saldo_final = { data: iso(f(l, 143, 150)), valor: val(f(l, 151, 168)) * (f(l, 169, 169) === 'D' ? -1 : 1), posicao: f(l, 170, 170) };
       atual = null;
@@ -55,6 +56,6 @@ export function lerExtratoCnab240(texto, nomeArquivo = '') {
   });
   return {
     arquivo: nomeArquivo, banco: parseInt(f(h, 1, 3), 10) || 0, banco_nome: f(h, 103, 132).trim(), cnpj: f(h, 19, 32), empresa: f(h, 73, 102).trim(),
-    gerado_em: iso(f(h, 144, 151)), hora: f(h, 152, 157), sequencia: f(h, 158, 163), linhas: linhas.length, contas: lista
+    gerado_em: iso(f(h, 144, 151)), hora: f(h, 152, 157), sequencia: f(h, 158, 163), linhas: linhas.length, linhas_fora_padrao: ruins, invalidos, contas: lista
   };
 }

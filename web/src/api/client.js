@@ -213,6 +213,7 @@ export const api = {
   veiculosParametros: () => req('/veiculos/parametros'),
   veiculosParametrosHistorico: () => req('/veiculos/parametros/historico'),
   veiculosSalvarParametros: (dados) => req('/veiculos/parametros', { method: 'PUT', body: JSON.stringify(dados) }),
+  veiculosSalvarValeTipo: (dados) => req('/veiculos/vale-tipos', { method: 'PUT', body: JSON.stringify(dados) }),
   veiculosFornecedores: (q) => req(`/veiculos/fornecedores?q=${encodeURIComponent(q)}`),
 
   // [06/08/2026 - Alexandre Carvalho] liberacao de agentes (flag de bloqueio por atraso)

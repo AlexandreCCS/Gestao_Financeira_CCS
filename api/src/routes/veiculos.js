@@ -38,6 +38,9 @@ const CAMPOS = {
   // [25/10/2026 - Alexandre Carvalho] vale-combustivel: valor FIXO por viagem (R$) e se desconta do frete (S/N; vazio = regra
   // padrao: terceiro desconta, frota propria nao)
   VALOR_COMBUSTIVEL: { coluna: 'VEI_RE_VALOR_COMBUSTIVEL', numerico: true },
+  // [26/10/2026 - Alexandre Carvalho] vale por REGIAO do romaneio: VALOR_COMBUSTIVEL passa a ser o valor de FORA e
+  // VALOR_COMB_LOCAL o de PE/AL/PB (CCS_TB_FRT_PARAM.UFS_LOCAIS). Vazio = padrao do tipo (CCS_TB_FRT_VEICULO_TIPO.VALE_FORA/LOCAL).
+  VALOR_COMB_LOCAL:  { coluna: 'VEI_RE_VALOR_COMB_LOCAL',  numerico: true },
   DESCONTA_FRETE:    { coluna: 'VEI_CH_DESCONTA_FRETE',    valores: ['S', 'N'] }
 };
 const PARAM_POSTO = 'FRETE_POSTO_PADRAO_AGN';
@@ -90,6 +93,9 @@ export default async function veiculosRoutes(app) {
              G.VEI_CH_COMBUSTIVEL                                 AS G_COMB,
              G.VEI_CH_POSTO_PROPRIO                               AS G_POSTO,
              G.VEI_RE_VALOR_COMBUSTIVEL                           AS G_VALOR,
+             G.VEI_RE_VALOR_COMB_LOCAL                            AS G_VALOR_LOCAL,
+             T.VALE_FORA                                          AS T_FORA,
+             T.VALE_LOCAL                                         AS T_LOCAL,
              G.VEI_CH_DESCONTA_FRETE                              AS G_DESC,
              G.VEI_ST_OBS                                         AS G_OBS,
              TO_CHAR(G.VEI_DT_ALTERACAO, 'YYYY-MM-DD HH24:MI')    AS G_EM,
@@ -98,6 +104,7 @@ export default async function veiculosRoutes(app) {
              MEGA.VEN_VEICULOCMPESP       E,
              MEGA.VEN_PROPRIETARIOVEICULO P,
              MEGA.CCS_TB_GFIN_VEICULO     G,
+             MEGA.CCS_TB_FRT_VEICULO_TIPO T,
              (SELECT U.VCL,
                      COUNT(*)                                                                      QT,
                      SUM(CASE WHEN U.DT >= ADD_MONTHS(TRUNC(SYSDATE), -12) THEN 1 ELSE 0 END)     QT12,
@@ -114,6 +121,8 @@ export default async function veiculosRoutes(app) {
        WHERE E.VCL_IN_SEQUENCIA (+) = V.VCL_IN_SEQUENCIA
          AND P.PVC_IN_SEQUENCIA (+) = V.PVC_IN_SEQUENCIA
          AND G.VCL_IN_SEQUENCIA (+) = V.VCL_IN_SEQUENCIA
+         AND T.TIPO              (+) = UPPER(TRIM(E.VCL_TIPO_CAMINHAO))
+         AND T.ATIVO             (+) = 'S'
          AND R.VCL              (+) = V.VCL_IN_SEQUENCIA
        ORDER BY V.VCL_ST_PLACA`);
 
@@ -160,6 +169,10 @@ export default async function veiculosRoutes(app) {
           gestor: { propriedade: r.G_PROP || '', obs: r.G_OBS || '', em: r.G_EM || '', por: r.G_POR || '' },
           // vale-combustivel (Gestor): valor fixo por viagem; desconta do frete = marcado no veiculo ou regra padrao pela propriedade
           vale_valor:     r.G_VALOR == null || r.G_VALOR === '' ? null : num(r.G_VALOR),
+          // [26/10/2026] vale por regiao: vale_valor = FORA do veiculo, vale_local = PE/AL/PB do veiculo; padrao = tabela do tipo
+          vale_local:        r.G_VALOR_LOCAL == null || r.G_VALOR_LOCAL === '' ? null : num(r.G_VALOR_LOCAL),
+          vale_padrao_fora:  r.T_FORA  == null || r.T_FORA  === '' ? null : num(r.T_FORA),
+          vale_padrao_local: r.T_LOCAL == null || r.T_LOCAL === '' ? null : num(r.T_LOCAL),
           desconta_frete: r.G_DESC || '',                                        // S | N | '' (padrao)
           desconta_efetivo: r.G_DESC || (prop.valor === 'TERCEIRO' ? 'S' : prop.valor === 'PROPRIO' ? 'N' : ''),
           situacao:    null,                     // sem campo no Mega
@@ -246,9 +259,10 @@ export default async function veiculosRoutes(app) {
        ORDER BY L.LOG_IN_CODIGO DESC
        FETCH FIRST 200 ROWS ONLY`);
     const brl = v => Number(String(v).replace(',', '.')).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    const rot = (c, v) => !v ? '—' : c === 'VALOR_COMBUSTIVEL' ? brl(v) : ({ S: 'Sim', N: 'Não', P: 'Próprio', T: 'Terceiro' }[v] || v);
+    const rot = (c, v) => !v ? '—' : (c === 'VALOR_COMBUSTIVEL' || c === 'VALOR_COMB_LOCAL') ? brl(v) : ({ S: 'Sim', N: 'Não', P: 'Próprio', T: 'Terceiro' }[v] || v);
     const campo = c => ({ PROPRIEDADE: 'Propriedade', COMBUSTIVEL: 'Combustível controlado', POSTO_PROPRIO: 'Posto próprio',
-                          VALOR_COMBUSTIVEL: 'Vale-combustível (R$)', DESCONTA_FRETE: 'Desconta do frete' }[c] || c);
+                          VALOR_COMBUSTIVEL: 'Vale fora de PE/AL/PB (R$)', VALOR_COMB_LOCAL: 'Vale PE/AL/PB (R$)',
+                          DESCONTA_FRETE: 'Desconta do frete' }[c] || c);
     return { historico: rows.map(r => ({ id: num(r.ID), campo: campo(r.CAMPO), de: rot(r.CAMPO, r.DE), para: rot(r.CAMPO, r.PARA), motivo: r.MOTIVO || '', usuario: r.USUARIO || '—', quando: r.QUANDO })) };
   });
 
@@ -265,8 +279,43 @@ export default async function veiculosRoutes(app) {
        WHERE P.PARAM_ST_CHAVE = '${PARAM_POSTO}'`);
     const r = rows[0];
     const agn = num(r?.AGN);
+    // [26/10/2026 - Alexandre Carvalho] vale padrao por tipo x regiao (CCS_TB_FRT_VEICULO_TIPO) e UFs da regiao local
+    const tipos = await megaQuery(`
+      SELECT T.TIPO, T.DESCRICAO, T.VALE_FORA, T.VALE_LOCAL, TO_CHAR(T.DT_ALTERACAO, 'YYYY-MM-DD HH24:MI') AS ALTERADO_EM,
+             (SELECT MAX(NVL(U.GRU_ST_NOMECOMPLETO, U.GRU_ST_NOME)) FROM MEGA.GLO_GRUPO_USUARIO U WHERE U.GRU_IN_CODIGO = T.USU_IN_ALTERACAO) AS ALTERADO_POR
+        FROM MEGA.CCS_TB_FRT_VEICULO_TIPO T WHERE T.ATIVO = 'S' ORDER BY T.ORDEM`);
+    const ufs = await megaQuery(`SELECT UFS_LOCAIS FROM MEGA.CCS_TB_FRT_PARAM WHERE PAR_IN_CODIGO = 1`);
+    const n2 = v => (v == null || v === '' ? null : num(v));
     return { posto_padrao: agn ? { agn, nome: r.NOME || `Agente ${agn}`, cgc: r.CGC || '' } : null,
-             alterado_em: r?.ALTERADO_EM || null, alterado_por: r?.ALTERADO_POR || null };
+             alterado_em: r?.ALTERADO_EM || null, alterado_por: r?.ALTERADO_POR || null,
+             ufs_locais: String(ufs[0]?.UFS_LOCAIS || 'PE,AL,PB').split(',').map(s => s.trim()).filter(Boolean),
+             vale_tipos: tipos.map(t => ({ tipo: t.TIPO, descricao: t.DESCRICAO || t.TIPO, vale_fora: n2(t.VALE_FORA), vale_local: n2(t.VALE_LOCAL),
+                                           alterado_em: t.ALTERADO_EM || null, alterado_por: t.ALTERADO_POR || null })) };
+  });
+
+  // [26/10/2026 - Alexandre Carvalho] grava o vale padrao de UM tipo (fora / PE-AL-PB). So admin. Veiculo sem valor proprio usa este.
+  app.put('/veiculos/vale-tipos', {
+    preHandler: [app.authenticate, adminOnly],
+    schema: { body: { type: 'object', required: ['tipo'], properties: { tipo: { type: 'string', maxLength: 10 }, vale_fora: { type: ['number', 'null'] }, vale_local: { type: ['number', 'null'] } } } }
+  }, async (req, reply) => {
+    const tipo = String(req.body.tipo || '').toUpperCase();
+    if (!['3/4', 'TOCO', 'TRUCK', 'CARRETA'].includes(tipo)) return reply.code(400).send({ error: `Tipo inválido: ${tipo}.` });
+    const val = x => {
+      if (x === null || x === undefined || x === '') return 'NULL';
+      const n = Math.round(Number(x) * 100) / 100;
+      if (!Number.isFinite(n) || n < 0 || n > 99999) throw new Error('valor');
+      return String(n);
+    };
+    let f, l;
+    try { f = val(req.body.vale_fora); l = val(req.body.vale_local); } catch { return reply.code(400).send({ error: 'Valor inválido: informe um valor em reais.' }); }
+    await megaExec(`
+      BEGIN
+        UPDATE MEGA.CCS_TB_FRT_VEICULO_TIPO
+           SET VALE_FORA = ${f}, VALE_LOCAL = ${l}, DT_ALTERACAO = SYSDATE, USU_IN_ALTERACAO = ${num(req.user.sub)}
+         WHERE TIPO = '${lit(tipo, 10)}';
+        COMMIT;
+      END;`);
+    return { ok: true, tipo, vale_fora: f === 'NULL' ? null : Number(f), vale_local: l === 'NULL' ? null : Number(l) };
   });
 
   app.get('/veiculos/parametros/historico', guard, async () => {

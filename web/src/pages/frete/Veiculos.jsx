@@ -63,6 +63,7 @@ export default function Veiculos() {
           if (campo === 'COMBUSTIVEL')   n.combustivel   = valor === 'S' ? true : valor === 'N' ? false : null;
           if (campo === 'POSTO_PROPRIO') n.posto_proprio = valor === 'S' ? true : valor === 'N' ? false : null;
           if (campo === 'VALOR_COMBUSTIVEL') n.vale_valor = valor == null ? null : Number(valor);
+          if (campo === 'VALOR_COMB_LOCAL')  n.vale_local = valor == null ? null : Number(valor);
           if (campo === 'DESCONTA_FRETE') {
             n.desconta_frete = valor || '';
             n.desconta_efetivo = valor || (x.propriedade === 'TERCEIRO' ? 'S' : x.propriedade === 'PROPRIO' ? 'N' : '');
@@ -134,7 +135,9 @@ export default function Veiculos() {
       'Tipo (CCS/frete)': v.tipo_ccs || '', 'Carroceria': v.carroceria || '', 'UF': v.uf,
       'Propriedade': rotProp(v.propriedade), 'Motivo da propriedade': v.propriedade_motivo,
       'Combustível controlado': rotSn(sn(v.combustivel)), 'Posto próprio': rotSn(sn(v.posto_proprio)),
-      'Vale-combustível (R$)': v.vale_valor ?? '', 'Desconta do frete': v.desconta_efetivo === 'S' ? 'Sim' : v.desconta_efetivo === 'N' ? 'Não' : '',
+      'Vale fora de PE/AL/PB (R$)': valeFora(v) ?? '', 'Vale PE/AL/PB (R$)': valeLocal(v) ?? '',
+      'Vale: origem': v.vale_valor != null || v.vale_local != null ? 'valor do veículo' : (v.vale_padrao_fora != null ? 'padrão do tipo' : 'sem valor'),
+      'Desconta do frete': v.desconta_efetivo === 'S' ? 'Sim' : v.desconta_efetivo === 'N' ? 'Não' : '',
       'Romaneios 12 meses': v.rom_12m, 'Romaneios (total)': v.rom_total, 'Último romaneio': fmtBr(v.ult_rom),
       'Tara': v.tara ?? '', 'Cap. kg': v.capkg ?? '', 'Cap. m³': v.capm3 ?? '', 'RENAVAM': v.renavam
     }));
@@ -154,7 +157,7 @@ export default function Veiculos() {
             <Truck size={20} className="text-prim-400" /> Veículos
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            Frota cadastrada no Mega (VEN_VEICULO + campos específicos). Combustível, posto próprio e vale-combustível são marcados
+            Frota cadastrada no Mega (VEN_VEICULO + campos específicos). Combustível, posto próprio e vale-combustível (por região: PE/AL/PB ou fora) são marcados
             aqui, no Gestor; nada é alterado no ERP.
             {param && <> Posto padrão do vale: <b className="text-gray-300">{param.posto_padrao ? `${param.posto_padrao.agn} · ${param.posto_padrao.nome}` : 'não definido'}</b>.</>}
           </p>
@@ -163,7 +166,7 @@ export default function Veiculos() {
           <button className="btn-ghost !py-1.5" onClick={() => setVerLimites(x => !x)} title="O que o Mega não tem">
             <Info size={14} /> Limitações
           </button>
-          <button className="btn-ghost !py-1.5" onClick={() => setModalParam(true)} title="Posto padrão do vale-combustível">
+          <button className="btn-ghost !py-1.5" onClick={() => setModalParam(true)} title="Posto padrão e vale por tipo de veículo">
             <Settings2 size={14} /> Parâmetros
           </button>
           <button className="btn-ghost !py-1.5" onClick={exportar} disabled={!lista || filtrados.length === 0}>
@@ -261,7 +264,7 @@ export default function Veiculos() {
                 <th className="p-2 text-left">Propriedade</th>
                 <th className="p-2 text-left">Combustível</th>
                 <th className="p-2 text-left">Posto próprio</th>
-                <th className="p-2 text-left" title="Valor fixo do vale por viagem; abaixo, se desconta do frete (terceiro desconta, frota própria não, salvo exceção)">Vale-combustível</th>
+                <th className="p-2 text-left" title="Vale por viagem conforme a UF dos clientes do romaneio. Vazio = padrão do tipo (em cinza, engrenagem Parâmetros). Veículo sem tipo usa o valor de fora. Abaixo, se desconta do frete.">Vale-combustível</th>
                 <th className="p-2 text-left" title="Não há situação cadastral no Mega; mostra o uso em romaneios de expedição">Uso</th>
                 <th className="p-2"></th>
               </tr>
@@ -291,7 +294,8 @@ export default function Veiculos() {
                     <SimNao valor={v.posto_proprio} ocupado={gravando === `${v.seq}:POSTO_PROPRIO`} onChange={val => gravaCampo(v, 'POSTO_PROPRIO', val)} />
                   </td>
                   <td className="p-2">
-                    <ValeInput valor={v.vale_valor} ocupado={gravando === `${v.seq}:VALOR_COMBUSTIVEL`} onSave={val => gravaCampo(v, 'VALOR_COMBUSTIVEL', val)} />
+                    <ValeInput rotulo="Fora" valor={v.vale_valor} padrao={v.vale_padrao_fora} ocupado={gravando === `${v.seq}:VALOR_COMBUSTIVEL`} onSave={val => gravaCampo(v, 'VALOR_COMBUSTIVEL', val)} />
+                    <ValeInput rotulo="PE/AL/PB" valor={v.vale_local} padrao={v.vale_padrao_local ?? (v.tipo_ccs ? null : v.vale_valor)} ocupado={gravando === `${v.seq}:VALOR_COMB_LOCAL`} onSave={val => gravaCampo(v, 'VALOR_COMB_LOCAL', val)} />
                     <div className="text-[10px] text-gray-500 mt-0.5">
                       {v.desconta_efetivo === 'S' ? 'desconta do frete' : v.desconta_efetivo === 'N' ? 'não desconta' : 'desconta: defina a propriedade'}
                       {v.desconta_frete ? ' (exceção)' : ''}
@@ -326,8 +330,69 @@ export default function Veiculos() {
   );
 }
 
-// Valor fixo do vale-combustível por viagem: digita, Enter ou sair do campo grava; vazio limpa
-function ValeInput({ valor, ocupado, onSave }) {
+// [26/10/2026] valor efetivo do vale por regiao: o do veiculo; senao o padrao do tipo; veiculo sem tipo usa o de fora tambem em PE/AL/PB
+const valeFora  = v => v.vale_valor ?? v.vale_padrao_fora ?? null;
+const valeLocal = v => v.vale_local ?? v.vale_padrao_local ?? (v.tipo_ccs ? null : v.vale_valor) ?? null;
+const brl2 = n => Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// [26/10/2026 - Alexandre Carvalho] Engrenagem: vale padrão por tipo de veículo e região (regra da Quality). Salvar só admin.
+function TabelaValeTipo({ info, onSalvo }) {
+  const [edit, setEdit] = useState({});
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+  const ufs = (info.ufs_locais || []).join(', ') || 'PE, AL, PB';
+  const val = (t, k) => edit[t.tipo]?.[k] ?? (t[k] == null ? '' : brl2(t[k]));
+  const muda = (t, k, x) => setEdit(e => ({ ...e, [t.tipo]: { ...e[t.tipo], [k]: x } }));
+  async function salvar(t) {
+    const f = parseBrl(val(t, 'vale_fora')), l = parseBrl(val(t, 'vale_local'));
+    if (Number.isNaN(f) || Number.isNaN(l)) { setMsg('Valor inválido.'); return; }
+    setBusy(t.tipo); setMsg('');
+    try {
+      await api.veiculosSalvarValeTipo({ tipo: t.tipo, vale_fora: f, vale_local: l });
+      setEdit(e => { const n = { ...e }; delete n[t.tipo]; return n; });
+      setMsg(`Vale do tipo ${t.tipo} salvo. Vale para os próximos fretes dos veículos sem valor próprio.`);
+      await onSalvo();
+    } catch (e) {
+      setMsg(e.message === 'admin_only' ? 'Somente administradores podem alterar os parâmetros.' : (e.message || 'Erro ao salvar'));
+    } finally { setBusy(''); }
+  }
+  return (
+    <div className="space-y-2">
+      <label className="text-xs uppercase tracking-wider text-gray-400">Vale-combustível padrão por tipo</label>
+      <table className="w-full text-xs">
+        <thead className="text-gray-500"><tr><th className="text-left p-1">Tipo</th><th className="text-right p-1">Fora de {ufs}</th><th className="text-right p-1">{ufs}</th><th></th></tr></thead>
+        <tbody>
+          {info.vale_tipos.map(t => {
+            const sujo = !!edit[t.tipo];
+            return (
+              <tr key={t.tipo} className="border-t border-ink-800">
+                <td className="p-1 text-gray-200 font-semibold">{t.tipo}</td>
+                {['vale_fora', 'vale_local'].map(k => (
+                  <td key={k} className="p-1 text-right">
+                    <input value={val(t, k)} onChange={e => muda(t, k, e.target.value)} inputMode="decimal"
+                           className="w-24 bg-ink-900 border border-ink-700 rounded px-1.5 py-0.5 text-right font-mono outline-none focus:border-prim-500" />
+                  </td>
+                ))}
+                <td className="p-1 text-right">
+                  <button className="btn-ghost !py-0.5 !px-2 text-[11px]" disabled={!sujo || !!busy} onClick={() => salvar(t)}>{busy === t.tipo ? '…' : 'Salvar'}</button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="text-xs text-gray-500">
+        A região sai da UF dos clientes do romaneio: todos em {ufs} usa a coluna {ufs}; algum cliente fora usa a coluna de fora.
+        O veículo com valor próprio (na grade) usa o dele. Veículo sem tipo usa o valor de fora do próprio veículo.
+        Recibo já emitido não muda.
+      </p>
+      {msg && <div className="text-xs text-gray-300 bg-ink-900/60 rounded p-2">{msg}</div>}
+    </div>
+  );
+}
+
+// Valor fixo do vale-combustível por viagem: digita, Enter ou sair do campo grava; vazio limpa (volta ao padrão do tipo, em cinza)
+function ValeInput({ valor, padrao, rotulo, ocupado, onSave }) {
   const [txt, setTxt] = useState(valor == null ? '' : Number(valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
   useEffect(() => { setTxt(valor == null ? '' : Number(valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })); }, [valor]);
   const salvar = () => {
@@ -336,12 +401,20 @@ function ValeInput({ valor, ocupado, onSave }) {
     if ((n == null && valor == null) || (n != null && valor != null && Math.abs(n - valor) < 0.005)) return;
     onSave(n);
   };
-  return (
-    <div className={`flex items-center bg-ink-900 border border-ink-700 rounded px-1.5 w-28 focus-within:border-prim-500 ${ocupado ? 'opacity-50' : ''}`}>
+  const campo = (
+    <div className={`flex items-center bg-ink-900 border border-ink-700 rounded px-1.5 w-28 focus-within:border-prim-500 ${ocupado ? 'opacity-50' : ''}`}
+         title={valor == null && padrao != null ? `Sem valor próprio: usa o padrão do tipo (R$ ${brl2(padrao)}). Digite para usar outro valor neste veículo.` : undefined}>
       <span className="text-[11px] text-gray-500 mr-1">R$</span>
-      <input value={txt} disabled={ocupado} inputMode="decimal" placeholder="—"
+      <input value={txt} disabled={ocupado} inputMode="decimal" placeholder={padrao != null ? brl2(padrao) : '—'}
              onChange={e => setTxt(e.target.value)} onBlur={salvar} onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
-             className="w-full bg-transparent py-0.5 text-xs text-right font-mono outline-none" />
+             className="w-full bg-transparent py-0.5 text-xs text-right font-mono outline-none placeholder:text-gray-500 placeholder:italic" />
+    </div>
+  );
+  if (!rotulo) return campo;
+  return (
+    <div className="flex items-center gap-1.5 mb-0.5">
+      <span className="text-[10px] text-gray-500 w-12 text-right">{rotulo}</span>
+      {campo}
     </div>
   );
 }
@@ -422,6 +495,7 @@ function ModalParametros({ onClose }) {
             {erro  && <div className="text-rose-300 text-xs bg-rose-900/30 rounded p-2">{erro}</div>}
             {okMsg && <div className="text-prim-300 text-xs bg-prim-600/15 rounded p-2 flex items-center gap-1.5"><CheckCircle2 size={14} /> {okMsg}</div>}
           </div>
+          {info?.vale_tipos && <TabelaValeTipo info={info} onSalvo={async () => { mudou.current = true; setInfo(await api.veiculosParametros()); }} />}
           <div>
             <div className="text-xs uppercase tracking-wider text-gray-400 mb-1.5 flex items-center gap-1.5"><History size={13} /> Histórico de alterações {hist && hist.length > 0 && `(${hist.length})`}</div>
             {!hist && <div className="text-xs text-gray-500">carregando…</div>}
@@ -531,7 +605,9 @@ function ModalDetalhe({ v, onClose, gravando, gravaCampo }) {
                   </span>} />
             <L k="Combustível controlado" c={<SimNao valor={v.combustivel} ocupado={gravando === `${v.seq}:COMBUSTIVEL`} onChange={val => gravaCampo(v, 'COMBUSTIVEL', val)} />} />
             <L k="Posto próprio" c={<SimNao valor={v.posto_proprio} ocupado={gravando === `${v.seq}:POSTO_PROPRIO`} onChange={val => gravaCampo(v, 'POSTO_PROPRIO', val)} />} />
-            <L k="Vale-combustível por viagem" c={<ValeInput valor={v.vale_valor} ocupado={gravando === `${v.seq}:VALOR_COMBUSTIVEL`} onSave={val => gravaCampo(v, 'VALOR_COMBUSTIVEL', val)} />} />
+            <L k="Vale por viagem — fora de PE/AL/PB" c={<ValeInput valor={v.vale_valor} padrao={v.vale_padrao_fora} ocupado={gravando === `${v.seq}:VALOR_COMBUSTIVEL`} onSave={val => gravaCampo(v, 'VALOR_COMBUSTIVEL', val)} />} />
+            <L k="Vale por viagem — PE/AL/PB" c={<ValeInput valor={v.vale_local} padrao={v.vale_padrao_local ?? (v.tipo_ccs ? null : v.vale_valor)} ocupado={gravando === `${v.seq}:VALOR_COMB_LOCAL`} onSave={val => gravaCampo(v, 'VALOR_COMB_LOCAL', val)} />} />
+            {!v.tipo_ccs && <div className="text-[11px] text-acc-400">Veículo sem tipo (CCS): sem padrão da tabela. Informe o valor de fora; ele vale também para PE/AL/PB.</div>}
             <L k="Desconta do frete" c={
               <span className="inline-flex items-center gap-2">
                 <span className="inline-flex rounded overflow-hidden border border-ink-700">

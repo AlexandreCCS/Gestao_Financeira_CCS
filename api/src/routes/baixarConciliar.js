@@ -170,16 +170,19 @@ const subCp = papel => `(SELECT MAX(SUBSTR(AG.AGN_ST_NOME,1,60) || ' ' || SUBSTR
       AND T.MOV_IN_NUMLANCTO = R.REF_MOV_IN_NUMLANCTO AND T.AGN_IN_CODIGO <> M.AGN_IN_CODIGO
       AND AG.AGN_TAB_IN_CODIGO = T.AGN_TAB_IN_CODIGO AND AG.AGN_PAD_IN_CODIGO = T.AGN_PAD_IN_CODIGO AND AG.AGN_IN_CODIGO = T.AGN_IN_CODIGO)`;
 
+// [28/10/2026] o mesmo, devolvendo o CODIGO do agente da outra ponta (na transferencia 712 = a outra conta)
+const subCpAgn = papel => subCp(papel).replace(/^\(SELECT MAX\(.*?\) KEEP/, '(SELECT MAX(T.AGN_IN_CODIGO) KEEP');
+
 export async function movsPendentes(agn, ini, fim) {
   const rows = await megaQuery(`
     SELECT M.ORG_IN_CODIGO ORG, M.MOV_SEQ_IN_CODIGO SEQ, M.MOV_IN_NUMLANCTO LANC, TO_CHAR(M.MOV_DT_DATADOCTO,'YYYY-MM-DD') DT, M.MOV_CH_NATUREZA NAT, M.MOV_RE_VALOR VL,
            M.TPD_ST_CODIGO TPD, M.MOV_ST_DOCUMENTO DOC, SUBSTR(NVL(M.MOV_ST_COMPLHIST,''),1,100) HIST, M.ACAO_IN_CODIGO ACAO,
-           COALESCE(${subCp('ORI_')}, ${subCp('')}) CP
+           COALESCE(${subCp('ORI_')}, ${subCp('')}) CP, COALESCE(${subCpAgn('ORI_')}, ${subCpAgn('')}) CPA
       FROM MEGA.FIN_MOVIMENTO M
      WHERE M.AGN_IN_CODIGO = ${num(agn)} AND M.AGN_TAU_ST_CODIGO = 'N' AND M.MOV_TAB_IN_CODIGO = 352 AND NVL(M.MOV_CH_CONCILIADO,'N') = 'N' AND M.CON_IN_SEQUENCIAL IS NULL
        AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C' AND NVL(M.MOV_BO_PREVISAO,'N') = 'N' AND M.MOV_DT_DATADOCTO BETWEEN ${dt(ini)} AND ${dt(fim)}`);
   return rows.map(r => ({ org: num(r.ORG), seq: num(r.SEQ), lancto: num(r.LANC), data: r.DT, nat: r.NAT, vl: r2(r.VL), tpd: r.TPD || '', doc: r.DOC || '', hist: r.HIST || '', acao: num(r.ACAO),
-    contraparte: (r.CP || '').trim(), usado: false }));
+    contraparte: (r.CP || '').trim(), cp_agn: r.CPA ? num(r.CPA) : null, usado: false }));
 }
 
 // [26/10/2026] NIVEIS DE CORRESPONDENCIA banco x lancamento ja existente no Mega (Gestor_Financeiro_Conciliacao_Bancaria_Importacao.md §2.2).
@@ -300,6 +303,58 @@ export async function buscarTitulos(f) {
   return { titulos, mais: rows.length > 200 };
 }
 
+// [28/10/2026] OUTRA PONTA DO DINHEIRO NO GRUPO (Alexandre: adiantamento de cliente, adiantamento a fornecedor e transferencia entre contas).
+// O extrato nao traz o CNPJ de quem pagou, mas as empresas do grupo estao no mesmo Mega: a outra ponta e a linha de natureza oposta, mesmo valor,
+// ate 1 dia, em OUTRA conta; a empresa (FIL) dona dela da a raiz do CNPJ. Pareamento 1x1 entre todas as contas por pontos: nome da empresa de
+// um lado no historico do outro (4 cada sentido) + mesma data (2) + as duas no mesmo estado, abertas ou conciliadas (1). Sem nome, so vale par do mesmo dia e >= 1.000. Empate no topo = ambiguo.
+const semAcento = s => String(s || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const chaveNome = h => {
+  const ws = semAcento(h).replace(/([A-Z])\d[\d\/.\-]*/g, '$1 ').replace(/\b(PIX|TRANSF|TRANSFERENCIA|ENVIADO|RECEBIDO|SISPAG|TED|DOC|TEF|DEP|DEPOSITO|PAGTO|PGTO|PAGAMENTO|CC|CONTA|CRED|DEB|AG|BOLETO|PAGO)\b/g, ' ')
+    .split(/[^A-Z]+/).filter(Boolean);
+  const k = ws[0]?.length >= 3 ? ws[0] : ws.slice(0, 2).join(' ');
+  return k.length >= 3 ? k : null;
+};
+const nomeDaEmpresa = (hist, nome) => { const k = chaveNome(hist); return !!k && semAcento(nome).startsWith(k); };
+const raizCnpj = c => String(c || '').replace(/\D/g, '').slice(0, 8) || null;
+export async function outrasPontas(agn, ini, fim) {
+  const rows = await megaQuery(`
+    SELECT B.CBA_IN_SEQUENCIA CBA, B.AGN_IN_CODIGO CTA, B.ORG_IN_CODIGO ORG, B.FIL_IN_CODIGO FIL, TO_CHAR(B.CBA_DT_DATA,'YYYY-MM-DD') DT, B.CBA_CH_NATUREZA NAT, B.CBA_RE_VALOR VL,
+           SUBSTR(B.CBA_ST_HISTORICO,1,60) HIST, CASE WHEN NVL(B.CBA_CH_STATUS,'N') = 'S' OR B.CON_IN_SEQUENCIAL IS NOT NULL THEN 'S' ELSE 'N' END CONC,
+           (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = B.AGN_IN_CODIGO) CTA_NOME,
+           (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = B.FIL_IN_CODIGO) FIL_NOME,
+           (SELECT MAX(A.AGN_ST_CGC) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = B.FIL_IN_CODIGO) CGC
+      FROM MEGA.FIN_CONCILIACAO B
+     WHERE B.CBA_DT_DATA BETWEEN ${dt(addDias(ini, -1))} AND ${dt(addDias(fim, 1))}
+       AND B.CBA_RE_VALOR IN (SELECT X.CBA_RE_VALOR FROM MEGA.FIN_CONCILIACAO X WHERE X.AGN_IN_CODIGO = ${num(agn)} AND X.CBA_DT_DATA BETWEEN ${dt(ini)} AND ${dt(fim)}
+                                 AND NVL(X.CBA_CH_STATUS,'N') <> 'S' AND X.CON_IN_SEQUENCIAL IS NULL AND X.CBA_RE_VALOR >= 100)`);
+  const ls = rows.map(r => ({ cba: num(r.CBA), conta: num(r.CTA), org: num(r.ORG), fil: r.FIL ? num(r.FIL) : null, data: r.DT, nat: r.NAT, vl: r2(r.VL), hist: (r.HIST || '').trim(),
+    conciliada: r.CONC === 'S', conta_nome: (r.CTA_NOME || '').trim(), fil_nome: (r.FIL_NOME || '').trim(), raiz: raizCnpj(r.CGC) }));
+  const pares = [];
+  for (const c of ls) if (c.nat === 'C') for (const d of ls) {
+    if (d.nat !== 'D' || d.conta === c.conta || Math.abs(d.vl - c.vl) >= 0.005) continue;
+    const dd = Math.abs(dias(c.data, d.data)); if (dd > 1) continue;
+    const n1 = nomeDaEmpresa(c.hist, d.fil_nome), n2 = nomeDaEmpresa(d.hist, c.fil_nome);
+    if (!n1 && !n2 && !(dd === 0 && c.vl >= 1000)) continue;
+    pares.push({ c, d, pts: (n1 ? 4 : 0) + (n2 ? 4 : 0) + (dd === 0 ? 2 : 0) + (c.conciliada === d.conciliada ? 1 : 0) });   // mesmo estado: as duas abertas ou as duas ja conciliadas
+  }
+  const dono = new Map(), travada = new Set();
+  for (const pts of [...new Set(pares.map(p => p.pts))].sort((a, b) => b - a)) {
+    const nivel = pares.filter(p => p.pts === pts && !dono.has(p.c.cba) && !dono.has(p.d.cba) && !travada.has(p.c.cba) && !travada.has(p.d.cba));
+    const qt = new Map(); nivel.forEach(p => [p.c.cba, p.d.cba].forEach(k => qt.set(k, (qt.get(k) || 0) + 1)));
+    for (const p of nivel) {
+      if (qt.get(p.c.cba) === 1 && qt.get(p.d.cba) === 1) { dono.set(p.c.cba, p.d); dono.set(p.d.cba, p.c); }
+      else [p.c.cba, p.d.cba].forEach(k => { if (qt.get(k) > 1) travada.add(k); });
+    }
+  }
+  const minhas = new Map();
+  for (const l of ls.filter(x => x.conta === num(agn))) {
+    const o = dono.get(l.cba); if (!o) continue;
+    minhas.set(l.cba, { cba: o.cba, conta: o.conta, conta_nome: o.conta_nome, org: o.org, fil: o.fil, fil_nome: o.fil_nome, data: o.data, hist: o.hist, conciliada: o.conciliada,
+      mesma_raiz: !!l.raiz && l.raiz === o.raiz, mesma_org: l.org === o.org });
+  }
+  return minhas;
+}
+
 // ---------------------------------------------------------------------------------------------------- o motor
 export async function motor(agn, filtro = {}) {
   const P = await params();
@@ -311,10 +366,15 @@ export async function motor(agn, filtro = {}) {
   const linhas = await linhasPendentes(agn, ini, fim, { nat, tpd: filtro.tpd });
   const orgs = [...new Set(linhas.map(l => l.org).filter(Boolean))];
   const temD = linhas.some(l => l.nat === 'D'), temC = linhas.some(l => l.nat === 'C');
-  const [movs, deps, candP, candR] = await Promise.all([
+  const [movs, deps, candP, candR, cps, vizinhas] = await Promise.all([
     movsPendentes(agn, addDias(ini, -P.janela), addDias(fim, P.janela)), deparas(),
     temD ? titulosCandidatos('P', orgs, ini, fim, P, null) : [], temC ? titulosCandidatos('R', orgs, ini, fim, P, filtro.forma) : [],
+    linhas.length ? outrasPontas(agn, ini, fim).catch(() => new Map()) : new Map(),
+    linhas.length ? linhasPendentes(agn, addDias(ini, -P.janela), addDias(fim, P.janela), { nat, tpd: filtro.tpd }) : [],
   ]);
+  // [28/10/2026] rivais de fora do periodo filtrado tambem disputam o lancamento (tela so em 23/10 nao pode dar a 23/10 o lancamento da linha de 21/10)
+  const naTela = new Set(linhas.map(l => l.cba));
+  const rivaisPool = [...linhas, ...vizinhas.filter(v => !naTela.has(v.cba))];
   const depAtivos = deps.filter(d => d.ativo);
   const itens = [];
   const base = l => ({ id: `L${l.cba}`, linhas: [{ cba: l.cba, data: l.data, valor: l.vl, natureza: l.nat, historico: l.hist, documento: l.doc, tpd: l.tpd, arquivo: l.arquivo }], valor_banco: l.vl, data: l.data, org: l.org,
@@ -337,17 +397,26 @@ export async function motor(agn, filtro = {}) {
     // 3) ja existe o lancamento no Mega: so conciliar. [26/10/2026] por NIVEIS (antes: so valor + natureza +-janela, o mais proximo,
     //    marcado e no robo). Nivel 1 = alta (robo); 2 = media (marcado, confirma); 3 = baixa (o usuario escolhe entre os candidatos).
     const natMega = l.nat === 'D' ? 'C' : 'D';
-    const cand = movs.filter(m => !m.usado && m.nat === natMega && Math.abs(m.vl - l.vl) < 0.005 && Math.abs(dias(m.data, l.data)) <= P.janela).sort((a, b) => Math.abs(dias(a.data, l.data)) - Math.abs(dias(b.data, l.data)));
+    // [28/10/2026] transferencia (712) ja lancada: e da linha cuja outra ponta e a conta do outro lado dela (cp_agn); outra ponta diferente = nao e desta linha
+    const cp = cps.get(l.cba);
+    const pontaDe = o => cps.get(o.cba)?.conta;
+    const cand = movs.filter(m => !m.usado && m.nat === natMega && Math.abs(m.vl - l.vl) < 0.005 && Math.abs(dias(m.data, l.data)) <= P.janela)
+      .filter(m => !(m.acao === 712 && m.cp_agn && cp && cp.conta !== m.cp_agn))
+      .filter(m => !(m.acao === 712 && m.cp_agn && !cp && linhas.some(o => o.cba !== l.cba && !o.casada && o.nat === l.nat && Math.abs(o.vl - l.vl) < 0.005 && Math.abs(dias(o.data, m.data)) <= P.janela && pontaDe(o) === m.cp_agn)))
+      .sort((a, b) => ((b.acao === 712 && cp && b.cp_agn === cp.conta) - (a.acao === 712 && cp && a.cp_agn === cp.conta)) || Math.abs(dias(a.data, l.data)) - Math.abs(dias(b.data, l.data)));
+    const afim = !!(cand.length && cand[0].acao === 712 && cp && cand[0].cp_agn === cp.conta);
     // [28/10/2026] varias linhas do banco com o mesmo valor e um lancamento so (ex.: 4 PIX de 50.000 em 22, 23, 26 e 27/10 x 1 baixa de 22/10):
     // o lancamento fica com a linha mais proxima dele; as outras seguem para os titulos em vez de apontar todas para o mesmo lancamento.
-    const maisPerto = cand.length && linhas.filter(o => !o.casada && o.nat === l.nat && Math.abs(o.vl - l.vl) < 0.005 && Math.abs(dias(o.data, cand[0].data)) <= P.janela)
-      .every(o => Math.abs(dias(l.data, cand[0].data)) <= Math.abs(dias(o.data, cand[0].data)));
+    const maisPerto = cand.length && (afim || rivaisPool.filter(o => !o.casada && o.nat === l.nat && Math.abs(o.vl - l.vl) < 0.005 && Math.abs(dias(o.data, cand[0].data)) <= P.janela)
+      .every(o => Math.abs(dias(l.data, cand[0].data)) <= Math.abs(dias(o.data, cand[0].data))));
     if (cand.length && maisPerto) {
       const rivais = linhas.filter(o => o.cba !== l.cba && !o.casada && o.nat === l.nat && Math.abs(o.vl - l.vl) < 0.005 && Math.abs(dias(o.data, cand[0].data)) <= P.janela).length;
-      const unico = cand.length === 1 && rivais === 0;
-      const av = nivelDoPar(l, cand[0], unico, P.diasForte);
+      const unico = afim || (cand.length === 1 && rivais === 0);
+      const av0 = nivelDoPar(l, cand[0], unico, P.diasForte);
+      // [28/10/2026] a outra ponta desta linha e a conta do outro lado da transferencia: vale como identidade
+      const av = afim ? { ...av0, ident: true, nivel: av0.compat && av0.d === 0 ? 1 : 2 } : av0;
       const porque = [av.d === 0 ? 'mesma data' : `${av.d} dia(s) de diferenca`, unico ? 'par unico' : `${cand.length} lancamento(s) e ${rivais + 1} linha(s) do banco com esse valor`,
-        av.compat ? 'tipo compativel' : `tipo ${l.tpd} x ${cand[0].tpd} fora do padrao`, av.ident ? 'nome/documento confere' : 'sem nome no historico'].join(', ');
+        av.compat ? 'tipo compativel' : `tipo ${l.tpd} x ${cand[0].tpd} fora do padrao`, afim ? `outra ponta na conta ${cp.conta}` : av.ident ? 'nome/documento confere' : 'sem nome no historico'].join(', ');
       if (av.nivel <= 2) {
         cand[0].usado = true; l.casada = true;
         itens.push({ ...it, situacao: 'conciliar', tipo: 'C', nivel: av.nivel, confianca: av.nivel === 1 ? 'alta' : 'media', selecionado: true, movs: [cand[0]],
@@ -387,7 +456,9 @@ export async function motor(agn, filtro = {}) {
     if (!escolha) {
       const porAgn = new Map();
       for (const t of cands.map(marca)) { if (!porAgn.has(t.agn_id)) porAgn.set(t.agn_id, []); porAgn.get(t.agn_id).push(t); }
-      const grupos = [...porAgn.values()].filter(g => g.length >= 2 && g.length <= 40).sort((a, b) => (b.some(x => x.nome || x.ident) - a.some(x => x.nome || x.ident)));
+      // [28/10/2026] o dinheiro foi para/veio de outra conta do grupo (outra ponta achada): soma de varios titulos so vale se forem da empresa da outra
+      //    ponta (ex.: a saida de 200.000 da Freedom para a Quality casava com 4 titulos de FOLHA que somavam 200.000 por coincidencia)
+      const grupos = [...porAgn.values()].filter(g => g.length >= 2 && g.length <= 40 && (!cp || g[0].agn_id === cp.fil)).sort((a, b) => (b.some(x => x.nome || x.ident) - a.some(x => x.nome || x.ident)));
       for (const g of grupos) {
         const sub = subconjunto([...g].sort((a, b) => b.saldo - a.saldo).map(t => ({ ...t, vl: t.saldo })), l.vl, P.maxTitulos, 60000);
         if (sub) { escolha = sub.map(t => ({ t, enc: { valor: t.saldo, juros: 0, multa: 0, desconto: 0, atraso: Math.max(0, dias(l.data, t.venc)) } })); conf = sub.some(t => t.nome || t.ident) ? 'alta' : 'media'; motivo = `${sub.length} titulos do mesmo agente somam o valor do banco`; break; }
@@ -424,6 +495,24 @@ export async function motor(agn, filtro = {}) {
     sub.forEach(x => { const o = pool.find(t => t.id === x.id); if (o) o.usado = true; });
     Object.assign(it, { situacao: 'pronto', confianca: 'media', selecionado: false, motivo: `${sub.length} titulos de ${sub[0].agn_nome} com vencimento na data do banco somam o valor (combinacao unica)`,
       titulos: sub.map(t => tituloSaida(t, { valor: t.saldo, juros: 0, multa: 0, desconto: 0, atraso: Math.max(0, dias(it.data, t.venc)) }, Math.abs(dias(t.venc, it.data)))) });
+  }
+
+  // [28/10/2026] SUGESTOES DE LANCAMENTO PELO EXTRATO (flag na tela, desligada; o robo nunca usa). Decisoes do Alexandre:
+  //  - adiantamento de cliente (704) em TODA entrada, menos a ja casada com certeza (conciliar alta/media), lote, de-para e informativo;
+  //    cliente ja preenchido quando a outra ponta e de outra empresa do grupo (a FIL dona da conta que pagou);
+  //  - adiantamento a fornecedor (702) na saida cuja outra ponta e outra empresa do grupo e que nao tem lancamento no Mega (varrido acima);
+  //  - transferencia entre contas (712) quando a outra ponta tem a mesma raiz de CNPJ (concilia as duas linhas, se a outra estiver aberta).
+  for (const it of itens) {
+    if (it.linhas.length !== 1) continue;
+    const l = it.linhas[0], cp = cps.get(l.cba);
+    if (cp) it.outra_ponta = cp;
+    if (['informativo', 'lote', 'real'].includes(it.situacao) || (it.situacao === 'conciliar' && it.nivel <= 2) || (it.tipo === 'C' && it.situacao === 'decidir')) continue;   // C em decidir = liquidacao de cobranca
+    const grupo = cp && !cp.mesma_raiz ? { agn: cp.fil, nome: cp.fil_nome } : null;
+    const sug = {};
+    if (l.natureza === 'C') sug.adcli = { agn: grupo?.agn || null, nome: grupo?.nome || '', classe: 505, ccusto: 196 };
+    if (l.natureza === 'D' && grupo) sug.adfor = { agn: grupo.agn, nome: grupo.nome, classe: 500, ccusto: 232 };
+    if (cp && cp.mesma_raiz && cp.mesma_org) sug.transf = { conta: cp.conta, conta_nome: cp.conta_nome, cba2: cp.conciliada ? null : cp.cba, data: cp.data, conciliada: cp.conciliada, ccusto: 215 };
+    if (Object.keys(sug).length) it.sugestao = sug;
   }
 
   await anexarPedidos(itens.flatMap(i => [...(i.titulos || []), ...(i.candidatos || [])]));
@@ -488,6 +577,16 @@ async function executarReal(item, ctx) {
   const token = crypto.randomUUID();
   try {
     await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_REAL('${token}', ${num(item.org)}, ${num(item.cba)}, ${num(item.dep_id)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', ${item.hist ? `'${ascii(item.hist, 400)}'` : 'NULL'}, '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}'); END;`);
+    return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado deste lancamento.' };
+  } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'o lancamento'); }
+}
+
+// [28/10/2026] adiantamento de cliente (ADCLI) / a fornecedor (ADFOR) / transferencia (TRANSF) pela linha do extrato, ja conciliado (sql/35)
+async function executarLanc(item, ctx) {
+  const token = crypto.randomUUID();
+  const n = v => (v == null || v === '' ? 'NULL' : num(v));
+  try {
+    await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_LANC('${token}', ${num(item.org)}, ${num(item.cba)}, '${item.tipo}', ${n(item.agn)}, ${n(item.cba2)}, ${n(item.classe)}, ${n(item.ccusto)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', ${item.hist ? `'${ascii(item.hist, 400)}'` : 'NULL'}, '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}'); END;`);
     return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado deste lancamento.' };
   } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'o lancamento'); }
 }
@@ -604,6 +703,21 @@ export default async function baixarConciliarRoutes(app) {
     return buscarTitulos({ tipo, org, lanctos, venc_ini: q.venc_ini, venc_fim: q.venc_fim, nome: q.nome, doc: q.doc, vmin: valor(q.vmin), vmax: valor(q.vmax) });
   });
 
+  // [28/10/2026] cliente (C) ou fornecedor (F) para o adiantamento pelo extrato: nome, fantasia ou CNPJ, ate 30. So leitura.
+  app.get('/bxc/agentes', auth, async (req, reply) => {
+    const q = req.query || {}, tau = q.tau === 'F' ? 'F' : 'C';
+    const nome = ascii(q.busca, 60).toUpperCase().trim(), dig = String(q.busca || '').replace(/\D/g, '');
+    if (nome.length < 3 && dig.length < 3) return reply.code(400).send({ error: 'busca', message: 'Digite ao menos 3 letras do nome ou numeros do CNPJ.' });
+    const cond = [`${SEM_ACENTO('A.AGN_ST_NOME')} LIKE '%${nome}%'`, `${SEM_ACENTO('A.AGN_ST_FANTASIA')} LIKE '%${nome}%'`];
+    if (dig.length >= 3) cond.push(`REGEXP_REPLACE(A.AGN_ST_CGC,'[^0-9]','') LIKE '${dig}%'`);
+    if (/^\d+$/.test(String(q.busca || '').trim())) cond.push(`A.AGN_IN_CODIGO = ${num(q.busca)}`);
+    const rows = await megaQuery(`SELECT * FROM (SELECT A.AGN_IN_CODIGO AGN, SUBSTR(A.AGN_ST_NOME,1,60) NOME, SUBSTR(NVL(A.AGN_ST_FANTASIA,''),1,40) FANT, A.AGN_ST_CGC CGC
+      FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND (${cond.join(' OR ')})
+       AND EXISTS (SELECT 1 FROM MEGA.GLO_AGENTES_ID I WHERE I.AGN_TAB_IN_CODIGO = 53 AND I.AGN_IN_CODIGO = A.AGN_IN_CODIGO AND I.AGN_TAU_ST_CODIGO = '${tau}')
+     ORDER BY A.AGN_ST_NOME) WHERE ROWNUM <= 30`);
+    return { agentes: rows.map(r => ({ agn: num(r.AGN), nome: (r.NOME || '').trim(), fantasia: (r.FANT || '').trim(), cnpj: (r.CGC || '').trim() })) };
+  });
+
   app.post('/bxc/executar', {
     ...opera, schema: { body: { type: 'object', required: ['itens'], properties: {
       simular: { type: 'boolean' }, arquivo: { type: 'string', maxLength: 200 },
@@ -673,6 +787,24 @@ export default async function baixarConciliarRoutes(app) {
       try { const li = await orgDasLinhas([it.cba]); r = await executarReal({ org: li.org, cba: it.cba, dep_id: it.dep_id, hist: it.hist }, ctx); }
       catch (e) { r = { status: 'X', mensagem: String(e.message || e).slice(0, 300) }; }
       req.log.info({ gfin: 'bxc_real', usu: ctx.usu, ref: it.ref, status: r.status, msg: r.mensagem }, 'movimento real');
+      resultados.push({ ref: it.ref || '', ...r });
+    }
+    return { simular: ctx.simular, resultados };
+  });
+
+  // [28/10/2026] lancamento pelo extrato: adiantamento de cliente / a fornecedor / transferencia entre contas (flag da tela)
+  app.post('/bxc/lancar', {
+    ...opera, schema: { body: { type: 'object', required: ['itens'], properties: { simular: { type: 'boolean' },
+      itens: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['cba', 'tipo', 'agn'], properties: { ref: { type: 'string', maxLength: 40 }, cba: { type: 'integer', minimum: 1 },
+        tipo: { type: 'string', enum: ['ADCLI', 'ADFOR', 'TRANSF'] }, agn: { type: 'integer', minimum: 1 }, cba2: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
+        classe: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, ccusto: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, hist: { type: 'string', maxLength: 400 } } } } } } }
+  }, async (req) => {
+    const ctx = ctxDe(req, req.body.simular === true), resultados = [];
+    for (const it of req.body.itens) {
+      let r;
+      try { const li = await orgDasLinhas([it.cba]); r = await executarLanc({ ...it, org: li.org }, ctx); }
+      catch (e) { r = { status: 'X', mensagem: String(e.message || e).slice(0, 300) }; }
+      req.log.info({ gfin: 'bxc_lancar', usu: ctx.usu, ref: it.ref, tipo: it.tipo, status: r.status, msg: r.mensagem }, 'lancamento pelo extrato');
       resultados.push({ ref: it.ref || '', ...r });
     }
     return { simular: ctx.simular, resultados };

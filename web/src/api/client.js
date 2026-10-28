@@ -241,6 +241,8 @@ export const api = {
   bxcExecutar: (body) => req('/bxc/executar', { method: 'POST', body: JSON.stringify(body) }),
   bxcConciliar: (body) => req('/bxc/conciliar', { method: 'POST', body: JSON.stringify(body) }),
   bxcReal: (body) => req('/bxc/real', { method: 'POST', body: JSON.stringify(body) }),
+  bxcLancar: (body) => req('/bxc/lancar', { method: 'POST', body: JSON.stringify(body) }),
+  bxcAgentes: (params) => req(`/bxc/agentes?${new URLSearchParams(params || {})}`),
   bxcEstornar: (log_id) => req('/bxc/estornar', { method: 'POST', body: JSON.stringify({ log_id }) }),
   bxcFeitas: (params) => req(`/bxc/feitas?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
   bxcIgnorar: (cba, motivo) => req('/bxc/ignorar', { method: 'POST', body: JSON.stringify({ cba, motivo }) }),

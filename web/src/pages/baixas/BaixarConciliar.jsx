@@ -20,7 +20,12 @@ const fmtHr  = s => (s ? `${fmtBr(s)} ${String(s).slice(11, 16)}` : '—');
 const r2     = v => Math.round((Number(v) || 0) * 100) / 100;
 const isoDia = n => { const d = new Date(); d.setDate(d.getDate() - (n || 0)); return d.toISOString().slice(0, 10); };
 const CONF   = { alta: ['confere', 'text-emerald-300 border-emerald-700/40 bg-emerald-900/30'], media: ['provável', 'text-amber-300 border-amber-700/40 bg-amber-900/30'], baixa: ['só o valor', 'text-gray-400 border-ink-600 bg-ink-700/60'], manual: ['escolhido', 'text-prim-400 border-prim-600/40 bg-ink-700/60'] };
-const TIPO   = { P: 'pagamento', R: 'recebimento', A: 'lançamento', C: 'conciliação', I: 'informativo' };
+const TIPO   = { P: 'pagamento', R: 'recebimento', A: 'lançamento', C: 'conciliação', I: 'informativo', L: 'lançamento pelo extrato' };
+// [28/10/2026] lançamento pelo extrato (flag): adiantamento de cliente 704, a fornecedor 702, transferência entre contas 712 (sql/35)
+const LANC   = { ADCLI: 'Adiantamento de Cliente', ADFOR: 'Adiantamento a Fornecedor', TRANSF: 'Transferência entre contas' };
+const descLanc = (item, x) => x.tipo === 'TRANSF'
+  ? `Transferência entre contas (712) ${item.linhas?.[0]?.natureza === 'C' ? 'vinda de' : 'para'} ${x.conta_nome}${x.cba2 ? ' · concilia as duas contas' : ' · a outra conta concilia depois'}`
+  : `${LANC[x.tipo]} (${x.tipo === 'ADCLI' ? 704 : 702}) · ${x.nome} (${x.agn}) · classe ${x.classe} / CC ${x.ccusto}`;
 
 // dinheiro que o banco movimentou para este título = principal + juros + multa (o desconto só abate o título: título quita principal + desconto)
 // [25/10/2026] regra alinhada com a procedure CCS_P_GFIN_BXC_X depois da prova simulada
@@ -115,6 +120,7 @@ export default function BaixarConciliar() {
   const [modal, setModal]     = useState(null);     // { tipo: 'encargos'|'pedido'|'ignorar'|'desfazer', ... }
   const [escolha, setEscolha] = useState({});       // id -> Set(lancto) na seção Decidir
   const [manual, setManual]   = useState({});       // [28/10/2026] id -> títulos escolhidos no painel de busca (o item vira "pronto")
+  const [lanc, setLanc]       = useState({});       // [28/10/2026] id -> { tipo: ADCLI|ADFOR|TRANSF, agn, nome, classe, ccusto, cba2, conta_nome } (flag marcada)
   const fileRef = useRef(null);
   const alvoArquivo = useRef(null);
 
@@ -132,7 +138,9 @@ export default function BaixarConciliar() {
     try {
       const [d, f] = await Promise.all([api.bxcPendentes({ conta, tipo, ini, fim }), api.bxcFeitas({ dias: 1, conta }).catch(() => ({ itens: [] }))]);
       setDados(d); setFeitas(f.itens || []); setRes({});
-      setMarcados(new Set((d.itens || []).filter(i => i.situacao === 'pronto' && !bloqueado(i)).map(i => i.id)));
+      const vivosL = new Set((d.itens || []).filter(i => i.sugestao).map(i => i.id));
+      setLanc(l => Object.fromEntries(Object.entries(l).filter(([id]) => vivosL.has(id))));
+      setMarcados(new Set([...(d.itens || []).filter(i => i.situacao === 'pronto' && !bloqueado(i)).map(i => i.id), ...Object.keys(lanc).filter(id => vivosL.has(id))]));
       // títulos escolhidos à mão: refaz saldo e pedido de liberação (o motor não conhece esses títulos); some o que a linha já não tem
       const vivos = new Set((d.itens || []).map(i => i.id)), novo = {};
       for (const [id, tits] of Object.entries(manual)) {
@@ -153,7 +161,8 @@ export default function BaixarConciliar() {
   // [28/10/2026] item de conciliacao nivel 3 (possivel lancamento) tambem pode ir para a busca: D = pagar, C = receber
   const tipoTit = i => ['P', 'R'].includes(i.tipo) ? i.tipo : (i.linhas?.[0]?.natureza === 'C' ? 'R' : 'P');
   const buscavel = i => ['P', 'R'].includes(i.tipo) || (i.situacao === 'conciliar' && i.nivel === 3);
-  const itens = useMemo(() => (dados?.itens || []).map(i => manual[i.id]?.length ? { ...i, tipo: tipoTit(i), situacao: 'pronto', confianca: 'manual', titulos: manual[i.id], candidatos: [], motivo: 'Títulos escolhidos na busca' } : i).filter(i => !q || JSON.stringify([i.linhas, i.titulos?.map(t => [t.agn_nome, t.doc])]).toLowerCase().includes(q)), [dados, q, manual]);
+  const itens = useMemo(() => (dados?.itens || []).map(i => lanc[i.id] ? { ...i, tipo: 'L', situacao: 'pronto', confianca: 'manual', titulos: [], candidatos: [], movs: [], motivo: LANC[lanc[i.id].tipo] }
+    : manual[i.id]?.length ? { ...i, tipo: tipoTit(i), situacao: 'pronto', confianca: 'manual', titulos: manual[i.id], candidatos: [], motivo: 'Títulos escolhidos na busca' } : i).filter(i => !q || JSON.stringify([i.linhas, i.titulos?.map(t => [t.agn_nome, t.doc])]).toLowerCase().includes(q)), [dados, q, manual, lanc]);
   const por = s => itens.filter(i => i.situacao === s);
   const prontos = por('pronto'), decidir = por('decidir'), reais = por('real'), lotes = por('lote'), conciliar = por('conciliar'), infos = por('informativo');
   const selecionados = prontos.filter(i => marcados.has(i.id) && res[i.id]?.status !== 'B');
@@ -181,7 +190,8 @@ export default function BaixarConciliar() {
     for (const p of payloads) {
       setRes(r => ({ ...r, [p.ref]: { fase: 'rodando', simular } }));
       try {
-        const out = await fn({ simular, itens: [p] });
+        const { _fn, ...corpo } = p;                         // [28/10/2026] item de lançamento pelo extrato vai para /bxc/lancar
+        const out = await (_fn || fn)({ simular, itens: [corpo] });
         const x = out.resultados?.[0] || { status: 'X', mensagem: 'O servidor não devolveu resultado.' };
         setRes(r => ({ ...r, [p.ref]: { fase: 'fim', simular, ...x } })); saida.push({ ...p, ...x });
       } catch (e) {
@@ -208,7 +218,8 @@ export default function BaixarConciliar() {
   }
 
   // ações
-  const baixarSelecionados = () => pedirConfirmacao(selecionados.map(payloadBaixa), api.bxcExecutar, `Baixar e conciliar ${fmtN(selecionados.length)} item(ns)?`, `${fmt(somaSel)} na conta ${contaAtual?.nome || conta}. Cada item vira baixa no Mega, na data do banco, já conciliada com a linha do extrato. Primeiro valido tudo; só gravo o que passar.`);
+  const payloadLanc = item => { const x = lanc[item.id]; return { _fn: api.bxcLancar, ref: item.id, cba: item.linhas[0]?.cba, tipo: x.tipo, agn: x.tipo === 'TRANSF' ? x.conta : x.agn, cba2: x.cba2 || null, classe: x.classe || null, ccusto: x.ccusto || null }; };
+  const baixarSelecionados = () => pedirConfirmacao(selecionados.map(i => (lanc[i.id] ? payloadLanc(i) : payloadBaixa(i))), api.bxcExecutar, `Baixar e conciliar ${fmtN(selecionados.length)} item(ns)?`, `${fmt(somaSel)} na conta ${contaAtual?.nome || conta}. Cada item vira baixa no Mega, na data do banco, já conciliada com a linha do extrato. Primeiro valido tudo; só gravo o que passar.`);
   const lancarReal = item => pedirConfirmacao([{ ref: item.id, cba: item.linhas[0]?.cba, dep_id: item.depara?.id, hist: item.linhas[0]?.historico }], api.bxcReal, 'Lançar no Mega?', `${fmt(item.valor_banco)} · ${item.linhas[0]?.historico} → ${item.depara?.descricao || 'de-para'}. Nasce o lançamento avulso já conciliado.`);
   const conciliarItem = item => pedirConfirmacao([{ ref: item.id, conta, movs: (item.movs || []).map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: (item.linhas || []).map(l => l.cba) }], api.bxcConciliar, 'Conciliar no Mega?', `${fmtN(item.movs?.length || 0)} lançamento(s) × ${fmtN(item.linhas?.length || 0)} linha(s) do extrato · ${fmt(item.valor_banco)}.`);
   function decidirBaixar(item) {
@@ -235,7 +246,11 @@ export default function BaixarConciliar() {
     setAbertos(a => { const n = new Set(a); n.add(item.id); return n; });
     setModal(null);
   }
-  const desfazerEscolha = item => { setManual(m => { const n = { ...m }; delete n[item.id]; return n; }); setMarcados(m => { const n = new Set(m); n.delete(item.id); return n; }); };
+  const usarLanc = (item, x) => {
+    setLanc(l => ({ ...l, [item.id]: x })); setManual(m => { const n = { ...m }; delete n[item.id]; return n; });
+    setMarcados(m => { const n = new Set(m); n.add(item.id); return n; }); setModal(null);
+  };
+  const desfazerEscolha = item => { setManual(m => { const n = { ...m }; delete n[item.id]; return n; }); setLanc(l => { const n = { ...l }; delete n[item.id]; return n; }); setMarcados(m => { const n = new Set(m); n.delete(item.id); return n; }); };
   async function ignorar(item, motivo) {
     setRodando(true);
     try { for (const l of item.linhas || []) await api.bxcIgnorar(l.cba, motivo); } catch (e) { setErro(e.message); }
@@ -299,29 +314,47 @@ export default function BaixarConciliar() {
       </div>
     );
   }
+  // [28/10/2026] flags "Lançar como ..." (desligadas; o robô nunca usa). Marcar abre a confirmação do agente/classe; desmarcar volta ao robô.
+  function OpcoesLanc({ item }) {
+    const s = item.sugestao, atual = lanc[item.id]?.tipo;
+    if (!s || res[item.id]?.status === 'B') return null;
+    const entrada = item.linhas?.[0]?.natureza === 'C';
+    const op = [s.transf && ['TRANSF', `Lançar Transferência entre contas (${entrada ? 'vinda de' : 'para'} ${s.transf.conta_nome})`], s.adcli && ['ADCLI', 'Lançar como Adiantamento de Cliente'], s.adfor && ['ADFOR', 'Lançar como Adiantamento a Fornecedor']].filter(Boolean);
+    const abrir = tp => {
+      const b = tp === 'TRANSF' ? s.transf : tp === 'ADCLI' ? s.adcli : s.adfor;
+      setModal({ tipo: 'lancar', item, lt: tp, v: tp === 'TRANSF' ? { tipo: tp, conta: b.conta, conta_nome: b.conta_nome, cba2: b.cba2, data2: b.data, ccusto: b.ccusto }
+        : { tipo: tp, agn: b.agn, nome: b.nome, classe: b.classe, ccusto: b.ccusto } });
+    };
+    return <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5">{op.map(([tp, txt]) => (
+      <label key={tp} className="inline-flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+        <input type="checkbox" className="accent-prim-500" checked={atual === tp} disabled={rodando} onChange={() => (atual === tp ? desfazerEscolha(item) : abrir(tp))} /> {txt}
+      </label>))}</div>;
+  }
   function Card({ item, acao }) {
     const aberto = abertos.has(item.id), r = res[item.id], feito = r?.status === 'B';
     const pronto = item.situacao === 'pronto', blq = bloqueado(item);
     const nat = item.linhas?.[0]?.natureza || (item.tipo === 'P' ? 'D' : 'C');
     return (
       <div className={`card p-4 transition ${feito ? 'opacity-60' : ''} ${pronto && marcados.has(item.id) && !feito ? 'border-prim-600/40' : ''}`}>
-        <div className="flex items-start gap-4">
+        <div className="flex flex-wrap sm:flex-nowrap items-start gap-x-4 gap-y-2">
           {pronto && <input type="checkbox" className="accent-prim-500 w-5 h-5 mt-1 shrink-0" checked={feito || (marcados.has(item.id) && !blq)} disabled={feito || rodando || blq} onChange={() => setMarcados(m => toggle(m, item.id))} />}
           <div className="w-20 shrink-0 pt-0.5 text-sm text-gray-400 font-mono">{fmtBr(item.data)}</div>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-[200px]">
             <div className="text-gray-100 truncate" title={item.linhas?.map(l => l.historico).join(' | ')}>{item.linhas?.[0]?.historico || '—'}{item.linhas?.length > 1 && <span className="text-gray-500 text-xs"> +{item.linhas.length - 1} linha(s)</span>}</div>
             <div className="text-xs text-gray-500 mt-0.5">{TIPO[item.tipo] || ''}{item.linhas?.[0]?.documento ? ` · doc. ${item.linhas[0].documento}` : ''}{item.motivo && item.situacao !== 'pronto' ? ` · ${item.motivo}` : ''}</div>
-            {!aberto && !feito && buscavel(item) && <div className="flex flex-wrap gap-3 mt-1.5">
+            {!aberto && !feito && buscavel(item) && !lanc[item.id] && <div className="flex flex-wrap gap-3 mt-1.5">
               <button className="inline-flex items-center gap-1 text-xs text-prim-300 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => setModal({ tipo: 'buscar', item: { ...item, tipo: tipoTit(item) } })}><Search size={12} /> Buscar no contas a {tipoTit(item) === 'P' ? 'pagar' : 'receber'}</button>
-              {manual[item.id] && <button className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={12} /> Desfazer escolha</button>}
+              {(manual[item.id] || lanc[item.id]) && <button className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={12} /> Desfazer escolha</button>}
             </div>}
+            {!aberto && !feito && <OpcoesLanc item={item} />}
           </div>
           <div className="text-right shrink-0">
             <div className={`text-lg font-semibold ${nat === 'D' ? 'text-rose-300' : 'text-emerald-300'}`}>{nat === 'D' ? '−' : '+'} {fmt(item.valor_banco)}</div>
             {item.confianca && item.situacao === 'pronto' && <Pilula cls={CONF[item.confianca]?.[1] || ''}>{CONF[item.confianca]?.[0]}</Pilula>}
           </div>
           <div className="w-[40%] min-w-[260px] space-y-1 hidden lg:block">
-            {(item.titulos || []).length ? item.titulos.map(t => <Titulo key={t.lancto} item={item} t={t} compacto />)
+            {lanc[item.id] ? <div className="text-sm text-gray-200">{descLanc(item, lanc[item.id])}</div>
+              : (item.titulos || []).length ? item.titulos.map(t => <Titulo key={t.lancto} item={item} t={t} compacto />)
               : item.depara ? <div className="text-sm text-gray-300">{item.depara.descricao}{item.depara.classe ? <span className="text-gray-500 text-xs"> · classe {item.depara.classe}</span> : <span className="text-amber-300 text-xs"> · de-para sem classe: configure</span>}</div>
               : item.movs?.length ? <div className="text-sm text-gray-300">{fmtN(item.movs.length)} lançamento(s) no Mega somam {fmt(item.movs.reduce((s, m) => s + Number(m.valor || 0), 0))}</div>
               : item.candidatos_mov?.length ? <div className="text-sm text-gray-300">possível lançamento no Mega: {item.candidatos_mov.slice(0, 2).map(m => `${m.lancto} de ${fmtBr(m.data)} · ${m.tpd} ${m.doc}${m.hist ? ` · ${m.hist.trim()}` : ''} · ${fmt(m.vl)}`).join(' | ')}</div>
@@ -345,9 +378,11 @@ export default function BaixarConciliar() {
               <div className="flex flex-wrap gap-2 pt-1">
                 {['P', 'R'].includes(item.tipo) && <button className="btn-ghost text-xs py-1.5" disabled={rodando || feito} onClick={() => { alvoArquivo.current = item; fileRef.current?.click(); }}><Paperclip size={13} /> {edits[item.id]?.comp ? 'Trocar comprovante' : 'Anexar comprovante'}</button>}
                 {!feito && buscavel(item) && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => setModal({ tipo: 'buscar', item: { ...item, tipo: tipoTit(item) } })}><Search size={13} /> Buscar no contas a {tipoTit(item) === 'P' ? 'pagar' : 'receber'}</button>}
-                {!feito && manual[item.id] && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={13} /> Desfazer escolha</button>}
+                {!feito && (manual[item.id] || lanc[item.id]) && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={13} /> Desfazer escolha</button>}
                 {!feito && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => setModal({ tipo: 'ignorar', item, motivo: '' })}><EyeOff size={13} /> Ignorar</button>}
               </div>
+              {!feito && <OpcoesLanc item={item} />}
+              {item.outra_ponta && <div className="text-[11px] text-gray-500">outra ponta: {item.outra_ponta.conta_nome} · {fmtBr(item.outra_ponta.data)}{item.outra_ponta.hist ? ` · ${item.outra_ponta.hist}` : ''}{item.outra_ponta.conciliada ? ' · já conciliada lá' : ''} · {item.outra_ponta.mesma_raiz ? 'mesma empresa (raiz do CNPJ)' : item.outra_ponta.fil_nome}</div>}
             </div>
             <div className="space-y-2">
               {(item.titulos || []).length > 0 && <>
@@ -512,6 +547,7 @@ export default function BaixarConciliar() {
       {modal?.tipo === 'pedido' && <EncargosModal modal={modal} setModal={setModal} pedido onPedir={pedirLiberacao} rodando={rodando} />}
       {modal?.tipo === 'buscar' && <BuscaTitulos item={modal.item} usados={new Set(itens.filter(i => i.id !== modal.item.id).flatMap(i => (i.titulos || []).map(t => t.lancto)))}
         onUsar={sel => usarTitulos(modal.item, sel)} onClose={() => setModal(null)} />}
+      {modal?.tipo === 'lancar' && <LancarModal modal={modal} setModal={setModal} onUsar={usarLanc} />}
       {modal?.tipo === 'ignorar' && (
         <Modal titulo="Ignorar esta linha do extrato?" onClose={() => setModal(null)} acoes={<><button className="btn-ghost" onClick={() => setModal(null)}>Voltar</button><button className="btn-prim" disabled={rodando || !modal.motivo.trim()} onClick={() => ignorar(modal.item, modal.motivo.trim())}>Ignorar</button></>}>
           <p>Ela deixa de aparecer aqui. Não muda nada no Mega.</p>
@@ -551,6 +587,47 @@ function EncargosModal({ modal, setModal, onSalvar, onPedir, pedido, rodando }) 
       {pedido && <textarea className="input" rows={3} placeholder="por que isentar ou alterar? (obrigatório)" value={motivo} onChange={e => setModal({ ...modal, motivo: e.target.value })} />}
       {pedido && <div className="text-xs text-gray-500">Quem libera encargos recebe o pedido na tela Liberação de Encargos. Enquanto não decidirem, este item fica fora da baixa.</div>}
       {erro && <div className="text-xs text-rose-300">{erro}</div>}
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------- [28/10/2026] lançamento pelo extrato
+// Pedido do Alexandre: em depósito, perguntar (flag) se lança Adiantamento de Cliente; mesma raiz de CNPJ dos dois lados, Transferência entre contas
+// "nas duas filiais"; do lado de quem pagou (empresa do grupo), Adiantamento a Fornecedor se ainda não existe. Aqui só confirma agente/classe/CC.
+function LancarModal({ modal, setModal, onUsar }) {
+  const { item, lt, v } = modal, transf = lt === 'TRANSF', entrada = item.linhas?.[0]?.natureza === 'C';
+  const [busca, setBusca] = useState(''); const [achados, setAchados] = useState(null); const [aviso, setAviso] = useState('');
+  const set = (k, val) => setModal({ ...modal, v: { ...v, [k]: val } });
+  async function procurar() {
+    setAviso('');
+    try { const r = await api.bxcAgentes({ tau: lt === 'ADFOR' ? 'F' : 'C', busca: busca.trim() }); setAchados(r.agentes || []); if (!(r.agentes || []).length) setAviso('Nada encontrado.'); }
+    catch (e) { setAviso(e.message); }
+  }
+  const ok = transf ? !!v.conta : !!v.agn && Number(v.classe) > 0 && Number(v.ccusto) > 0;
+  return (
+    <Modal titulo={`Lançar ${LANC[lt]}?`} onClose={() => setModal(null)} acoes={<>
+      <button className="btn-ghost" onClick={() => setModal(null)}>Cancelar</button>
+      <button className="btn-prim" disabled={!ok} onClick={() => onUsar(item, { ...v, classe: Number(v.classe) || null, ccusto: Number(v.ccusto) || null })}><CheckCircle2 size={15} /> Usar</button>
+    </>}>
+      <div className="text-xs text-gray-400">{fmtBr(item.data)} · {item.linhas?.[0]?.historico} · <b className={entrada ? 'text-emerald-300' : 'text-rose-300'}>{entrada ? '+' : '−'} {fmt(item.valor_banco)}</b> · documento EXT{item.linhas?.[0]?.cba}</div>
+      {transf ? <div className="space-y-2 text-sm">
+        <div>{entrada ? 'Sai de' : 'Vai para'} <b>{v.conta_nome}</b> ({v.conta}). Nasce o TRANSFD na conta de origem e o TRANSFC na de destino, como na tela do Mega.</div>
+        <div className="text-xs text-gray-400">{v.cba2 ? `A linha de ${fmtBr(v.data2)} da outra conta também fica conciliada (as duas empresas na mesma operação).` : 'A outra conta não tem a linha aberta no extrato: o lançamento dela fica para conciliar lá.'}</div>
+        <label className="text-xs text-gray-400 space-y-1 block w-40"><span>Centro de custo</span><input type="number" className="input" value={v.ccusto ?? ''} onChange={e => set('ccusto', e.target.value)} /></label>
+      </div> : <div className="space-y-3">
+        <div className="text-sm">{lt === 'ADCLI' ? 'Cliente' : 'Fornecedor'}: {v.agn ? <b>{v.nome} ({v.agn})</b> : <span className="text-amber-300">escolha abaixo</span>}</div>
+        <div className="flex gap-2"><input className="input flex-1" placeholder={`buscar ${lt === 'ADCLI' ? 'cliente' : 'fornecedor'} por nome, fantasia, CNPJ ou código`} value={busca} onChange={e => setBusca(e.target.value)} onKeyDown={e => e.key === 'Enter' && procurar()} />
+          <button className="btn-ghost" onClick={procurar} disabled={busca.trim().length < 3}><Search size={14} /> Buscar</button></div>
+        {aviso && <div className="text-xs text-amber-300">{aviso}</div>}
+        {achados?.length > 0 && <div className="max-h-48 overflow-y-auto border border-ink-700 rounded divide-y divide-ink-700">{achados.map(a => (
+          <button key={a.agn} className={`w-full text-left px-3 py-1.5 text-xs hover:bg-ink-700 ${a.agn === v.agn ? 'bg-ink-700' : ''}`} onClick={() => setModal({ ...modal, v: { ...v, agn: a.agn, nome: a.nome } })}>
+            <span className="text-gray-100">{a.nome}</span> <span className="text-gray-500">{a.fantasia} · {a.cnpj} · {a.agn}</span></button>))}</div>}
+        <div className="flex gap-3">
+          <label className="text-xs text-gray-400 space-y-1 w-32"><span>Classe</span><input type="number" className="input" value={v.classe ?? ''} onChange={e => set('classe', e.target.value)} /></label>
+          <label className="text-xs text-gray-400 space-y-1 w-32"><span>Centro de custo</span><input type="number" className="input" value={v.ccusto ?? ''} onChange={e => set('ccusto', e.target.value)} /></label>
+        </div>
+        <div className="text-xs text-gray-500">Como na tela do Mega: {lt === 'ADCLI' ? 'ADCLI na conta + CREDITO no cliente (adiantamento em aberto para descontar depois)' : 'ADIFOR na conta + DEBITO no fornecedor (adiantamento em aberto para descontar depois)'}, já conciliado com a linha do extrato.</div>
+      </div>}
     </Modal>
   );
 }

@@ -46,6 +46,25 @@ BEGIN
         MOVS(W_N) := TO_NUMBER(TRIM(W_ITEM));
     END LOOP;
     IF L.CON_IN_SEQUENCIAL IS NULL OR MOVS.COUNT = 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Operacao sem conciliacao ou sem movimentos registrados.'); END IF;
+    /* [28/10/2026] transferencia do Gestor (sql/35): a outra ponta foi conciliada por um log companheiro tipo C; desfaz ele antes.
+       Conciliada por fora do Gestor: recusa. Nas baixas e lancamentos avulsos o contra-movimento nunca e conciliado (nada muda). */
+    IF L.LOG_CH_TIPO IN ('P', 'R', 'A') THEN
+        FOR I IN 1 .. MOVS.COUNT LOOP
+            FOR M IN (SELECT X.CON_IN_SEQUENCIAL FROM MEGA.FIN_MOVIMENTO X
+                       WHERE X.ORG_IN_CODIGO = L.ORG_IN_CODIGO AND X.MOV_TAB_IN_CODIGO = C_MOV_TAB AND X.MOV_SEQ_IN_CODIGO = L.MOV_SEQ_IN_CODIGO AND X.MOV_IN_NUMLANCTO = MOVS(I)
+                         AND X.CON_IN_SEQUENCIAL IS NOT NULL AND X.CON_IN_SEQUENCIAL <> L.CON_IN_SEQUENCIAL) LOOP
+                DECLARE W_LOG2 NUMBER;
+                BEGIN
+                    SELECT MAX(G.LOG_IN_CODIGO) INTO W_LOG2 FROM MEGA.CCS_TB_GFIN_BXC_LOG G
+                     WHERE G.LOG_CH_TIPO = 'C' AND G.LOG_CH_STATUS = 'B' AND G.CON_IN_SEQUENCIAL = M.CON_IN_SEQUENCIAL AND G.LOG_ST_MOVS = TO_CHAR(MOVS(I));
+                    IF W_LOG2 IS NULL THEN RAISE_APPLICATION_ERROR(-20100, 'O lancamento ' || MOVS(I) || ' foi conciliado na outra conta fora do Gestor. Desconcilie pelo Mega antes.'); END IF;
+                    MEGA.CCS_P_GFIN_BXC_ESTORNO_X(W_LOG2, P_USU);
+                    UPDATE MEGA.CCS_TB_GFIN_BXC_LOG SET LOG_CH_STATUS = 'E', EST_USU_IN_CODIGO = P_USU, EST_DT = SYSDATE, LOG_ST_MENSAGEM = 'Desfeita junto com o log ' || P_LOG
+                     WHERE LOG_IN_CODIGO = W_LOG2;
+                END;
+            END LOOP;
+        END LOOP;
+    END IF;
 
     /* CONCILIACAO INTACTA? os mesmos movimentos e as mesmas linhas, nada a mais */
     SELECT COUNT(*) INTO W_N FROM MEGA.FIN_MOVIMENTO M WHERE M.CON_IN_SEQUENCIAL = L.CON_IN_SEQUENCIAL;

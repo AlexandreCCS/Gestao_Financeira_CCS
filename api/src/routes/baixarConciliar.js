@@ -18,7 +18,15 @@ import { megaQuery, megaExec } from '../soap/mega.js';
 import { lerComprovante, confereComprovante } from './bxcOcr.js';
 
 const MOD_OPERA = 'BAIXAS_CONCILIACAO', MOD_ENCARGOS = 'LIBERA_ENCARGOS';
-const INFORMATIVOS = new Set(['APL', 'RESG', 'APLICACAO', 'RESG2', 'REND2']);
+const INFORMATIVOS = new Set(['APL', 'RESG', 'APLICACAO', 'RESG2', 'REND2', 'REND']);
+// [28/10/2026] Itau Aplic Aut Mais: o lote da APLICACAO vem com categorias 000-007 (REND 000 liquido saindo, APLICACAO 001, RESG2 003, REND2 005
+// bruto, IOF 006, IR 007) e e importado na mesma conta da c/c; fecha em zero. A entrada real do rendimento e a RESG C "REND PAGO APLIC AUT MAIS"
+// da c/c, lancada pelo liquido via de-para COM "historico contem". IR/IOF desse lote ja estao descontados no liquido: nunca lancar.
+const loteAplicacao = l => l.banco === 341 && /^00[0-7]$/.test(l.tpdb || '');
+const motivoAplic = l => /APR D-1/i.test(l.hist) ? 'Previa do rendimento (arquivo do dia anterior): nao lancar'
+  : l.tpd === 'REND' ? 'Rendimento liquido saindo da aplicacao: a entrada na conta e a linha REND PAGO APLIC AUT MAIS'
+  : ['IR', 'IOF'].includes(l.tpd) ? `${l.tpd} do rendimento da aplicacao: ja descontado no liquido, nao lancar`
+  : 'Aplicacao automatica / rendimento: movimento interno do banco';
 const TPD_FIN_MAP = { PGTO: 'PGTOM', DEPP: 'DEPR' };
 const UPLOADS = path.resolve(process.env.BXC_UPLOADS || 'uploads/bxc');
 
@@ -182,11 +190,11 @@ async function deparas() {
       DEP_CH_AUTO AUTO, DEP_RE_TETO TETO, DEP_CH_ATIVO ATIVO, TO_CHAR(DEP_DT_ALTERACAO,'YYYY-MM-DD HH24:MI') EM, DEP_ST_USU USU,
       (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = D.AGN_IN_CODIGO) AGN_NOME
     FROM MEGA.CCS_TB_GFIN_BXC_DEPARA D ORDER BY D.DEP_CH_ATIVO DESC, D.TPD_ST_CODIGO, D.DEP_IN_CODIGO`);
-  return rows.map(r => ({ id: num(r.ID), banco: r.BCO ? num(r.BCO) : null, conta: r.CTA ? num(r.CTA) : null, tpd: r.TPD, hist_like: r.HL || '', natureza: r.NAT, acao: num(r.ACAO), agn_id: r.AGN ? num(r.AGN) : null, agn_nome: r.AGN_NOME || '',
+  return rows.map(r => ({ id: num(r.ID), banco: num(r.BCO) || null, conta: num(r.CTA) || null, tpd: r.TPD, hist_like: r.HL || '', natureza: r.NAT, acao: num(r.ACAO), agn_id: num(r.AGN) || null, agn_nome: r.AGN_NOME || '',
     tpd_fin: r.TPDF || '', cla_ide: r.CIDE || '1', classe: r.CLA ? num(r.CLA) : null, ccf_ide: r.KIDE || '1', ccusto: r.CCF ? num(r.CCF) : null, pro_ide: r.PIDE || '9', projeto: r.PRO ? num(r.PRO) : null,
-    historico: r.HIST || '', auto: r.AUTO === 'S', teto: r.TETO ? num(r.TETO) : null, ativo: r.ATIVO === 'S', alterado_em: r.EM || '', alterado_por: r.USU || '',
+    historico: r.HIST || '', auto: r.AUTO === 'S', teto: num(r.TETO) || null, ativo: r.ATIVO === 'S', alterado_em: r.EM || '', alterado_por: r.USU || '',
     // apelidos usados pela tela de configuracao e pelo cartao do item
-    agente: r.AGN ? num(r.AGN) : null, classe_ide: r.CIDE || '1', ccusto_ide: r.KIDE || '1', descricao: r.HIST || `${r.TPD} ${r.NAT === 'D' ? 'saida' : 'entrada'} (acao ${r.ACAO})` }));
+    agente: num(r.AGN) || null, classe_ide: r.CIDE || '1', ccusto_ide: r.KIDE || '1', descricao: r.HIST || `${r.TPD} ${r.NAT === 'D' ? 'saida' : 'entrada'} (acao ${r.ACAO})` }));
 }
 
 async function titulosCandidatos(tipo, orgs, ini, fim, P, forma) {
@@ -249,16 +257,18 @@ export async function motor(agn, filtro = {}) {
 
   for (const l of [...linhas].sort((a, b) => b.vl - a.vl)) {
     const it = base(l);
-    // 1) aplicacao automatica: so informa
-    if (INFORMATIVOS.has(l.tpd)) { itens.push({ ...it, situacao: 'informativo', tipo: 'I', confianca: 'alta', motivo: 'Aplicacao automatica / rendimento: movimento interno do banco' }); continue; }
+    // 1) aplicacao automatica: so informa, salvo de-para COM "historico contem" (rendimento liquido na c/c). [28/10/2026] antes o
+    //    INFORMATIVOS vinha antes do de-para e REND/IR/IOF do lote da aplicacao caiam em titulos a pagar (ICMS "fecha com encargos").
+    const aplic = INFORMATIVOS.has(l.tpd) || loteAplicacao(l);
     // 2) de-para: movimento real
-    const dep = depAtivos.find(d => d.tpd === l.tpd && d.natureza === l.nat && (!d.banco || d.banco === l.banco) && (!d.conta || d.conta === conta.agn_id) && (!d.hist_like || l.hist.toUpperCase().includes(d.hist_like.toUpperCase())));
+    const dep = depAtivos.find(d => (!aplic || d.hist_like) && d.tpd === l.tpd && d.natureza === l.nat && (!d.banco || d.banco === l.banco) && (!d.conta || d.conta === conta.agn_id) && (!d.hist_like || l.hist.toUpperCase().includes(d.hist_like.toUpperCase())));
     if (dep) {
       const ok = !!dep.classe && (dep.agn_id || conta.agn_banco);
       itens.push({ ...it, situacao: ok ? 'real' : 'decidir', tipo: 'A', confianca: ok ? 'alta' : 'baixa', depara: dep, selecionado: ok && dep.auto,
         motivo: ok ? `${dep.historico || dep.tpd}: lanca ${dep.acao === 710 ? 'saida' : 'entrada'} avulsa na classe ${dep.classe} e concilia` : 'De-para sem classe financeira ou sem agente contraparte: configure em Baixar e conciliar > Configuracao' });
       continue;
     }
+    if (aplic) { itens.push({ ...it, situacao: 'informativo', tipo: 'I', confianca: 'alta', motivo: motivoAplic(l) }); continue; }
     // 3) ja existe o lancamento no Mega: so conciliar. [26/10/2026] por NIVEIS (antes: so valor + natureza +-janela, o mais proximo,
     //    marcado e no robo). Nivel 1 = alta (robo); 2 = media (marcado, confirma); 3 = baixa (o usuario escolhe entre os candidatos).
     const natMega = l.nat === 'D' ? 'C' : 'D';
@@ -627,12 +637,13 @@ export default async function baixarConciliarRoutes(app) {
     // [25/10/2026] aceita os apelidos da tela (agente, classe_ide, ccusto_ide) e booleanos em texto ('S'/'N')
     const b = req.body, ctx = ctxDe(req), id = b.id ? num(b.id) : null;
     const v = x => (x == null || x === '' ? 'NULL' : num(x));
+    const v0 = x => (num(x) ? num(x) : 'NULL');   // [28/10/2026] banco/conta/agente/teto: 0 = vazio (todos); a procedure recusava 0
     const s = (x, n) => (x == null || x === '' ? 'NULL' : `'${ascii(x, n)}'`);
     const simNao = (x, padrao) => (x === true || x === 'S' || x === 'true' ? 'S' : x === false || x === 'N' || x === 'false' ? 'N' : padrao);
     const agn = b.agn_id ?? b.agente, cide = b.cla_ide || b.classe_ide || '1', kide = b.ccf_ide || b.ccusto_ide || '1';
-    const sets = `BAN_IN_NUMERO = ${v(b.banco)}, CTA_AGN_IN_CODIGO = ${v(b.conta)}, TPD_ST_CODIGO = '${ascii(b.tpd, 10)}', DEP_ST_HIST_LIKE = ${s(b.hist_like, 60)}, DEP_CH_NATUREZA = '${b.natureza}', ACAO_IN_CODIGO = ${num(b.acao)}, AGN_IN_CODIGO = ${v(agn)},
+    const sets = `BAN_IN_NUMERO = ${v0(b.banco)}, CTA_AGN_IN_CODIGO = ${v0(b.conta)}, TPD_ST_CODIGO = '${ascii(b.tpd, 10)}', DEP_ST_HIST_LIKE = ${s(b.hist_like, 60)}, DEP_CH_NATUREZA = '${b.natureza}', ACAO_IN_CODIGO = ${num(b.acao)}, AGN_IN_CODIGO = ${v0(agn)},
       TPD_FIN_ST_CODIGO = ${s(b.tpd_fin, 10)}, CLA_IDE_ST_CODIGO = ${s(cide, 3)}, CLA_IN_REDUZIDO = ${v(b.classe)}, CCF_IDE_ST_CODIGO = ${s(kide, 3)}, CCF_IN_REDUZIDO = ${v(b.ccusto)}, PRO_IDE_ST_CODIGO = ${s(b.pro_ide || '9', 3)}, PRO_IN_REDUZIDO = ${b.projeto == null || b.projeto === '' ? 2 : num(b.projeto)},
-      DEP_ST_HISTORICO = ${s(b.historico, 120)}, DEP_CH_AUTO = '${simNao(b.auto, 'N')}', DEP_RE_TETO = ${v(b.teto)}, DEP_CH_ATIVO = '${simNao(b.ativo, 'S')}', DEP_DT_ALTERACAO = SYSDATE, DEP_IN_USU = ${ctx.usu}, DEP_ST_USU = '${ascii(ctx.login, 60)}'`;
+      DEP_ST_HISTORICO = ${s(b.historico, 120)}, DEP_CH_AUTO = '${simNao(b.auto, 'N')}', DEP_RE_TETO = ${v0(b.teto)}, DEP_CH_ATIVO = '${simNao(b.ativo, 'S')}', DEP_DT_ALTERACAO = SYSDATE, DEP_IN_USU = ${ctx.usu}, DEP_ST_USU = '${ascii(ctx.login, 60)}'`;
     if (id) await megaExec(`BEGIN UPDATE MEGA.CCS_TB_GFIN_BXC_DEPARA SET ${sets} WHERE DEP_IN_CODIGO = ${id}; COMMIT; END;`);
     else await megaExec(`BEGIN INSERT INTO MEGA.CCS_TB_GFIN_BXC_DEPARA (DEP_IN_CODIGO, TPD_ST_CODIGO, DEP_CH_NATUREZA, ACAO_IN_CODIGO) VALUES (MEGA.CCS_SEQ_GFIN_BXC_DEPARA.NEXTVAL, '${ascii(b.tpd, 10)}', '${b.natureza}', ${num(b.acao)});
       UPDATE MEGA.CCS_TB_GFIN_BXC_DEPARA SET ${sets} WHERE DEP_IN_CODIGO = (SELECT MAX(DEP_IN_CODIGO) FROM MEGA.CCS_TB_GFIN_BXC_DEPARA); COMMIT; END;`);

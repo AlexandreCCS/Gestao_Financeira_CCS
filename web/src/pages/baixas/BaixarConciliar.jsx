@@ -308,6 +308,10 @@ export default function BaixarConciliar() {
           <div className="flex-1 min-w-0">
             <div className="text-gray-100 truncate" title={item.linhas?.map(l => l.historico).join(' | ')}>{item.linhas?.[0]?.historico || '—'}{item.linhas?.length > 1 && <span className="text-gray-500 text-xs"> +{item.linhas.length - 1} linha(s)</span>}</div>
             <div className="text-xs text-gray-500 mt-0.5">{TIPO[item.tipo] || ''}{item.linhas?.[0]?.documento ? ` · doc. ${item.linhas[0].documento}` : ''}{item.motivo && item.situacao !== 'pronto' ? ` · ${item.motivo}` : ''}</div>
+            {!aberto && !feito && ['P', 'R'].includes(item.tipo) && <div className="flex flex-wrap gap-3 mt-1.5">
+              <button className="inline-flex items-center gap-1 text-xs text-prim-300 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => setModal({ tipo: 'buscar', item })}><Search size={12} /> Buscar no contas a {item.tipo === 'P' ? 'pagar' : 'receber'}</button>
+              {manual[item.id] && <button className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={12} /> Desfazer escolha</button>}
+            </div>}
           </div>
           <div className="text-right shrink-0">
             <div className={`text-lg font-semibold ${nat === 'D' ? 'text-rose-300' : 'text-emerald-300'}`}>{nat === 'D' ? '−' : '+'} {fmt(item.valor_banco)}</div>

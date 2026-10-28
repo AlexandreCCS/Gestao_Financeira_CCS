@@ -94,6 +94,25 @@ const nomeConfere = (hist, ...nomes) => { const ws = palavras(hist); if (!ws.len
 const numerosDe = s => [...String(s || '').matchAll(/\d{4,}/g)].map(m => m[0].replace(/^0+/, '')).filter(Boolean);
 const identidade = (linha, t) => { const ns = numerosDe(linha.hist + ' ' + linha.doc); const alvo = [String(t.doc || '').replace(/^0+/, ''), String(t.nossonum || '').replace(/^0+/, '')].filter(x => x.length >= 4); return ns.some(n => alvo.some(a => a === n || (a.length >= 6 && n.endsWith(a)) || (n.length >= 6 && a.endsWith(n)))); };
 
+const porAgente = lista => { const m = new Map(); for (const t of lista) { if (!m.has(t.agn_id)) m.set(t.agn_id, []); m.get(t.agn_id).push(t); } return [...m.values()]; };
+// [28/10/2026] ate `limite` subconjuntos DIFERENTES cuja soma = alvo (para saber se a combinacao e unica); itens ordenados por valor desc
+function combinacoes(itens, alvo, maxQt, limite = 2, orcamento = 60000) {
+  if (limite <= 0) return [];
+  const cents = itens.map(x => Math.round(x.vl * 100)), alvoC = Math.round(alvo * 100), saida = [];
+  let nos = 0;
+  const rec = (i, resto, pick) => {
+    if (saida.length >= limite || nos++ > orcamento) return;
+    if (resto === 0) { if (pick.length) saida.push(pick.map(k => itens[k])); return; }
+    if (i >= cents.length || pick.length >= maxQt) return;
+    let soma = 0; for (let k = i; k < cents.length && k < i + maxQt - pick.length; k++) soma += cents[k];
+    if (soma < resto) return;
+    if (cents[i] <= resto) { pick.push(i); rec(i + 1, resto - cents[i], pick); pick.pop(); }
+    rec(i + 1, resto, pick);
+  };
+  rec(0, alvoC, []);
+  return nos > orcamento ? [...saida, null].slice(0, limite) : saida;   // estourou o orcamento: trata como ambiguo
+}
+
 // subconjunto cuja soma = alvo (centavos), com poda e orcamento de nos; itens ja ordenados por valor desc
 function subconjunto(itens, alvo, maxQt, orcamento = 150000) {
   const cents = itens.map(x => Math.round(x.vl * 100)), alvoC = Math.round(alvo * 100);
@@ -235,6 +254,52 @@ const tituloSaida = (t, enc, dif) => ({ id: t.id, org: t.org, seq: t.seq, lancto
   fil_id: t.fil_id, venc: t.venc, saldo: t.saldo, valor_titulo: t.valor_titulo, ap: t.ap, pjur: t.pjur, pmul: t.pmul, pdesc: t.pdesc, dtdesc: t.dtdesc,
   valor: enc.valor, juros: enc.juros, multa: enc.multa, desconto: enc.desconto, atraso: enc.atraso ?? 0, dif_dias: dif, calc: { juros: enc.juros, multa: enc.multa, desconto: enc.desconto }, pedido: null });
 
+// [25/10/2026] pedidos de liberacao de encargos pendentes (P) ou liberados (L) dos titulos: a tela mostra o estado e manda o ped_id
+async function anexarPedidos(todosTit) {
+  if (!todosTit.length) return;
+  const lancs = [...new Set(todosTit.map(t => t.lancto))];
+  const peds = [];
+  for (let k = 0; k < lancs.length; k += 500) {
+    peds.push(...await megaQuery(`SELECT PED_IN_CODIGO ID, ORG_IN_CODIGO ORG, MOV_SEQ_IN_CODIGO SEQ, MOV_IN_NUMLANCTO LANC, PED_CH_STATUS ST, PED_RE_JUROS_PED J, PED_RE_MULTA_PED M, PED_RE_DESC_PED D, PED_ST_MOTIVO MOT
+      FROM MEGA.CCS_TB_GFIN_BXC_PEDIDO WHERE PED_CH_STATUS IN ('P','L') AND MOV_IN_NUMLANCTO IN (${lancs.slice(k, k + 500).join(',')}) ORDER BY PED_IN_CODIGO`));
+  }
+  for (const p of peds) for (const t of todosTit) {
+    if (t.lancto === num(p.LANC) && t.seq === num(p.SEQ) && t.org === num(p.ORG)) t.pedido = { id: num(p.ID), status: p.ST, juros: r2(p.J), multa: r2(p.M), desconto: r2(p.D), motivo: p.MOT || '' };
+  }
+}
+
+// [28/10/2026] BUSCA MANUAL no contas a pagar/receber (pedido do Alexandre: "abra uma caixa permitindo filtrar por data, nome e valor"), para
+// linha que o motor nao casa (banco agrupa titulos, nome diferente). So leitura. Pagar: nao aprovado ou em remessa eletronica volta com
+// `bloqueio` (a tela mostra e nao deixa marcar; a CCS_P_GFIN_BXC_X recusa do mesmo jeito). Nome sem acento: TRANSLATE com UNISTR (SOAP so ASCII).
+const SEM_ACENTO = c => `TRANSLATE(UPPER(${c}), UNISTR('\\00C1\\00C0\\00C2\\00C3\\00C4\\00C9\\00C8\\00CA\\00CB\\00CD\\00CC\\00CE\\00CF\\00D3\\00D2\\00D4\\00D5\\00D6\\00DA\\00D9\\00DB\\00DC\\00C7'), 'AAAAAEEEEIIIIOOOOOUUUUC')`;
+export async function buscarTitulos(f) {
+  const pagar = f.tipo === 'P';
+  const V = pagar ? 'MEGA.FIN_VW_CONTASPAGAR' : 'MEGA.FIN_VW_CONTASRECEBER';
+  const w = [`P.ORG_IN_CODIGO = ${num(f.org)}`, `NVL(P.MOV_CH_SITUACAO,'A') <> 'C'`, `NVL(P.MOV_BO_PREVISAO,'N') = 'N'`, `P.SALDO_EM_ABERTO > 0`, `P.TPD_ST_CODIGO <> '${pagar ? 'PREVPDC' : 'PDV'}'`];
+  if (f.lanctos?.length) w.push(`P.MOV_IN_NUMLANCTO IN (${f.lanctos.map(num).join(',')})`);
+  else {
+    w.push(`NVL(P.MOV_DT_PRORROGADO,P.MOV_DT_VENCTO) BETWEEN ${dt(f.venc_ini)} AND ${dt(f.venc_fim)}`);
+    const nome = ascii(f.nome, 60).toUpperCase(), digitos = String(f.nome || '').replace(/\D/g, '');
+    if (nome) w.push(`(${SEM_ACENTO('A.AGN_ST_NOME')} LIKE '%${nome}%' OR ${SEM_ACENTO('A.AGN_ST_FANTASIA')} LIKE '%${nome}%'${digitos.length >= 5 ? ` OR REGEXP_REPLACE(A.AGN_ST_CGC,'[^0-9]','') LIKE '%${digitos}%'` : ''})`);
+    if (f.doc) w.push(`UPPER(P.MOV_ST_DOCUMENTO) LIKE '%${ascii(f.doc, 30).toUpperCase()}%'`);
+    if (f.vmin != null) w.push(`P.SALDO_EM_ABERTO >= ${r2(f.vmin)}`);
+    if (f.vmax != null) w.push(`P.SALDO_EM_ABERTO <= ${r2(f.vmax)}`);
+  }
+  const rows = await megaQuery(`SELECT * FROM (
+    SELECT P.ORG_IN_CODIGO ORG, P.MOV_SEQ_IN_CODIGO SEQ, P.MOV_IN_NUMLANCTO LANC, P.AGN_IN_CODIGO AGN, SUBSTR(A.AGN_ST_NOME,1,60) NOME, SUBSTR(NVL(A.AGN_ST_FANTASIA,''),1,60) FANT, A.AGN_ST_CGC CGC,
+           P.MOV_ST_DOCUMENTO DOC, P.MOV_ST_PARCELA PARC, P.TPD_ST_CODIGO TPD, P.FIL_IN_CODIGO FIL, TO_CHAR(NVL(P.MOV_DT_PRORROGADO,P.MOV_DT_VENCTO),'YYYY-MM-DD') VENC,
+           P.SALDO_EM_ABERTO SALDO, P.MOV_RE_VALOR VALOR, ${pagar ? `NVL(P.MOV_BO_APROVADOADM,'N') APROV, NVL(P.MOV_ST_HBKSTATUS,'NO') HBK` : `'S' APROV, 'NO' HBK`}
+      FROM ${V} P, MEGA.GLO_AGENTES A
+     WHERE ${w.join(' AND ')}
+       AND A.AGN_TAB_IN_CODIGO = P.AGN_TAB_IN_CODIGO AND A.AGN_PAD_IN_CODIGO = P.AGN_PAD_IN_CODIGO AND A.AGN_IN_CODIGO = P.AGN_IN_CODIGO
+     ORDER BY NVL(P.MOV_DT_PRORROGADO,P.MOV_DT_VENCTO), A.AGN_ST_NOME, P.MOV_ST_DOCUMENTO, P.MOV_ST_PARCELA) WHERE ROWNUM <= 201`);
+  const titulos = rows.slice(0, 200).map(r => ({ id: `${r.ORG}.${r.SEQ}.${r.LANC}`, org: num(r.ORG), seq: num(r.SEQ), lancto: num(r.LANC), agn_id: num(r.AGN), agn_nome: r.NOME || '', fantasia: r.FANT || '', cnpj: r.CGC || '',
+    doc: r.DOC || '', parcela: r.PARC || '', tpd: r.TPD || '', fil_id: num(r.FIL), venc: r.VENC, saldo: r2(r.SALDO), valor_titulo: r2(r.VALOR), pedido: null,
+    bloqueio: r.APROV !== 'S' ? 'nao aprovado para pagamento' : r.HBK !== 'NO' ? `em remessa eletronica (${r.HBK}): a baixa vem pelo retorno` : '' }));
+  await anexarPedidos(titulos);
+  return { titulos, mais: rows.length > 200 };
+}
+
 // ---------------------------------------------------------------------------------------------------- o motor
 export async function motor(agn, filtro = {}) {
   const P = await params();
@@ -338,18 +403,26 @@ export async function motor(agn, filtro = {}) {
   }
 
   // [25/10/2026] pedidos de liberacao de encargos pendentes (P) ou liberados (L) dos titulos listados: a tela mostra o estado e manda o ped_id
-  const todosTit = itens.flatMap(i => [...(i.titulos || []), ...(i.candidatos || [])]);
-  if (todosTit.length) {
-    const lancs = [...new Set(todosTit.map(t => t.lancto))];
-    const peds = [];
-    for (let k = 0; k < lancs.length; k += 500) {
-      peds.push(...await megaQuery(`SELECT PED_IN_CODIGO ID, ORG_IN_CODIGO ORG, MOV_SEQ_IN_CODIGO SEQ, MOV_IN_NUMLANCTO LANC, PED_CH_STATUS ST, PED_RE_JUROS_PED J, PED_RE_MULTA_PED M, PED_RE_DESC_PED D, PED_ST_MOTIVO MOT
-        FROM MEGA.CCS_TB_GFIN_BXC_PEDIDO WHERE PED_CH_STATUS IN ('P','L') AND MOV_IN_NUMLANCTO IN (${lancs.slice(k, k + 500).join(',')}) ORDER BY PED_IN_CODIGO`));
+  // [28/10/2026] SEGUNDA PASSADA - pagamento agrupado pelo banco (SISPAG "PROG FORNECEDORES" sem nome no historico) que ficou sem candidato.
+  //    O passo por agente acima so olha agentes com ate 40 titulos na janela (a TALUMI tem 100+). Aqui: so linhas 'decidir' SEM candidato
+  //    (nao tira titulo de quem casou), titulos do mesmo agente que vencem ate 1 dia da data do banco, ate 3 titulos e combinacao UNICA no
+  //    agente e entre agentes (varias guias pequenas da SEFAZ fecham qualquer valor por coincidencia: ai fica para a busca manual). Media, nunca robo.
+  for (const it of itens.filter(i => i.situacao === 'decidir' && ['P', 'R'].includes(i.tipo) && !i.candidatos.length && !i.movs.length).sort((a, b) => b.valor_banco - a.valor_banco)) {
+    const pool = (it.tipo === 'P' ? candP : candR).filter(t => !t.usado && Math.abs(dias(t.venc, it.data)) <= 1);
+    const achados = [];
+    for (const g of porAgente(pool)) {
+      if (g.length < 2) continue;
+      achados.push(...combinacoes([...g].sort((a, b) => b.saldo - a.saldo).map(t => ({ ...t, vl: t.saldo })), it.valor_banco, 3, 2 - achados.length));
+      if (achados.length > 1) break;
     }
-    for (const p of peds) for (const t of todosTit) {
-      if (t.lancto === num(p.LANC) && t.seq === num(p.SEQ) && t.org === num(p.ORG)) t.pedido = { id: num(p.ID), status: p.ST, juros: r2(p.J), multa: r2(p.M), desconto: r2(p.D), motivo: p.MOT || '' };
-    }
+    if (achados.length !== 1 || !achados[0]) continue;
+    const sub = achados[0];
+    sub.forEach(x => { const o = pool.find(t => t.id === x.id); if (o) o.usado = true; });
+    Object.assign(it, { situacao: 'pronto', confianca: 'media', selecionado: false, motivo: `${sub.length} titulos de ${sub[0].agn_nome} com vencimento na data do banco somam o valor (combinacao unica)`,
+      titulos: sub.map(t => tituloSaida(t, { valor: t.saldo, juros: 0, multa: 0, desconto: 0, atraso: Math.max(0, dias(it.data, t.venc)) }, Math.abs(dias(t.venc, it.data)))) });
   }
+
+  await anexarPedidos(itens.flatMap(i => [...(i.titulos || []), ...(i.candidatos || [])]));
 
   let lista = itens;
   if (filtro.busca) {
@@ -514,6 +587,19 @@ export default async function baixarConciliarRoutes(app) {
   });
 
   // -------- baixar e conciliar (um item por vez: cada um e uma transacao no Mega)
+  // [28/10/2026] busca manual de titulos (painel "Buscar no contas a pagar/receber" do item)
+  app.get('/bxc/titulos', auth, async (req, reply) => {
+    const q = req.query || {}, tipo = q.tipo === 'R' ? 'R' : 'P', org = num(q.org);
+    const lanctos = String(q.lanctos || '').split(',').map(num).filter(Boolean).slice(0, 60);
+    if (!org) return reply.code(400).send({ error: 'org', message: 'Informe a empresa (org) da linha do extrato.' });
+    if (!lanctos.length) {
+      if (!ehData(q.venc_ini) || !ehData(q.venc_fim) || q.venc_fim < q.venc_ini) return reply.code(400).send({ error: 'periodo', message: 'Informe o vencimento de/ate.' });
+      if (dias(q.venc_fim, q.venc_ini) > 120) return reply.code(400).send({ error: 'periodo', message: 'Periodo de vencimento de no maximo 120 dias.' });
+    }
+    const valor = x => (x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));
+    return buscarTitulos({ tipo, org, lanctos, venc_ini: q.venc_ini, venc_fim: q.venc_fim, nome: q.nome, doc: q.doc, vmin: valor(q.vmin), vmax: valor(q.vmax) });
+  });
+
   app.post('/bxc/executar', {
     ...opera, schema: { body: { type: 'object', required: ['itens'], properties: {
       simular: { type: 'boolean' }, arquivo: { type: 'string', maxLength: 200 },

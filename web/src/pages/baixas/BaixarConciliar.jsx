@@ -19,12 +19,30 @@ const fmtBr  = s => (s ? String(s).slice(0, 10).split('-').reverse().join('/') :
 const fmtHr  = s => (s ? `${fmtBr(s)} ${String(s).slice(11, 16)}` : '—');
 const r2     = v => Math.round((Number(v) || 0) * 100) / 100;
 const isoDia = n => { const d = new Date(); d.setDate(d.getDate() - (n || 0)); return d.toISOString().slice(0, 10); };
-const CONF   = { alta: ['confere', 'text-emerald-300 border-emerald-700/40 bg-emerald-900/30'], media: ['provável', 'text-amber-300 border-amber-700/40 bg-amber-900/30'], baixa: ['só o valor', 'text-gray-400 border-ink-600 bg-ink-700/60'] };
+const CONF   = { alta: ['confere', 'text-emerald-300 border-emerald-700/40 bg-emerald-900/30'], media: ['provável', 'text-amber-300 border-amber-700/40 bg-amber-900/30'], baixa: ['só o valor', 'text-gray-400 border-ink-600 bg-ink-700/60'], manual: ['escolhido', 'text-prim-400 border-prim-600/40 bg-ink-700/60'] };
 const TIPO   = { P: 'pagamento', R: 'recebimento', A: 'lançamento', C: 'conciliação', I: 'informativo' };
 
 // dinheiro que o banco movimentou para este título = principal + juros + multa (o desconto só abate o título: título quita principal + desconto)
 // [25/10/2026] regra alinhada com a procedure CCS_P_GFIN_BXC_X depois da prova simulada
 const parcelaBanco = t => r2(Number(t.valor || 0) + Number(t.juros || 0) + Number(t.multa || 0));
+
+// [28/10/2026] "Achar combinação" do painel de busca: subconjunto cuja soma = alvo (centavos), mesma poda do motor (baixarConciliar.js)
+function subconjunto(itens, alvo, maxQt = 6, orcamento = 150000) {
+  const ord = [...itens].sort((a, b) => b.saldo - a.saldo), cents = ord.map(x => Math.round(x.saldo * 100)), alvoC = Math.round(alvo * 100);
+  let nos = 0, achado = null;
+  const rec = (i, resto, pick) => {
+    if (achado || nos++ > orcamento) return;
+    if (resto === 0) { if (pick.length) achado = [...pick]; return; }
+    if (i >= cents.length || pick.length >= maxQt) return;
+    let soma = 0; for (let k = i; k < cents.length && k < i + maxQt - pick.length; k++) soma += cents[k];
+    if (soma < resto) return;
+    if (cents[i] <= resto) { pick.push(i); rec(i + 1, resto - cents[i], pick); pick.pop(); }
+    rec(i + 1, resto, pick);
+  };
+  rec(0, alvoC, []);
+  return achado ? achado.map(i => ord[i]) : null;
+}
+const somaDias = (iso, n) => { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 
 function Pilula({ cls = '', children, title }) {
   return <span title={title} className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] leading-4 whitespace-nowrap ${cls}`}>{children}</span>;
@@ -41,13 +59,13 @@ function Encargos({ t }) {
 function Modal({ titulo, children, onClose, acoes, largura = 'max-w-xl' }) {
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className={`bg-ink-900 border border-ink-700 rounded-2xl shadow-2xl w-full ${largura}`} onClick={e => e.stopPropagation()}>
+      <div className={`bg-ink-900 border border-ink-700 rounded-2xl shadow-2xl w-full max-h-[94vh] overflow-y-auto ${largura}`} onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 pt-5 pb-3">
           <h3 className="text-lg font-semibold text-gray-100">{titulo}</h3>
           {onClose && <button className="text-gray-500 hover:text-white" onClick={onClose}><X size={20} /></button>}
         </div>
         <div className="px-6 pb-4 text-sm text-gray-300 space-y-3">{children}</div>
-        {acoes && <div className="px-6 py-4 border-t border-ink-700 flex justify-end gap-2">{acoes}</div>}
+        {acoes && <div className="px-6 py-4 border-t border-ink-700 flex flex-wrap justify-end gap-2">{acoes}</div>}
       </div>
     </div>
   );
@@ -96,6 +114,7 @@ export default function BaixarConciliar() {
   const [feitas, setFeitas]   = useState([]);
   const [modal, setModal]     = useState(null);     // { tipo: 'encargos'|'pedido'|'ignorar'|'desfazer', ... }
   const [escolha, setEscolha] = useState({});       // id -> Set(lancto) na seção Decidir
+  const [manual, setManual]   = useState({});       // [28/10/2026] id -> títulos escolhidos no painel de busca (o item vira "pronto")
   const fileRef = useRef(null);
   const alvoArquivo = useRef(null);
 
@@ -114,14 +133,24 @@ export default function BaixarConciliar() {
       const [d, f] = await Promise.all([api.bxcPendentes({ conta, tipo, ini, fim }), api.bxcFeitas({ dias: 1, conta }).catch(() => ({ itens: [] }))]);
       setDados(d); setFeitas(f.itens || []); setRes({});
       setMarcados(new Set((d.itens || []).filter(i => i.situacao === 'pronto' && !bloqueado(i)).map(i => i.id)));
+      // títulos escolhidos à mão: refaz saldo e pedido de liberação (o motor não conhece esses títulos); some o que a linha já não tem
+      const vivos = new Set((d.itens || []).map(i => i.id)), novo = {};
+      for (const [id, tits] of Object.entries(manual)) {
+        if (!vivos.has(id) || !tits.length) continue;
+        try {
+          const r = await api.bxcTitulos({ tipo: tits[0].tipo_item, org: tits[0].org, lanctos: tits.map(t => t.lancto).join(',') });
+          novo[id] = tits.map(t => { const x = (r.titulos || []).find(y => y.lancto === t.lancto && y.seq === t.seq); return x ? { ...t, saldo: x.saldo, pedido: x.pedido, bloqueio: x.bloqueio } : null; }).filter(Boolean);
+        } catch { novo[id] = tits; }
+      }
+      setManual(novo);
     } catch (e) { setErro(e.message || 'Falha ao consultar o Mega.'); setDados(null); }
     finally { setCarregando(false); }
   }
   useEffect(() => { carregar(); }, [conta, tipo, ini, fim]);
 
-  const bloqueado = item => (item.titulos || []).some(t => t.pedido && t.pedido.status === 'P');
+  const bloqueado = item => (item.titulos || []).some(t => (t.pedido && t.pedido.status === 'P') || t.bloqueio);
   const q = busca.trim().toLowerCase();
-  const itens = useMemo(() => (dados?.itens || []).filter(i => !q || JSON.stringify([i.linhas, i.titulos?.map(t => [t.agn_nome, t.doc])]).toLowerCase().includes(q)), [dados, q]);
+  const itens = useMemo(() => (dados?.itens || []).map(i => manual[i.id]?.length ? { ...i, situacao: 'pronto', confianca: 'manual', titulos: manual[i.id], candidatos: [], motivo: 'Títulos escolhidos na busca' } : i).filter(i => !q || JSON.stringify([i.linhas, i.titulos?.map(t => [t.agn_nome, t.doc])]).toLowerCase().includes(q)), [dados, q, manual]);
   const por = s => itens.filter(i => i.situacao === s);
   const prontos = por('pronto'), decidir = por('decidir'), reais = por('real'), lotes = por('lote'), conciliar = por('conciliar'), infos = por('informativo');
   const selecionados = prontos.filter(i => marcados.has(i.id) && res[i.id]?.status !== 'B');
@@ -187,6 +216,23 @@ export default function BaixarConciliar() {
     if (resta > 0.005 || !tits.length) return;
     pedirConfirmacao([{ ...payloadBaixa(item), titulos: tits }], api.bxcExecutar, 'Baixar com os títulos escolhidos?', `${fmt(item.valor_banco)} em ${fmtN(tits.length)} título(s)${tits.some((t, i) => t.valor < Number(cands[i]?.saldo || 0)) ? ' · o último fica com saldo (baixa parcial)' : ''}.`);
   }
+  // [28/10/2026] títulos vindos do painel de busca: soma ≥ banco → o último fica parcial; soma < banco → a diferença vira juros no último
+  // (precisa de "Editar encargos" ou do pedido de liberação, como qualquer encargo fora da regra; o servidor confere de novo).
+  function usarTitulos(item, sel) {
+    const ord = [...sel].sort((a, b) => String(a.venc).localeCompare(String(b.venc)) || a.lancto - b.lancto);
+    let resta = r2(item.valor_banco); const tits = [];
+    for (const t of ord) {
+      const v = r2(Math.min(Number(t.saldo || 0), resta)); if (v <= 0) break;
+      tits.push({ ...t, tipo_item: item.tipo, valor: v, juros: 0, multa: 0, desconto: 0, calc: { juros: 0, multa: 0, desconto: 0 } }); resta = r2(resta - v);
+    }
+    if (resta > 0.005 && tits.length) { const u = tits[tits.length - 1]; u.juros = resta; }
+    setManual(m => ({ ...m, [item.id]: tits }));
+    setEdits(e => { const n = { ...e }; if (n[item.id]) delete n[item.id].tit; return n; });
+    setMarcados(m => { const n = new Set(m); n.add(item.id); return n; });
+    setAbertos(a => { const n = new Set(a); n.add(item.id); return n; });
+    setModal(null);
+  }
+  const desfazerEscolha = item => { setManual(m => { const n = { ...m }; delete n[item.id]; return n; }); setMarcados(m => { const n = new Set(m); n.delete(item.id); return n; }); };
   async function ignorar(item, motivo) {
     setRodando(true);
     try { for (const l of item.linhas || []) await api.bxcIgnorar(l.cba, motivo); } catch (e) { setErro(e.message); }
@@ -239,6 +285,7 @@ export default function BaixarConciliar() {
         {ped?.status === 'P' && <Pilula cls="text-amber-300 border-amber-700/40 bg-amber-900/30"><Clock3 size={11} className="mr-1" /> aguardando liberação</Pilula>}
         {ped?.status === 'L' && <Pilula cls="text-emerald-300 border-emerald-700/40 bg-emerald-900/30">liberado</Pilula>}
         {ped?.status === 'N' && <Pilula cls="text-rose-300 border-rose-700/40 bg-rose-900/30">liberação negada</Pilula>}
+        {t.bloqueio && <Pilula cls="text-rose-300 border-rose-700/40 bg-rose-900/30">bloqueado: {t.bloqueio}</Pilula>}
       </div>
     );
   }
@@ -289,6 +336,8 @@ export default function BaixarConciliar() {
               </div>}
               <div className="flex flex-wrap gap-2 pt-1">
                 {['P', 'R'].includes(item.tipo) && <button className="btn-ghost text-xs py-1.5" disabled={rodando || feito} onClick={() => { alvoArquivo.current = item; fileRef.current?.click(); }}><Paperclip size={13} /> {edits[item.id]?.comp ? 'Trocar comprovante' : 'Anexar comprovante'}</button>}
+                {!feito && ['P', 'R'].includes(item.tipo) && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => setModal({ tipo: 'buscar', item })}><Search size={13} /> Buscar no contas a {item.tipo === 'P' ? 'pagar' : 'receber'}</button>}
+                {!feito && manual[item.id] && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={13} /> Desfazer escolha</button>}
                 {!feito && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => setModal({ tipo: 'ignorar', item, motivo: '' })}><EyeOff size={13} /> Ignorar</button>}
               </div>
             </div>
@@ -313,7 +362,7 @@ export default function BaixarConciliar() {
               {item.situacao === 'decidir' && (
                 <div className="space-y-1">
                   <div className="text-[11px] uppercase tracking-wider text-gray-500">Escolha o título (ou títulos)</div>
-                  {(item.candidatos || []).length === 0 && <div className="text-xs text-gray-500">Nenhum título em aberto parecido. Lance pelo Mega ou registre como adiantamento.</div>}
+                  {(item.candidatos || []).length === 0 && <div className="text-xs text-gray-500">Nenhum título em aberto parecido. Use “Buscar no contas a {item.tipo === 'P' ? 'pagar' : 'receber'}”, lance pelo Mega ou registre como adiantamento.</div>}
                   {(item.candidatos || []).map(c => {
                     const sel = escolha[item.id] || new Set();
                     return <label key={c.lancto} className="flex items-center gap-2 text-sm cursor-pointer">
@@ -453,6 +502,8 @@ export default function BaixarConciliar() {
       )}
       {modal?.tipo === 'encargos' && <EncargosModal modal={modal} setModal={setModal} onSalvar={salvarEncargos} />}
       {modal?.tipo === 'pedido' && <EncargosModal modal={modal} setModal={setModal} pedido onPedir={pedirLiberacao} rodando={rodando} />}
+      {modal?.tipo === 'buscar' && <BuscaTitulos item={modal.item} usados={new Set(itens.filter(i => i.id !== modal.item.id).flatMap(i => (i.titulos || []).map(t => t.lancto)))}
+        onUsar={sel => usarTitulos(modal.item, sel)} onClose={() => setModal(null)} />}
       {modal?.tipo === 'ignorar' && (
         <Modal titulo="Ignorar esta linha do extrato?" onClose={() => setModal(null)} acoes={<><button className="btn-ghost" onClick={() => setModal(null)}>Voltar</button><button className="btn-prim" disabled={rodando || !modal.motivo.trim()} onClick={() => ignorar(modal.item, modal.motivo.trim())}>Ignorar</button></>}>
           <p>Ela deixa de aparecer aqui. Não muda nada no Mega.</p>
@@ -492,6 +543,91 @@ function EncargosModal({ modal, setModal, onSalvar, onPedir, pedido, rodando }) 
       {pedido && <textarea className="input" rows={3} placeholder="por que isentar ou alterar? (obrigatório)" value={motivo} onChange={e => setModal({ ...modal, motivo: e.target.value })} />}
       {pedido && <div className="text-xs text-gray-500">Quem libera encargos recebe o pedido na tela Liberação de Encargos. Enquanto não decidirem, este item fica fora da baixa.</div>}
       {erro && <div className="text-xs text-rose-300">{erro}</div>}
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------- [28/10/2026] painel de busca
+// Pedido do Alexandre: "abra uma caixa permitindo filtrar por data, nome e valor o contas a pagar que consta no Mega" (banco agrupa títulos,
+// nome diferente) e "títulos bloqueados aparecem mas com a informação de bloqueado e a caixa de seleção desligada até que seja aprovado".
+function BuscaTitulos({ item, usados, onUsar, onClose }) {
+  const pagar = item.tipo === 'P', banco = r2(item.valor_banco);
+  const [f, setF] = useState({ venc_ini: somaDias(item.data, -5), venc_fim: somaDias(item.data, 5), nome: '', doc: '', modo: 'qualquer', valor: '', vmax: '' });
+  const [lista, setLista] = useState(null);
+  const [mais, setMais] = useState(false);
+  const [sel, setSel] = useState(new Map());          // lancto -> título
+  const [carregando, setCarregando] = useState(false);
+  const [aviso, setAviso] = useState('');
+  const num = v => Number(String(v || '').replace(/\./g, '').replace(',', '.'));
+  async function filtrar() {
+    setCarregando(true); setAviso('');
+    const v = num(f.valor), vx = num(f.vmax);
+    const faixa = f.modo === 'exato' && v > 0 ? { vmin: v, vmax: v } : f.modo === 'faixa' ? { vmin: v > 0 ? v : '', vmax: vx > 0 ? vx : '' } : {};
+    try {
+      const r = await api.bxcTitulos({ tipo: item.tipo, org: item.org, venc_ini: f.venc_ini, venc_fim: f.venc_fim, nome: f.nome.trim(), doc: f.doc.trim(), ...faixa });
+      setLista(r.titulos || []); setMais(!!r.mais);
+    } catch (e) { setAviso(e.message || 'Falha ao consultar o Mega.'); setLista([]); }
+    setCarregando(false);
+  }
+  useEffect(() => { filtrar(); }, []);
+  const marcaveis = (lista || []).filter(t => !t.bloqueio);
+  const soma = r2([...sel.values()].reduce((s, t) => s + Number(t.saldo || 0), 0)), dif = r2(banco - soma);
+  const alterna = t => setSel(m => { const n = new Map(m); n.has(t.lancto) ? n.delete(t.lancto) : n.set(t.lancto, t); return n; });
+  function acharCombinacao() {
+    const sub = subconjunto(marcaveis, banco);
+    if (sub) { setSel(new Map(sub.map(t => [t.lancto, t]))); setAviso(''); }
+    else setAviso(`Nenhuma combinação de até 6 títulos da lista soma ${fmt(banco)}. Ajuste os filtros ou marque à mão.`);
+  }
+  const enter = e => { if (e.key === 'Enter') filtrar(); };
+  const txtDif = Math.abs(dif) < 0.005 ? 'fecha com o banco' : dif > 0 ? `faltam ${fmt(dif)} (vira juros no último título: edite ou peça liberação)` : `sobram ${fmt(-dif)} (o último título fica com saldo)`;
+  return (
+    <Modal largura="max-w-4xl" titulo={`Buscar no contas a ${pagar ? 'pagar' : 'receber'}`} onClose={onClose} acoes={<>
+      <button className="btn-ghost mr-auto" disabled={carregando || !marcaveis.length} onClick={acharCombinacao}><Sparkles size={15} /> Achar combinação</button>
+      <button className="btn-ghost" onClick={onClose}>Cancelar</button>
+      <button className="btn-prim" disabled={!sel.size} onClick={() => onUsar([...sel.values()])}><CheckCircle2 size={15} /> Usar {sel.size > 1 ? `estes ${sel.size} títulos` : 'este título'}</button>
+    </>}>
+      <div className="text-xs text-gray-400 flex flex-wrap gap-x-4">
+        <span>{fmtBr(item.data)} · {item.linhas?.[0]?.historico}</span>
+        <span className={pagar ? 'text-rose-300' : 'text-emerald-300'}>{pagar ? '−' : '+'} {fmt(banco)}</span>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end">
+        <label className="text-[11px] text-gray-500 col-span-1">Vencimento de<input type="date" className="input py-1.5 mt-1" value={f.venc_ini} onChange={e => setF({ ...f, venc_ini: e.target.value })} /></label>
+        <label className="text-[11px] text-gray-500 col-span-1">até<input type="date" className="input py-1.5 mt-1" value={f.venc_fim} onChange={e => setF({ ...f, venc_fim: e.target.value })} /></label>
+        <label className="text-[11px] text-gray-500 col-span-2">{pagar ? 'Fornecedor' : 'Cliente'} (nome, fantasia ou CNPJ)<input className="input py-1.5 mt-1" autoFocus value={f.nome} onKeyDown={enter} onChange={e => setF({ ...f, nome: e.target.value })} /></label>
+        <label className="text-[11px] text-gray-500 col-span-1">Documento<input className="input py-1.5 mt-1" value={f.doc} onKeyDown={enter} onChange={e => setF({ ...f, doc: e.target.value })} /></label>
+        <div className="col-span-1" />
+        <label className="text-[11px] text-gray-500 col-span-1">Valor (saldo)<select className="input py-1.5 mt-1" value={f.modo} onChange={e => setF({ ...f, modo: e.target.value })}><option value="qualquer">qualquer</option><option value="exato">exato</option><option value="faixa">faixa</option></select></label>
+        {f.modo !== 'qualquer' && <label className="text-[11px] text-gray-500 col-span-1">{f.modo === 'faixa' ? 'de' : 'valor'}<input className="input py-1.5 mt-1 text-right" inputMode="decimal" placeholder="0,00" value={f.valor} onKeyDown={enter} onChange={e => setF({ ...f, valor: e.target.value })} /></label>}
+        {f.modo === 'faixa' && <label className="text-[11px] text-gray-500 col-span-1">até<input className="input py-1.5 mt-1 text-right" inputMode="decimal" placeholder="0,00" value={f.vmax} onKeyDown={enter} onChange={e => setF({ ...f, vmax: e.target.value })} /></label>}
+        <button className="btn-prim py-1.5 col-span-1" disabled={carregando} onClick={filtrar}>{carregando ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />} Filtrar</button>
+      </div>
+      <div className="border border-ink-700 rounded-xl max-h-[36vh] md:max-h-[46vh] overflow-y-auto">
+        {lista === null ? <div className="p-4 text-gray-500 flex items-center gap-2"><Loader2 size={15} className="animate-spin" /> consultando o Mega…</div>
+          : !lista.length ? <div className="p-4 text-gray-500">Nenhum título em aberto com esses filtros.</div>
+          : lista.map(t => {
+              const blq = !!t.bloqueio, on = sel.has(t.lancto);
+              return (
+                <label key={t.id} className={`flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 border-b border-ink-800 last:border-0 ${blq ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-ink-800/60'} ${on ? 'bg-prim-900/20' : ''}`}
+                  title={blq ? `Bloqueado: ${t.bloqueio}. Só pode ser escolhido depois de liberado no Mega.` : ''}>
+                  <input type="checkbox" className="accent-prim-500 w-4 h-4" checked={on} disabled={blq} onChange={() => alterna(t)} />
+                  <span className="text-gray-100 truncate max-w-[260px]" title={`${t.agn_nome}${t.fantasia && t.fantasia !== t.agn_nome ? ` (${t.fantasia})` : ''} ${t.cnpj}`}>{t.agn_nome}</span>
+                  <span className="font-mono text-gray-400">{t.doc}/{t.parcela}</span>
+                  <span className="text-gray-500 text-xs">venc. {fmtBr(t.venc)}{t.fil_id ? ` · emp. ${t.fil_id}` : ''}</span>
+                  {blq && <Pilula cls="text-rose-300 border-rose-700/40 bg-rose-900/30">bloqueado: {t.bloqueio}</Pilula>}
+                  {usados.has(t.lancto) && <Pilula cls="text-amber-300 border-amber-700/40 bg-amber-900/30" title="O mesmo título está sugerido para outra linha do extrato">já sugerido em outra linha</Pilula>}
+                  {t.pedido?.status === 'P' && <Pilula cls="text-amber-300 border-amber-700/40 bg-amber-900/30">liberação pendente</Pilula>}
+                  <span className="ml-auto font-mono text-gray-200">{fmt(t.saldo)}</span>
+                </label>);
+            })}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-gray-400">
+        <span>{fmtN(lista?.length || 0)}{mais ? '+' : ''} título(s){mais ? ' · refine os filtros para ver todos' : ''}</span>
+        <span>marcados <b className="text-gray-200">{fmtN(sel.size)}</b></span>
+        <span>soma <b className="text-gray-200 font-mono">{fmt(soma)}</b></span>
+        <span>banco <b className="text-gray-200 font-mono">{fmt(banco)}</b></span>
+        {sel.size > 0 && <span className={Math.abs(dif) < 0.005 ? 'text-emerald-300' : 'text-amber-300'}>diferença {fmt(Math.abs(dif))} · {txtDif}</span>}
+      </div>
+      {aviso && <div className="text-xs text-amber-300">{aviso}</div>}
     </Modal>
   );
 }

@@ -237,6 +237,7 @@ export const api = {
   cbCandidatos: (p) => req(`/cb/candidatos?${new URLSearchParams(p)}`),
   cbConciliar: (body) => req('/cb/conciliar', { method: 'POST', body: JSON.stringify(body) }),
   bxcPendentes: (params) => req(`/bxc/pendentes?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
+  bxcTitulos: (params) => req(`/bxc/titulos?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
   bxcExecutar: (body) => req('/bxc/executar', { method: 'POST', body: JSON.stringify(body) }),
   bxcConciliar: (body) => req('/bxc/conciliar', { method: 'POST', body: JSON.stringify(body) }),
   bxcReal: (body) => req('/bxc/real', { method: 'POST', body: JSON.stringify(body) }),

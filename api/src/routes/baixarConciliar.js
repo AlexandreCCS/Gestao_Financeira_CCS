@@ -338,7 +338,11 @@ export async function motor(agn, filtro = {}) {
     //    marcado e no robo). Nivel 1 = alta (robo); 2 = media (marcado, confirma); 3 = baixa (o usuario escolhe entre os candidatos).
     const natMega = l.nat === 'D' ? 'C' : 'D';
     const cand = movs.filter(m => !m.usado && m.nat === natMega && Math.abs(m.vl - l.vl) < 0.005 && Math.abs(dias(m.data, l.data)) <= P.janela).sort((a, b) => Math.abs(dias(a.data, l.data)) - Math.abs(dias(b.data, l.data)));
-    if (cand.length) {
+    // [28/10/2026] varias linhas do banco com o mesmo valor e um lancamento so (ex.: 4 PIX de 50.000 em 22, 23, 26 e 27/10 x 1 baixa de 22/10):
+    // o lancamento fica com a linha mais proxima dele; as outras seguem para os titulos em vez de apontar todas para o mesmo lancamento.
+    const maisPerto = cand.length && linhas.filter(o => !o.casada && o.nat === l.nat && Math.abs(o.vl - l.vl) < 0.005 && Math.abs(dias(o.data, cand[0].data)) <= P.janela)
+      .every(o => Math.abs(dias(l.data, cand[0].data)) <= Math.abs(dias(o.data, cand[0].data)));
+    if (cand.length && maisPerto) {
       const rivais = linhas.filter(o => o.cba !== l.cba && !o.casada && o.nat === l.nat && Math.abs(o.vl - l.vl) < 0.005 && Math.abs(dias(o.data, cand[0].data)) <= P.janela).length;
       const unico = cand.length === 1 && rivais === 0;
       const av = nivelDoPar(l, cand[0], unico, P.diasForte);

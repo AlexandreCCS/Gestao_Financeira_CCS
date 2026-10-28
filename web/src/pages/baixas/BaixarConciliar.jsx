@@ -150,7 +150,10 @@ export default function BaixarConciliar() {
 
   const bloqueado = item => (item.titulos || []).some(t => (t.pedido && t.pedido.status === 'P') || t.bloqueio);
   const q = busca.trim().toLowerCase();
-  const itens = useMemo(() => (dados?.itens || []).map(i => manual[i.id]?.length ? { ...i, situacao: 'pronto', confianca: 'manual', titulos: manual[i.id], candidatos: [], motivo: 'Títulos escolhidos na busca' } : i).filter(i => !q || JSON.stringify([i.linhas, i.titulos?.map(t => [t.agn_nome, t.doc])]).toLowerCase().includes(q)), [dados, q, manual]);
+  // [28/10/2026] item de conciliacao nivel 3 (possivel lancamento) tambem pode ir para a busca: D = pagar, C = receber
+  const tipoTit = i => ['P', 'R'].includes(i.tipo) ? i.tipo : (i.linhas?.[0]?.natureza === 'C' ? 'R' : 'P');
+  const buscavel = i => ['P', 'R'].includes(i.tipo) || (i.situacao === 'conciliar' && i.nivel === 3);
+  const itens = useMemo(() => (dados?.itens || []).map(i => manual[i.id]?.length ? { ...i, tipo: tipoTit(i), situacao: 'pronto', confianca: 'manual', titulos: manual[i.id], candidatos: [], motivo: 'Títulos escolhidos na busca' } : i).filter(i => !q || JSON.stringify([i.linhas, i.titulos?.map(t => [t.agn_nome, t.doc])]).toLowerCase().includes(q)), [dados, q, manual]);
   const por = s => itens.filter(i => i.situacao === s);
   const prontos = por('pronto'), decidir = por('decidir'), reais = por('real'), lotes = por('lote'), conciliar = por('conciliar'), infos = por('informativo');
   const selecionados = prontos.filter(i => marcados.has(i.id) && res[i.id]?.status !== 'B');
@@ -308,8 +311,8 @@ export default function BaixarConciliar() {
           <div className="flex-1 min-w-0">
             <div className="text-gray-100 truncate" title={item.linhas?.map(l => l.historico).join(' | ')}>{item.linhas?.[0]?.historico || '—'}{item.linhas?.length > 1 && <span className="text-gray-500 text-xs"> +{item.linhas.length - 1} linha(s)</span>}</div>
             <div className="text-xs text-gray-500 mt-0.5">{TIPO[item.tipo] || ''}{item.linhas?.[0]?.documento ? ` · doc. ${item.linhas[0].documento}` : ''}{item.motivo && item.situacao !== 'pronto' ? ` · ${item.motivo}` : ''}</div>
-            {!aberto && !feito && ['P', 'R'].includes(item.tipo) && <div className="flex flex-wrap gap-3 mt-1.5">
-              <button className="inline-flex items-center gap-1 text-xs text-prim-300 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => setModal({ tipo: 'buscar', item })}><Search size={12} /> Buscar no contas a {item.tipo === 'P' ? 'pagar' : 'receber'}</button>
+            {!aberto && !feito && buscavel(item) && <div className="flex flex-wrap gap-3 mt-1.5">
+              <button className="inline-flex items-center gap-1 text-xs text-prim-300 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => setModal({ tipo: 'buscar', item: { ...item, tipo: tipoTit(item) } })}><Search size={12} /> Buscar no contas a {tipoTit(item) === 'P' ? 'pagar' : 'receber'}</button>
               {manual[item.id] && <button className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={12} /> Desfazer escolha</button>}
             </div>}
           </div>
@@ -321,6 +324,7 @@ export default function BaixarConciliar() {
             {(item.titulos || []).length ? item.titulos.map(t => <Titulo key={t.lancto} item={item} t={t} compacto />)
               : item.depara ? <div className="text-sm text-gray-300">{item.depara.descricao}{item.depara.classe ? <span className="text-gray-500 text-xs"> · classe {item.depara.classe}</span> : <span className="text-amber-300 text-xs"> · de-para sem classe: configure</span>}</div>
               : item.movs?.length ? <div className="text-sm text-gray-300">{fmtN(item.movs.length)} lançamento(s) no Mega somam {fmt(item.movs.reduce((s, m) => s + Number(m.valor || 0), 0))}</div>
+              : item.candidatos_mov?.length ? <div className="text-sm text-gray-300">possível lançamento no Mega: {item.candidatos_mov.slice(0, 2).map(m => `${m.lancto} de ${fmtBr(m.data)} · ${m.tpd} ${m.doc}${m.hist ? ` · ${m.hist.trim()}` : ''} · ${fmt(m.vl)}`).join(' | ')}</div>
               : <div className="text-sm text-gray-500">{item.candidatos?.length ? `${fmtN(item.candidatos.length)} candidato(s)` : 'sem título correspondente'}</div>}
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -340,7 +344,7 @@ export default function BaixarConciliar() {
               </div>}
               <div className="flex flex-wrap gap-2 pt-1">
                 {['P', 'R'].includes(item.tipo) && <button className="btn-ghost text-xs py-1.5" disabled={rodando || feito} onClick={() => { alvoArquivo.current = item; fileRef.current?.click(); }}><Paperclip size={13} /> {edits[item.id]?.comp ? 'Trocar comprovante' : 'Anexar comprovante'}</button>}
-                {!feito && ['P', 'R'].includes(item.tipo) && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => setModal({ tipo: 'buscar', item })}><Search size={13} /> Buscar no contas a {item.tipo === 'P' ? 'pagar' : 'receber'}</button>}
+                {!feito && buscavel(item) && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => setModal({ tipo: 'buscar', item: { ...item, tipo: tipoTit(item) } })}><Search size={13} /> Buscar no contas a {tipoTit(item) === 'P' ? 'pagar' : 'receber'}</button>}
                 {!feito && manual[item.id] && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={13} /> Desfazer escolha</button>}
                 {!feito && <button className="btn-ghost text-xs py-1.5" disabled={rodando} onClick={() => setModal({ tipo: 'ignorar', item, motivo: '' })}><EyeOff size={13} /> Ignorar</button>}
               </div>

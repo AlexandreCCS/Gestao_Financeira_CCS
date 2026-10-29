@@ -56,6 +56,7 @@ export async function params() {
     // [26/10/2026] conciliacao bancaria: dias aceitos no nivel 2 (com identidade) e janela de sugestao (limitada a janela da procedure)
     diasForte: v.CB_DIAS_FORTE ?? 2, janelaCb: Math.min(v.CB_JANELA ?? 5, v.BXC_JANELA_DIAS ?? 5),
     exigeComprov: (v.BXC_EXIGE_COMPROV ?? 0) === 1, comprovAcima: v.BXC_COMPROV_ACIMA ?? 0, bruto: v,
+    autoCob: (v.BXC_AUTO_COB ?? 0) === 1, usuCob: v.BXC_USU_COB ?? 0,   // [29/10/2026] robo da cobranca
   };
   cacheParams = { t: Date.now(), v: p };
   return p;
@@ -183,6 +184,39 @@ export async function movsPendentes(agn, ini, fim) {
        AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C' AND NVL(M.MOV_BO_PREVISAO,'N') = 'N' AND M.MOV_DT_DATADOCTO BETWEEN ${dt(ini)} AND ${dt(fim)}`);
   return rows.map(r => ({ org: num(r.ORG), seq: num(r.SEQ), lancto: num(r.LANC), data: r.DT, nat: r.NAT, vl: r2(r.VL), tpd: r.TPD || '', doc: r.DOC || '', hist: r.HIST || '', acao: num(r.ACAO),
     contraparte: (r.CP || '').trim(), cp_agn: r.CPA ? num(r.CPA) : null, usado: false }));
+}
+
+// [29/10/2026] COBRANCA DO DIA (Alexandre: conciliar sozinho o que o retorno ja baixou; o retorno segue no Mega, processado pela JOELMA).
+// O retorno gera 1 baixa 706/COB por titulo na data do credito; o banco credita a soma em 1 ou 2 linhas de cobranca (14424/1002 "MOV TIT COB"
+// tpd COB; 1003 "LIQUIDACAO DE COBRANCA" COB ou, ate 13/10, AVCRED "COB") e o boleto hibrido pago por QR Code vem a parte como "PIX QRS".
+// Medido nas 88 conciliacoes do financeiro desde 01/09 (mm44c_96): sempre linhas e baixas do MESMO dia, soma exata.
+// Regra (tudo ou nada): por dia, TODAS as linhas de cobranca + o UNICO subconjunto de PIX QRS cuja soma = TODAS as baixas COB abertas do dia.
+const linhaCob = l => l.nat === 'C' && (l.tpd === 'COB' || (l.tpd === 'AVCRED' && /\bCOB/i.test(l.hist)));
+const linhaQrs = l => l.nat === 'C' && !linhaCob(l) && /\bPIX QRS\b/i.test(l.hist);
+const baixaCob = m => m.nat === 'D' && m.acao === 706 && m.tpd === 'COB';
+const cents = arr => arr.reduce((s, x) => s + Math.round(x.vl * 100), 0);
+export function lotesCobranca(linhas, movs) {
+  const saida = [];
+  for (const dia of [...new Set(linhas.filter(l => linhaCob(l) || linhaQrs(l)).map(l => l.data))].sort()) {
+    const cob = linhas.filter(l => !l.casada && l.data === dia && linhaCob(l)), qrs = linhas.filter(l => !l.casada && l.data === dia && linhaQrs(l));
+    const bx = movs.filter(m => !m.usado && m.data === dia && baixaCob(m));
+    const alvo = cents(bx) - cents(cob);
+    if (!bx.length || alvo < 0 || qrs.length > 12) continue;
+    const fecham = [];
+    for (let k = 0; k < (1 << qrs.length) && fecham.length < 2; k++) if (cents(qrs.filter((_, i) => k & (1 << i))) === alvo) fecham.push(k);
+    if (fecham.length !== 1) continue;   // nenhum ou mais de um jeito de fechar: fica para a tela
+    const ls = [...cob, ...qrs.filter((_, i) => fecham[0] & (1 << i))];
+    if (ls.length) saida.push({ dia, linhas: ls, movs: bx, qrs: ls.length - cob.length });
+  }
+  return saida;
+}
+// so as baixas COB abertas (robo da cobranca: sem as subconsultas de contraparte do movsPendentes)
+async function baixasCobAbertas(agn, ini, fim) {
+  const rows = await megaQuery(`SELECT M.ORG_IN_CODIGO ORG, M.MOV_SEQ_IN_CODIGO SEQ, M.MOV_IN_NUMLANCTO LANC, TO_CHAR(M.MOV_DT_DATADOCTO,'YYYY-MM-DD') DT, M.MOV_CH_NATUREZA NAT, M.MOV_RE_VALOR VL, M.TPD_ST_CODIGO TPD, M.ACAO_IN_CODIGO ACAO
+      FROM MEGA.FIN_MOVIMENTO M
+     WHERE M.AGN_IN_CODIGO = ${num(agn)} AND M.AGN_TAU_ST_CODIGO = 'N' AND M.MOV_TAB_IN_CODIGO = 352 AND NVL(M.MOV_CH_CONCILIADO,'N') = 'N' AND M.CON_IN_SEQUENCIAL IS NULL
+       AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C' AND NVL(M.MOV_BO_PREVISAO,'N') = 'N' AND M.ACAO_IN_CODIGO = 706 AND M.TPD_ST_CODIGO = 'COB' AND M.MOV_DT_DATADOCTO BETWEEN ${dt(ini)} AND ${dt(fim)}`);
+  return rows.map(r => ({ org: num(r.ORG), seq: num(r.SEQ), lancto: num(r.LANC), data: r.DT, nat: r.NAT, vl: r2(r.VL), tpd: r.TPD || '', acao: num(r.ACAO), usado: false }));
 }
 
 // [26/10/2026] NIVEIS DE CORRESPONDENCIA banco x lancamento ja existente no Mega (Gestor_Financeiro_Conciliacao_Bancaria_Importacao.md §2.2).
@@ -380,7 +414,16 @@ export async function motor(agn, filtro = {}) {
   const base = l => ({ id: `L${l.cba}`, linhas: [{ cba: l.cba, data: l.data, valor: l.vl, natureza: l.nat, historico: l.hist, documento: l.doc, tpd: l.tpd, arquivo: l.arquivo }], valor_banco: l.vl, data: l.data, org: l.org,
     tpd_fin: tpdFinDe(l), doc_fin: docFinDe(l), titulos: [], candidatos: [], movs: [], depara: null, motivo: '', selecionado: false });
 
+  // 0) [29/10/2026] cobranca do dia fechada no centavo: lote nivel 1 (o robo da cobranca concilia sozinho); vem antes de tudo para nenhuma
+  //    baixa do retorno ser pega por outra linha de mesmo valor
+  for (const g of lotesCobranca(linhas, movs)) {
+    g.movs.forEach(m => (m.usado = true)); g.linhas.forEach(l => (l.casada = true));
+    itens.push({ ...base(g.linhas[0]), linhas: g.linhas.map(l => base(l).linhas[0]), valor_banco: r2(cents(g.linhas) / 100), situacao: 'lote', tipo: 'C', nivel: 1, confianca: 'alta', selecionado: true, auto_cob: true, movs: g.movs,
+      motivo: `Cobranca de ${g.dia}: ${g.linhas.length} linha(s) do extrato${g.qrs ? ` (${g.qrs} PIX QRS)` : ''} = soma das ${g.movs.length} baixa(s) do retorno do mesmo dia` });
+  }
+
   for (const l of [...linhas].sort((a, b) => b.vl - a.vl)) {
+    if (l.casada) continue;
     const it = base(l);
     // 1) aplicacao automatica: so informa, salvo de-para COM "historico contem" (rendimento liquido na c/c). [28/10/2026] antes o
     //    INFORMATIVOS vinha antes do de-para e REND/IR/IOF do lote da aplicacao caiam em titulos a pagar (ICMS "fecha com encargos").
@@ -427,9 +470,10 @@ export async function motor(agn, filtro = {}) {
       }
       continue;
     }
-    // 4) lote de cobranca: soma das baixas do retorno
-    if (l.tpd === 'COB' && l.nat === 'C') {
-      const pool = movs.filter(m => !m.usado && m.nat === 'D' && Math.abs(dias(m.data, l.data)) <= P.janela).sort((a, b) => b.vl - a.vl);
+    // 4) lote de cobranca: soma das baixas do retorno. [29/10/2026] so baixas COB (antes qualquer entrada do dia: depositos e transferencias
+    //    fechavam a soma por coincidencia); o dia inteiro fechado ja saiu no passo 0, aqui sobra o que nao fecha (o usuario confere)
+    if (linhaCob(l)) {
+      const pool = movs.filter(m => !m.usado && m.nat === 'D' && m.tpd === 'COB' && Math.abs(dias(m.data, l.data)) <= P.janela).sort((a, b) => b.vl - a.vl);
       const mesmoDia = pool.filter(m => m.data === l.data);
       let achado = null;
       if (mesmoDia.length && Math.abs(mesmoDia.reduce((s, m) => s + m.vl, 0) - l.vl) < 0.005) achado = mesmoDia;
@@ -649,6 +693,33 @@ export async function rodarRobo(app, disparo = 'agendado') {
     }
   }
   app.log.info({ bxc: 'robo', ...resumo, detalhes: undefined }, 'robo do Baixar e conciliar');
+  return resumo;
+}
+
+// [29/10/2026] ROBO DA COBRANCA: concilia sozinho o dia de cobranca fechado no centavo (lotesCobranca) das contas marcadas (CTA_CH_AUTO_COB = 'S'),
+// em nome do usuario BXC_USU_COB, origem R. Roda a cada 5 min e logo depois de importar extrato pelo portal: fecha o par qualquer que seja a peca
+// que chegou por ultimo (retorno no Mega ou extrato). Independe do BXC_ROBO_ATIVO (robo geral, que baixa titulos). Aparece em "Feitas hoje" com Desfazer.
+export async function rodarCobranca(app, disparo = 'agendado', opc = {}) {
+  const P = await params();
+  const resumo = { disparo, contas: 0, executados: 0, recusados: 0, detalhes: [] };
+  if ((!P.autoCob && !opc.simular) || P.usuCob <= 0) { resumo.motivo = !P.autoCob ? 'Cobranca automatica desligada (BXC_AUTO_COB = 0)' : 'Usuario da cobranca automatica nao definido (BXC_USU_COB)'; return resumo; }
+  const contas = await megaQuery(`SELECT AGN_IN_CODIGO AGN FROM MEGA.CCS_TB_GFIN_BXC_CONTA WHERE CTA_CH_ATIVA = 'S' AND CTA_CH_AUTO_COB = 'S' ${opc.conta ? `AND AGN_IN_CODIGO = ${num(opc.conta)}` : ''}`);
+  const ctx = { usu: P.usuCob, login: 'MEGA (robo da cobranca)', origem: 'R', simular: !!opc.simular };
+  const fim = opc.fim || isoHoje(), ini = opc.ini || addDias(fim, -30);
+  for (const c of contas) {
+    const agn = num(c.AGN);
+    resumo.contas++;
+    try {
+      const linhas = await linhasPendentes(agn, ini, fim, {});
+      if (!linhas.some(l => linhaCob(l) || linhaQrs(l))) continue;
+      for (const g of lotesCobranca(linhas, await baixasCobAbertas(agn, ini, fim))) {
+        const r = await executarConc({ org: g.linhas[0].org, conta: agn, movs: g.movs, cbas: g.linhas.map(l => l.cba) }, ctx);
+        if (r.status === 'B' || (ctx.simular && r.status === 'S')) resumo.executados++; else resumo.recusados++;
+        resumo.detalhes.push({ conta: agn, dia: g.dia, linhas: g.linhas.length, baixas: g.movs.length, valor: r2(cents(g.linhas) / 100), status: r.status, log_id: r.log_id || null, mensagem: r.mensagem || '' });
+      }
+    } catch (e) { resumo.detalhes.push({ conta: agn, erro: String(e.message || e).slice(0, 200) }); }
+  }
+  if (resumo.detalhes.length) app?.log?.info({ bxc: 'cobranca', ...resumo }, 'robo da cobranca');
   return resumo;
 }
 
@@ -875,19 +946,19 @@ export default async function baixarConciliarRoutes(app) {
   app.delete('/bxc/depara/:id', admin, async (req) => { await megaExec(`BEGIN DELETE FROM MEGA.CCS_TB_GFIN_BXC_DEPARA WHERE DEP_IN_CODIGO = ${num(req.params.id)}; COMMIT; END;`); return { itens: await deparas() }; });
 
   // -------- configuracao (admin): parametros BXC_* e contas do escopo
-  const CHAVES = ['BXC_TOLERANCIA', 'BXC_TETO_ROBO', 'BXC_ROBO_ATIVO', 'BXC_USU_ROBO', 'BXC_JANELA_DIAS', 'BXC_TIT_DIAS_ANTES', 'BXC_TIT_DIAS_DEPOIS', 'BXC_MAX_TITULOS', 'BXC_CLA_CP_JUROS', 'BXC_CLA_CP_DESC', 'BXC_CLA_CR_JUROS', 'BXC_CLA_CR_MULTA', 'BXC_CLA_CR_DESC', 'BXC_EXIGE_COMPROV', 'BXC_COMPROV_ACIMA'];
+  const CHAVES = ['BXC_TOLERANCIA', 'BXC_TETO_ROBO', 'BXC_ROBO_ATIVO', 'BXC_USU_ROBO', 'BXC_JANELA_DIAS', 'BXC_TIT_DIAS_ANTES', 'BXC_TIT_DIAS_DEPOIS', 'BXC_MAX_TITULOS', 'BXC_CLA_CP_JUROS', 'BXC_CLA_CP_DESC', 'BXC_CLA_CR_JUROS', 'BXC_CLA_CR_MULTA', 'BXC_CLA_CR_DESC', 'BXC_EXIGE_COMPROV', 'BXC_COMPROV_ACIMA', 'BXC_AUTO_COB', 'BXC_USU_COB'];
   app.get('/bxc/config', auth, async () => {
     const rows = await megaQuery(`SELECT PARAM_ST_CHAVE K, PARAM_RE_VALOR V, PARAM_ST_DESCRICAO D, TO_CHAR(PARAM_DT_ALTERACAO,'YYYY-MM-DD HH24:MI') EM, PARAM_ST_USU U FROM MEGA.CCS_TB_GFIN_PARAM WHERE PARAM_ST_CHAVE LIKE 'BXC_%' ORDER BY 1`);
     const contas = (await megaQuery(`SELECT K.*, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.AGN_IN_CODIGO) NOME,
         (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.CTA_IN_AGN_BANCO) BANCO_NOME FROM MEGA.CCS_TB_GFIN_BXC_CONTA K ORDER BY K.FIL_IN_CODIGO, K.AGN_IN_CODIGO`))
-      .map(k => ({ agn_id: num(k.AGN_IN_CODIGO), nome: k.NOME || '', fil_id: num(k.FIL_IN_CODIGO), ativa: k.CTA_CH_ATIVA === 'S', robo: k.CTA_CH_ROBO === 'S', teto_robo: k.CTA_RE_TETO_ROBO ? num(k.CTA_RE_TETO_ROBO) : null, agn_banco: k.CTA_IN_AGN_BANCO ? num(k.CTA_IN_AGN_BANCO) : null, banco_nome: k.BANCO_NOME || '', obs: k.CTA_ST_OBS || '' }));
+      .map(k => ({ agn_id: num(k.AGN_IN_CODIGO), nome: k.NOME || '', fil_id: num(k.FIL_IN_CODIGO), ativa: k.CTA_CH_ATIVA === 'S', robo: k.CTA_CH_ROBO === 'S', auto_cob: k.CTA_CH_AUTO_COB === 'S', teto_robo: k.CTA_RE_TETO_ROBO ? num(k.CTA_RE_TETO_ROBO) : null, agn_banco: k.CTA_IN_AGN_BANCO ? num(k.CTA_IN_AGN_BANCO) : null, banco_nome: k.BANCO_NOME || '', obs: k.CTA_ST_OBS || '' }));
     const usuRobo = rows.find(r => r.K === 'BXC_USU_ROBO');
     const robo = usuRobo && num(usuRobo.V) > 0 ? (await megaQuery(`SELECT GRU_ST_NOME N FROM MEGA.GLO_GRUPO_USUARIO WHERE GRU_IN_CODIGO = ${num(usuRobo.V)}`))[0]?.N : null;
     return { params: Object.fromEntries(rows.map(r => [r.K, num(r.V)])), detalhes: rows.map(r => ({ chave: r.K, valor: num(r.V), descricao: r.D || '', alterado_em: r.EM || '', alterado_por: r.U || '' })), contas, usuario_robo_nome: robo || '' };
   });
   app.put('/bxc/config', { ...admin, schema: { body: { type: 'object', properties: {
     params: { type: 'object', additionalProperties: { type: 'number' } },
-    contas: { type: 'array', maxItems: 100, items: { type: 'object', required: ['agn_id'], properties: { agn_id: { type: 'integer' }, fil_id: { type: 'integer' }, ativa: { type: 'boolean' }, robo: { type: 'boolean' }, teto_robo: { anyOf: [{ type: 'number' }, { type: 'null' }] }, agn_banco: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, obs: { type: 'string', maxLength: 200 } } } } } } }
+    contas: { type: 'array', maxItems: 100, items: { type: 'object', required: ['agn_id'], properties: { agn_id: { type: 'integer' }, fil_id: { type: 'integer' }, ativa: { type: 'boolean' }, robo: { type: 'boolean' }, auto_cob: { type: 'boolean' }, teto_robo: { anyOf: [{ type: 'number' }, { type: 'null' }] }, agn_banco: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, obs: { type: 'string', maxLength: 200 } } } } } } }
   }, async (req) => {
     const ctx = ctxDe(req), ps = req.body.params || {}, cs = req.body.contas || [];
     for (const [k, v] of Object.entries(ps)) {
@@ -896,7 +967,7 @@ export default async function baixarConciliarRoutes(app) {
     }
     for (const c of cs) {
       const existe = (await megaQuery(`SELECT COUNT(*) N FROM MEGA.CCS_TB_GFIN_BXC_CONTA WHERE AGN_IN_CODIGO = ${num(c.agn_id)}`))[0];
-      const sets = `${c.fil_id ? `FIL_IN_CODIGO = ${num(c.fil_id)},` : ''} CTA_CH_ATIVA = '${c.ativa === false ? 'N' : 'S'}', CTA_CH_ROBO = '${c.robo ? 'S' : 'N'}', CTA_RE_TETO_ROBO = ${c.teto_robo == null ? 'NULL' : Number(c.teto_robo)}, CTA_IN_AGN_BANCO = ${c.agn_banco == null ? 'NULL' : num(c.agn_banco)}, CTA_ST_OBS = '${ascii(c.obs, 200)}', CTA_DT_ALTERACAO = SYSDATE, CTA_IN_USU = ${ctx.usu}, CTA_ST_USU = '${ascii(ctx.login, 60)}'`;
+      const sets = `${c.fil_id ? `FIL_IN_CODIGO = ${num(c.fil_id)},` : ''} CTA_CH_ATIVA = '${c.ativa === false ? 'N' : 'S'}', CTA_CH_ROBO = '${c.robo ? 'S' : 'N'}', ${c.auto_cob == null ? '' : `CTA_CH_AUTO_COB = '${c.auto_cob ? 'S' : 'N'}',`} CTA_RE_TETO_ROBO = ${c.teto_robo == null ? 'NULL' : Number(c.teto_robo)}, CTA_IN_AGN_BANCO = ${c.agn_banco == null ? 'NULL' : num(c.agn_banco)}, CTA_ST_OBS = '${ascii(c.obs, 200)}', CTA_DT_ALTERACAO = SYSDATE, CTA_IN_USU = ${ctx.usu}, CTA_ST_USU = '${ascii(ctx.login, 60)}'`;
       if (num(existe?.N)) await megaExec(`BEGIN UPDATE MEGA.CCS_TB_GFIN_BXC_CONTA SET ${sets} WHERE AGN_IN_CODIGO = ${num(c.agn_id)}; COMMIT; END;`);
       else if (c.fil_id) await megaExec(`BEGIN INSERT INTO MEGA.CCS_TB_GFIN_BXC_CONTA (AGN_IN_CODIGO, FIL_IN_CODIGO) VALUES (${num(c.agn_id)}, ${num(c.fil_id)}); UPDATE MEGA.CCS_TB_GFIN_BXC_CONTA SET ${sets} WHERE AGN_IN_CODIGO = ${num(c.agn_id)}; COMMIT; END;`);
     }
@@ -995,13 +1066,21 @@ export default async function baixarConciliarRoutes(app) {
   });
 
   // -------- robo
-  app.post('/bxc/robo/rodar', admin, async (req) => rodarRobo(app, `manual por ${req.user.login || req.user.sub}`));
+  app.post('/bxc/robo/rodar', admin, async (req) => {
+    const quem = `manual por ${req.user.login || req.user.sub}`;
+    return { ...(await rodarRobo(app, quem)), cobranca: await rodarCobranca(app, quem) };
+  });
   if (process.env.BXC_ROBO !== '0') {
-    let rodando = false;
+    let rodando = false, rodandoCob = false;
     const timer = setInterval(async () => {
       if (rodando) return; rodando = true;
       try { await rodarRobo(app, 'agendado'); } catch (e) { app.log.error({ bxc: 'robo', err: String(e.message || e) }, 'robo falhou'); } finally { rodando = false; }
     }, 10 * 60 * 1000);
     timer.unref?.();
+    const timerCob = setInterval(async () => {
+      if (rodandoCob) return; rodandoCob = true;
+      try { await rodarCobranca(app, 'agendado'); } catch (e) { app.log.error({ bxc: 'cobranca', err: String(e.message || e) }, 'robo da cobranca falhou'); } finally { rodandoCob = false; }
+    }, 5 * 60 * 1000);
+    timerCob.unref?.();
   }
 }

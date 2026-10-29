@@ -10,7 +10,7 @@
 // O leitor do .RET roda no navegador (web/src/pages/baixas/cnab240.js); aqui chegam so os lancamentos lidos. Nada e gravado sem confirmacao.
 import crypto from 'node:crypto';
 import { megaQuery, megaExec } from '../soap/mega.js';
-import { motor, params, executarConc, orgDasLinhas, movsPendentes, tpdCompativel } from './baixarConciliar.js';
+import { motor, params, executarConc, orgDasLinhas, movsPendentes, tpdCompativel, rodarCobranca } from './baixarConciliar.js';
 
 const MOD_OPERA = 'BAIXAS_CONCILIACAO';
 const num = v => Number(v || 0);
@@ -207,7 +207,11 @@ export default async function conciliacaoBancariaRoutes(app) {
       throw falha(502, `Falha de comunicacao com o Mega (${String(e.message || e).slice(0, 160)}). Abra o historico de importacoes antes de tentar de novo.`);
     }
     req.log.info({ gfin: 'cb_importar', id, usu: req.user.sub }, 'importacao de extrato');
-    return { id, ...(await lerArquivo(id)) };
+    const arq = await lerArquivo(id);
+    // [29/10/2026] extrato novo pode fechar o dia de cobranca: o robo da cobranca roda ja para esta conta (sem esperar os 5 min; nao segura a resposta)
+    const cta = num((await megaQuery(`SELECT CTA_AGN_IN_CODIGO C FROM MEGA.CCS_TB_GFIN_CB_ARQUIVO WHERE ARQ_IN_CODIGO = ${id}`).catch(() => []))[0]?.C);
+    if (cta) rodarCobranca(app, `importacao ${id}`, { conta: cta }).catch(e => app.log.error({ bxc: 'cobranca', err: String(e.message || e) }, 'robo da cobranca falhou'));
+    return { id, ...arq };
   });
 
   async function lerArquivo(id) {

@@ -17,6 +17,8 @@ const PARAMS = [
   ['BXC_MAX_TITULOS',     'Máximo de títulos por pagamento',  'int',  'Um pagamento pode quitar até N títulos do mesmo agente (soma).'],
   ['BXC_EXIGE_COMPROV',   'Exigir comprovante em PIX/TED',    'bool', 'Quando ligado, PIX e TED acima do valor abaixo só baixam com comprovante conferido.'],
   ['BXC_COMPROV_ACIMA',   'Comprovante exigido a partir de (R$)', 'num', 'Valor a partir do qual o comprovante é exigido.'],
+  ['BXC_AUTO_COB',        'Cobrança automática ligada',       'bool', 'Quando ligado, o dia de cobrança das contas marcadas (baixas do retorno = linhas de cobrança + PIX QRS do extrato, no centavo) é conciliado sozinho a cada 5 minutos e logo após importar o extrato.'],
+  ['BXC_USU_COB',         'Usuário do Mega da cobrança automática', 'int', 'Código do usuário em nome de quem a conciliação automática da cobrança é gravada (1 = MEGA).'],
   ['BXC_CLA_CP_JUROS',    'Classe: juros pagos',              'int',  'Classe financeira dos juros nas baixas a pagar (627 na Quality).'],
   ['BXC_CLA_CP_DESC',     'Classe: descontos obtidos',        'int',  'Classe financeira do desconto nas baixas a pagar (566).'],
   ['BXC_CLA_CR_JUROS',    'Classe: juros recebidos',          'int',  'Classe financeira dos juros nas baixas a receber (68).'],
@@ -84,6 +86,7 @@ export default function ConfigBaixarConciliar() {
       {robo && <div className="card p-4 text-sm text-gray-300">
         <div className="font-semibold text-gray-100 flex items-center gap-2"><Bot size={15} /> Robô rodou</div>
         <div className="text-gray-400 mt-1">{robo.motivo || `${fmtN(robo.contas || 0)} conta(s): ${fmtN(robo.executados || 0)} gravado(s), ${fmtN(robo.recusados || 0)} recusado(s), ${fmtN(robo.pulados || 0)} deixado(s) para a tela`}</div>
+        {robo.cobranca && <div className="text-gray-400 mt-1">Cobrança: {robo.cobranca.motivo || `${fmtN(robo.cobranca.executados || 0)} dia(s) conciliado(s), ${fmtN(robo.cobranca.recusados || 0)} recusado(s)`}</div>}
         {Array.isArray(robo.itens) && robo.itens.length > 0 && <ul className="mt-2 text-xs text-gray-500 space-y-0.5">{robo.itens.slice(0, 30).map((x, i) => <li key={i}>• {x.conta ? `conta ${x.conta} · ` : ''}{x.mensagem || x.status}</li>)}</ul>}
       </div>}
 
@@ -108,13 +111,14 @@ export default function ConfigBaixarConciliar() {
         <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Contas no escopo</h2>
         <div className="card overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="text-[11px] uppercase text-gray-500 bg-ink-900"><tr><th className="text-left p-3">Conta</th><th className="text-left p-3">Filial</th><th className="p-3">Ativa</th><th className="p-3">Robô</th><th className="text-right p-3">Teto do robô (R$)</th><th className="text-right p-3">Agente banco (tarifas)</th><th className="text-right p-3">Pendentes</th></tr></thead>
+            <thead className="text-[11px] uppercase text-gray-500 bg-ink-900"><tr><th className="text-left p-3">Conta</th><th className="text-left p-3">Filial</th><th className="p-3">Ativa</th><th className="p-3">Robô</th><th className="p-3" title="Concilia sozinho o dia de cobrança (retorno x extrato) fechado no centavo">Cobrança auto.</th><th className="text-right p-3">Teto do robô (R$)</th><th className="text-right p-3">Agente banco (tarifas)</th><th className="text-right p-3">Pendentes</th></tr></thead>
             <tbody>{(cfg.contas || []).map(c => (
               <tr key={c.agn_id} className="border-t border-ink-700">
                 <td className="p-3 text-gray-200">{c.agn_id} · {c.nome}</td>
                 <td className="p-3 text-gray-400">{c.fil_id}</td>
-                <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={c.ativa === 'S' || c.ativa === true} onChange={e => setConta(c.agn_id, { ativa: e.target.checked ? 'S' : 'N' })} /></td>
-                <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={c.robo === 'S' || c.robo === true} onChange={e => setConta(c.agn_id, { robo: e.target.checked ? 'S' : 'N' })} /></td>
+                <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={c.ativa === 'S' || c.ativa === true} onChange={e => setConta(c.agn_id, { ativa: e.target.checked })} /></td>
+                <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={c.robo === 'S' || c.robo === true} onChange={e => setConta(c.agn_id, { robo: e.target.checked })} /></td>
+                <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={c.auto_cob === true} onChange={e => setConta(c.agn_id, { auto_cob: e.target.checked })} /></td>
                 <td className="p-3 text-right"><input type="number" step="0.01" className="input w-32 text-right py-1" value={c.teto_robo ?? ''} placeholder="geral" onChange={e => setConta(c.agn_id, { teto_robo: e.target.value })} /></td>
                 <td className="p-3 text-right"><input type="number" className="input w-28 text-right py-1" value={c.agn_banco ?? ''} onChange={e => setConta(c.agn_id, { agn_banco: e.target.value })} /></td>
                 <td className="p-3 text-right text-gray-400">{fmtN(c.pendentes)}</td>

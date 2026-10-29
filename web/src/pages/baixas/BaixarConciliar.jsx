@@ -356,7 +356,7 @@ export default function BaixarConciliar() {
             {lanc[item.id] ? <div className="text-sm text-gray-200">{descLanc(item, lanc[item.id])}</div>
               : (item.titulos || []).length ? item.titulos.map(t => <Titulo key={t.lancto} item={item} t={t} compacto />)
               : item.depara ? <div className="text-sm text-gray-300">{item.depara.descricao}{item.depara.classe ? <span className="text-gray-500 text-xs"> · classe {item.depara.classe}</span> : <span className="text-amber-300 text-xs"> · de-para sem classe: configure</span>}</div>
-              : item.movs?.length ? <div className="text-sm text-gray-300">{fmtN(item.movs.length)} lançamento(s) no Mega somam {fmt(item.movs.reduce((s, m) => s + Number(m.valor || 0), 0))}</div>
+              : item.movs?.length ? <div className="text-sm text-gray-300">{fmtN(item.movs.length)} lançamento(s) no Mega somam {fmt(item.movs.reduce((s, m) => s + Number(m.vl ?? m.valor ?? 0), 0))}</div>
               : item.candidatos_mov?.length ? <div className="text-sm text-gray-300">possível lançamento no Mega: {item.candidatos_mov.slice(0, 2).map(m => `${m.lancto} de ${fmtBr(m.data)} · ${m.tpd} ${m.doc}${m.hist ? ` · ${m.hist.trim()}` : ''} · ${fmt(m.vl)}`).join(' | ')}</div>
               : <div className="text-sm text-gray-500">{item.candidatos?.length ? `${fmtN(item.candidatos.length)} candidato(s)` : 'sem título correspondente'}</div>}
           </div>
@@ -400,7 +400,7 @@ export default function BaixarConciliar() {
               </>}
               {(item.movs || []).length > 0 && <>
                 <div className="text-[11px] uppercase tracking-wider text-gray-500">Lançamentos no Mega</div>
-                <div className="text-xs text-gray-400 space-y-0.5">{item.movs.map(m => <div key={m.lancto} className="flex gap-3"><span className="font-mono text-gray-500 w-20">{fmtBr(m.data)}</span><span className="flex-1 truncate text-gray-300">{m.hist || m.tpd} {m.doc ? `· ${m.doc}` : ''}</span><span className="font-mono">{fmt(m.valor)}</span></div>)}</div>
+                <div className="text-xs text-gray-400 space-y-0.5">{item.movs.map(m => <div key={m.lancto} className="flex gap-3"><span className="font-mono text-gray-500 w-20">{fmtBr(m.data)}</span><span className="flex-1 truncate text-gray-300">{m.hist || m.tpd} {m.doc ? `· ${m.doc}` : ''}</span><span className="font-mono">{fmt(m.vl ?? m.valor)}</span></div>)}</div>
               </>}
               {item.situacao === 'decidir' && (
                 <div className="space-y-1">

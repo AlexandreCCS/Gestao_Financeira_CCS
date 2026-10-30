@@ -4,7 +4,6 @@ import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { api } from '../api/client';
-import SearchableSelect from '../components/SearchableSelect';
 
 const fmt = v => Number(v||0).toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
 const isoToday = () => new Date().toISOString().slice(0,10);
@@ -14,25 +13,17 @@ const fmtBr = iso => iso ? iso.split('-').reverse().join('/') : '';
 const GFIN_DT_INICIO = '2026-05-01';
 
 export default function SaldosBanco() {
-  const [data,    setData]    = useState(isoToday());
-  const [fil,     setFil]     = useState(0);
-  const [agn,     setAgn]     = useState(0);
-  const [filiais, setFiliais] = useState([]);
-  const [contas,  setContas]  = useState([]);
-  const [resp,    setResp]    = useState(null);
-  const [busy,    setBusy]    = useState(false);
-  const [err,     setErr]     = useState('');
-  const [det,     setDet]     = useState(null);  // { conta }
-
-  useEffect(() => {
-    api.saldosBancoFiliais().then(setFiliais).catch(()=>{});
-    api.saldosBancoContas().then(setContas).catch(()=>{});
-  }, []);
+  const [data,      setData]      = useState(isoToday());
+  const [contasSel, setContasSel] = useState([]);   // [01/07/2026] chips de contas financeiras ([] = todas)
+  const [resp,      setResp]      = useState(null);
+  const [busy,      setBusy]      = useState(false);
+  const [err,       setErr]       = useState('');
+  const [det,       setDet]       = useState(null);  // { conta }
 
   async function consultar() {
     setBusy(true); setErr('');
     try {
-      const r = await api.saldosBanco(data, fil, agn);
+      const r = await api.saldosBanco(data, 0, 0);   // [01/07/2026] tudo; filtros (org/conta) no cliente
       setResp(r);
     } catch (e) {
       setErr(e.message || 'Erro ao consultar saldos');
@@ -41,11 +32,23 @@ export default function SaldosBanco() {
   }
   useEffect(() => { consultar(); /* primeira carga */ }, []); // eslint-disable-line
 
-  // [07/05/2026 - Alexandre Carvalho] V2: lista plana por conta (sem agrupamento por organizacao).
+  // [01/07/2026] Contas financeiras com saldo (para os chips) - vem do proprio resultado.
+  const contaOpcoes = useMemo(() => {
+    if (!resp) return [];
+    const m = new Map();
+    for (const l of resp.linhas) if (!m.has(l.agn_id)) m.set(l.agn_id, { id: l.agn_id, nome: l.agn_nome });
+    return Array.from(m.values()).sort((a, b) => a.id - b.id);
+  }, [resp]);
+
+  // [01/07/2026] Filtra pelas contas financeiras dos chips ([] = todas).
   const linhasOrdenadas = useMemo(() => {
     if (!resp) return [];
-    return [...resp.linhas].sort((a, b) => a.agn_id - b.agn_id);
-  }, [resp]);
+    const src = contasSel.length ? resp.linhas.filter(l => contasSel.includes(l.agn_id)) : resp.linhas;
+    return [...src].sort((a, b) => a.agn_id - b.agn_id);
+  }, [resp, contasSel]);
+
+  const totSaldo    = useMemo(() => linhasOrdenadas.reduce((s, r) => s + r.saldo, 0), [linhasOrdenadas]);
+  const toggleConta = id => setContasSel(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
 
   function exportXlsx() {
     if (!resp) return;
@@ -59,7 +62,7 @@ export default function SaldosBanco() {
     linhas.push({ Código: '', Conta: 'TOTAL CONSOLIDADO',
                   Entradas: linhasOrdenadas.reduce((s,r)=>s+r.entradas,0),
                   Saídas:   linhasOrdenadas.reduce((s,r)=>s+r.saidas,0),
-                  Saldo:    resp.total.saldo });
+                  Saldo:    totSaldo });
     const ws = XLSX.utils.json_to_sheet(linhas);
     ws['!cols'] = [ {wch:8}, {wch:50}, {wch:18}, {wch:18}, {wch:18} ];
     const wb = XLSX.utils.book_new();
@@ -73,7 +76,7 @@ export default function SaldosBanco() {
     doc.setFontSize(14);
     doc.text(`Saldos Bancários - ${fmtBr(data)}`, 40, 36);
     doc.setFontSize(10);
-    doc.text(`Saldo total consolidado: ${fmt(resp.total.saldo)}   |   ${resp.total.quantidade} contas`, 40, 52);
+    doc.text(`Saldo total consolidado: ${fmt(totSaldo)}   |   ${linhasOrdenadas.length} contas   |   Contas: ${contasSel.length===0?'Todas':contasSel.length+' selecionadas'}`, 40, 52);
     autoTable(doc, {
       startY: 70,
       head: [['Cód.', 'Conta', 'Entradas', 'Saídas', 'Saldo']],
@@ -87,7 +90,7 @@ export default function SaldosBanco() {
         '', 'TOTAL',
         fmt(linhasOrdenadas.reduce((s,r)=>s+r.entradas,0)),
         fmt(linhasOrdenadas.reduce((s,r)=>s+r.saidas,0)),
-        fmt(resp.total.saldo)
+        fmt(totSaldo)
       ]],
       footStyles: { fillColor: [21, 32, 58], textColor: 240, fontStyle: 'bold' }
     });
@@ -96,43 +99,49 @@ export default function SaldosBanco() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="card p-4 flex flex-wrap items-end gap-3">
-        <div className="flex items-center gap-2 text-prim-400 font-semibold">
-          <Filter size={18} /> Filtros
+      <div className="card p-4 space-y-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex items-center gap-2 text-prim-400 font-semibold">
+            <Filter size={18} /> Filtros
+          </div>
+          <label className="block">
+            <span className="text-xs text-gray-300">Saldo na data</span>
+            <input type="date" className="input mt-1" value={data} onChange={e=>setData(e.target.value)} />
+          </label>
+          <button className="btn-prim" onClick={consultar} disabled={busy}>
+            {busy ? 'Consultando...' : 'Consultar'}
+          </button>
+          <div className="flex-1" />
+          <button className="btn-ghost" onClick={exportXlsx} disabled={!resp} title="Exportar Excel">
+            <FileSpreadsheet size={16} /> Excel
+          </button>
+          <button className="btn-ghost" onClick={exportPdf} disabled={!resp} title="Exportar PDF">
+            <FileText size={16} /> PDF
+          </button>
         </div>
-        <label className="block">
-          <span className="text-xs text-gray-300">Saldo na data</span>
-          <input type="date" className="input mt-1" value={data} onChange={e=>setData(e.target.value)} />
-        </label>
-        <label className="block min-w-[240px]">
-          <span className="text-xs text-gray-300">Filial</span>
-          <select className="input mt-1" value={fil} onChange={e=>setFil(Number(e.target.value))}>
-            <option value={0}>(Todas)</option>
-            {filiais.map(f => <option key={f.id} value={f.id}>{f.id} - {f.nome}</option>)}
-          </select>
-        </label>
-        {/* [08/05/2026 - ALTERADO POR Alexandre Carvalho] Trocado <select> por busca dinamica
-            (lista grande - 110 contas - escolha por digito e mais rapida) */}
-        <label className="block min-w-[320px]">
-          <span className="text-xs text-gray-300">Conta financeira</span>
-          <SearchableSelect
-            value={agn}
-            onChange={setAgn}
-            options={contas}
-            placeholder="Digite codigo ou nome..."
-            allLabel="(Todas)"
-          />
-        </label>
-        <button className="btn-prim" onClick={consultar} disabled={busy}>
-          {busy ? 'Consultando...' : 'Consultar'}
-        </button>
-        <div className="flex-1" />
-        <button className="btn-ghost" onClick={exportXlsx} disabled={!resp} title="Exportar Excel">
-          <FileSpreadsheet size={16} /> Excel
-        </button>
-        <button className="btn-ghost" onClick={exportPdf} disabled={!resp} title="Exportar PDF">
-          <FileText size={16} /> PDF
-        </button>
+
+        {/* [01/07/2026] Contas financeiras em chips - clique para filtrar (multi, ao vivo) */}
+        <div className="flex flex-wrap gap-2 items-center pt-1 border-t border-ink-700/60">
+          <span className="text-xs uppercase text-gray-400 shrink-0">Contas:</span>
+          <button
+            className={`px-3 py-1 rounded text-xs transition
+              ${contasSel.length === 0 ? 'bg-prim-600 text-white' : 'bg-ink-800 hover:bg-ink-700 text-gray-300'}`}
+            onClick={()=>setContasSel([])}>
+            Todas
+          </button>
+          {contaOpcoes.map(c => (
+            <button key={c.id}
+              className={`px-3 py-1 rounded text-xs transition
+                ${contasSel.includes(c.id) ? 'bg-prim-600 text-white' : 'bg-ink-800 hover:bg-ink-700 text-gray-300'}`}
+              onClick={()=>toggleConta(c.id)}
+              title={`${c.id} - ${c.nome}`}>
+              {c.id} - {c.nome}
+            </button>
+          ))}
+          {contasSel.length > 0 && (
+            <span className="text-xs text-gray-500 ml-2">({contasSel.length} selecionada{contasSel.length>1?'s':''})</span>
+          )}
+        </div>
       </div>
 
       {err && <div className="bg-red-900/40 text-red-200 text-sm rounded p-3">{err}</div>}
@@ -141,13 +150,13 @@ export default function SaldosBanco() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="kpi border-l-4 border-prim-500">
             <div className="kpi-label flex items-center gap-1"><Wallet size={14} /> Saldo total consolidado</div>
-            <div className={`kpi-value ${resp.total.saldo >= 0 ? 'text-prim-400' : 'text-rose-400'}`}>
-              {fmt(resp.total.saldo)}
+            <div className={`kpi-value ${totSaldo >= 0 ? 'text-prim-400' : 'text-rose-400'}`}>
+              {fmt(totSaldo)}
             </div>
           </div>
           <div className="kpi border-l-4 border-acc-500">
             <div className="kpi-label flex items-center gap-1"><Banknote size={14} /> Quantidade de contas</div>
-            <div className="kpi-value text-acc-500">{resp.total.quantidade}</div>
+            <div className="kpi-value text-acc-500">{linhasOrdenadas.length}</div>
           </div>
         </div>
       )}

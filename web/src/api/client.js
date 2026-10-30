@@ -200,6 +200,9 @@ export const api = {
   liberacaoFormaTrocas: (ini, fim) => req(`/liberacao-forma/trocas?ini=${ini || ''}&fim=${fim || ''}`),
 
   // [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*)
+  // [30/10/2026 - Alexandre Carvalho] Frete > 2a aprovacao (fluxo novo do frete)
+  freteAprovacao: (dias) => req(`/frete/aprovacao?dias=${dias || 30}`),
+  freteAprovar: (efe) => req(`/frete/aprovacao/${efe}`, { method: 'POST' }),
 
   // [06/08/2026 - Alexandre Carvalho] liberacao de agentes (flag de bloqueio por atraso)
   liberacaoAgnLiberados: () => req('/liberacao-agentes/liberados'),

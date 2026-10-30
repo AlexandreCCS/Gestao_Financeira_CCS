@@ -28,6 +28,8 @@ import baixasExtratoRoutes from './routes/baixasExtrato.js';
 // [23/09/2026 - Alexandre Carvalho] BI Fechamento (grupo) - dashboard consolidado
 import biFechamentoRoutes from './routes/biFechamento.js';
 // [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*)
+// [30/10/2026 - Alexandre Carvalho] Frete > 2a aprovacao (fluxo novo do frete: titulo final com o adiantamento baixado)
+import freteAprovacaoRoutes from './routes/freteAprovacao.js';
 // [25/10/2026 - Alexandre Carvalho] Fase 2 Quality: Baixar e conciliar (motor, execucao, encargos, de-para, comprovante OCR, robo)
 import baixarConciliarRoutes from './routes/baixarConciliar.js';
 // [26/10/2026 - Alexandre Carvalho] Conciliacao bancaria: importacao do extrato + conferencia em niveis (Quality)
@@ -83,6 +85,7 @@ await app.register(liberacaoBaixaRoutes);
 await app.register(liberacaoAgentesRoutes);
 await app.register(liberacaoFormaRecRoutes);
 await app.register(baixasExtratoRoutes);
+await app.register(freteAprovacaoRoutes);
 await app.register(baixarConciliarRoutes);
 await app.register(conciliacaoBancariaRoutes);
 

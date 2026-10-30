@@ -74,6 +74,14 @@ export const MODULOS = {
     ],
   },
   // [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*)
+  // [30/10/2026 - Alexandre Carvalho] Frete volta so com a 2a aprovacao do fluxo novo do frete (titulo final com o adiantamento baixado)
+  FRETE: {
+    label: 'Frete',
+    rota:  '/frete/aprovacao',
+    submenus: [
+      { rota: '/frete/aprovacao', label: '2ª aprovação' },
+    ],
+  },
   CREDITO: {
     label: 'Inteligência de Crédito',
     rota:  '/credito/painel',

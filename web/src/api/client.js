@@ -199,22 +199,7 @@ export const api = {
     req(`/liberacao-forma/liberacoes${org ? `?org=${org}&lanc=${lanc}` : ''}`),
   liberacaoFormaTrocas: (ini, fim) => req(`/liberacao-forma/trocas?ini=${ini || ''}&fim=${fim || ''}`),
 
-  // [25/10/2026 - Alexandre Carvalho] Frete > Motoristas (cadastro do Mega + flag MEI + limite mensal MEI)
-  motoristas: () => req('/motoristas'),
-  motoristasMei: (cdt, dados) => req(`/motoristas/${cdt}/mei`, { method: 'POST', body: JSON.stringify(dados) }),
-  motoristasHistorico: (cdt) => req(`/motoristas/${cdt}/historico`),
-  motoristasParametros: () => req('/motoristas/parametros'),
-  motoristasParametrosHistorico: () => req('/motoristas/parametros/historico'),
-  motoristasSalvarParametros: (dados) => req('/motoristas/parametros', { method: 'PUT', body: JSON.stringify(dados) }),
-  // [25/10/2026 - Alexandre Carvalho] Frete > Veiculos (frota do Mega, so leitura)
-  veiculos: () => req('/veiculos'),
-  veiculosCampo: (seq, dados) => req(`/veiculos/${seq}/campo`, { method: 'POST', body: JSON.stringify(dados) }),
-  veiculosHistorico: (seq) => req(`/veiculos/${seq}/historico`),
-  veiculosParametros: () => req('/veiculos/parametros'),
-  veiculosParametrosHistorico: () => req('/veiculos/parametros/historico'),
-  veiculosSalvarParametros: (dados) => req('/veiculos/parametros', { method: 'PUT', body: JSON.stringify(dados) }),
-  veiculosSalvarValeTipo: (dados) => req('/veiculos/vale-tipos', { method: 'PUT', body: JSON.stringify(dados) }),
-  veiculosFornecedores: (q) => req(`/veiculos/fornecedores?q=${encodeURIComponent(q)}`),
+  // [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*)
 
   // [06/08/2026 - Alexandre Carvalho] liberacao de agentes (flag de bloqueio por atraso)
   liberacaoAgnLiberados: () => req('/liberacao-agentes/liberados'),

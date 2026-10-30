@@ -73,16 +73,7 @@ export const MODULOS = {
       { rota: '/liberacao-encargos', label: 'Liberação de Encargos' },
     ],
   },
-  // [25/10/2026 - Alexandre Carvalho] Frete: menu proprio (permissao FRETE, sql/26). Dropdown porque vai receber
-  // as outras telas da regra de frete/numerario da Quality; a primeira e o cadastro de Motoristas (flag MEI).
-  FRETE: {
-    label: 'Frete',
-    rota:  '/frete/motoristas',
-    submenus: [
-      { rota: '/frete/motoristas', label: 'Motoristas' },
-      { rota: '/frete/veiculos',   label: 'Veículos' },
-    ],
-  },
+  // [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*)
   CREDITO: {
     label: 'Inteligência de Crédito',
     rota:  '/credito/painel',

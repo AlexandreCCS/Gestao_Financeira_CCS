@@ -30,9 +30,6 @@ import ConciliacaoBancaria from './pages/baixas/ConciliacaoBancaria.jsx';   // [
 import ConfigBaixarConciliar from './pages/baixas/ConfigBaixarConciliar.jsx';
 import LiberacaoEncargos from './pages/baixas/LiberacaoEncargos.jsx';
 import BiFaturamento from './pages/bi/Faturamento.jsx';
-// [25/10/2026 - Alexandre Carvalho] menu Frete
-import Motoristas    from './pages/frete/Motoristas.jsx';
-import Veiculos      from './pages/frete/Veiculos.jsx';
 import Shell         from './components/Shell.jsx';
 
 // [14/05/2026 - Alexandre Carvalho] Tela exibida quando o usuario logou mas nao
@@ -104,9 +101,7 @@ createRoot(document.getElementById('root')).render(
       <Route path="/baixas-conciliacao/baixar" element={<Protect modulo="BAIXAS_CONCILIACAO"><BaixarConciliar /></Protect>} />
       <Route path="/baixas-conciliacao/config" element={<Protect modulo="BAIXAS_CONCILIACAO" adminOnly><ConfigBaixarConciliar /></Protect>} />
       <Route path="/liberacao-encargos" element={<Protect modulo="LIBERA_ENCARGOS"><LiberacaoEncargos /></Protect>} />
-      {/* [25/10/2026 - Alexandre Carvalho] Frete — permissao propria */}
-      <Route path="/frete/motoristas" element={<Protect modulo="FRETE"><Motoristas /></Protect>} />
-      <Route path="/frete/veiculos"   element={<Protect modulo="FRETE"><Veiculos /></Protect>} />
+      {/* [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*) */}
       {/* [23/09/2026 - Alexandre Carvalho] BI Fechamento do grupo */}
       <Route path="/bi/faturamento" element={<Protect modulo="BI_FECHAMENTO"><BiFaturamento /></Protect>} />
       <Route path="/admin"        element={<Protect adminOnly><AdminUsuarios /></Protect>} />

@@ -27,10 +27,7 @@ import liberacaoFormaRecRoutes from './routes/liberacaoFormaRec.js';
 import baixasExtratoRoutes from './routes/baixasExtrato.js';
 // [23/09/2026 - Alexandre Carvalho] BI Fechamento (grupo) - dashboard consolidado
 import biFechamentoRoutes from './routes/biFechamento.js';
-// [25/10/2026 - Alexandre Carvalho] Frete > Motoristas (cadastro do Mega + flag MEI + limite mensal MEI)
-import motoristasRoutes from './routes/motoristas.js';
-// [25/10/2026 - Alexandre Carvalho] Frete > Veiculos (frota do Mega, so leitura)
-import veiculosRoutes from './routes/veiculos.js';
+// [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*)
 // [25/10/2026 - Alexandre Carvalho] Fase 2 Quality: Baixar e conciliar (motor, execucao, encargos, de-para, comprovante OCR, robo)
 import baixarConciliarRoutes from './routes/baixarConciliar.js';
 // [26/10/2026 - Alexandre Carvalho] Conciliacao bancaria: importacao do extrato + conferencia em niveis (Quality)
@@ -86,8 +83,6 @@ await app.register(liberacaoBaixaRoutes);
 await app.register(liberacaoAgentesRoutes);
 await app.register(liberacaoFormaRecRoutes);
 await app.register(baixasExtratoRoutes);
-await app.register(motoristasRoutes);
-await app.register(veiculosRoutes);
 await app.register(baixarConciliarRoutes);
 await app.register(conciliacaoBancariaRoutes);
 

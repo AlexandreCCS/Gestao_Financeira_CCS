@@ -372,7 +372,9 @@ BEGIN
             TITS(I) := R;
             IF W_EXISTE = 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Titulo ' || W_DOCT || ' sem registro no ' || CASE WHEN W_RECEBER THEN 'Contas a Receber' ELSE 'Contas a Pagar' END || '.'); END IF;
             IF NVL(T.MOV_BO_PREVISAO, 'N') <> 'N' THEN RAISE_APPLICATION_ERROR(-20100, 'Titulo ' || W_DOCT || ' e de previsao.'); END IF;
-            IF NVL(T.MOV_CH_STATUSMOV, 'A') <> 'A' OR NVL(T.MOV_CH_SITUACAO, 'N') = 'C' THEN RAISE_APPLICATION_ERROR(-20100, 'Titulo ' || W_DOCT || ' cancelado ou inativo.'); END IF;
+            /* [03/11/2026] no RECEBER o Mega usa STATUSMOV 'N' na maioria dos titulos (31.878 N x 11.228 A; o Mega baixou 8.228 'N' em 2026) e cancelado
+               e MOV_CH_SITUACAO = 'C': exigir 'A' so no PAGAR (ex.: IMPCREC 850-003/004 de 2012 recusado). */
+            IF (NOT W_RECEBER AND NVL(T.MOV_CH_STATUSMOV, 'A') <> 'A') OR NVL(T.MOV_CH_SITUACAO, 'N') = 'C' THEN RAISE_APPLICATION_ERROR(-20100, 'Titulo ' || W_DOCT || ' cancelado ou inativo.'); END IF;
             IF NOT W_RECEBER AND NVL(T.MOV_BO_APROVADOADM, 'N') <> 'S' THEN RAISE_APPLICATION_ERROR(-20100, 'Titulo ' || W_DOCT || ' ainda nao aprovado para pagamento.'); END IF;
             IF NOT W_RECEBER AND NVL(T.MOV_ST_HBKSTATUS, 'NO') <> 'NO' THEN RAISE_APPLICATION_ERROR(-20100, 'Titulo ' || W_DOCT || ' esta em remessa eletronica (' || T.MOV_ST_HBKSTATUS || '): a baixa vem pelo retorno.'); END IF;
             IF NVL(T.MOV_RE_SALDOCPACRE, 0) <= 0 OR NVL(T.MOV_BO_SALDOZERADO, 'N') = 'S' THEN RAISE_APPLICATION_ERROR(-20100, 'Titulo ' || W_DOCT || ' ja esta baixado.'); END IF;

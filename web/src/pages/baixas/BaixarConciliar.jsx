@@ -49,6 +49,8 @@ function subconjunto(itens, alvo, maxQt = 6, orcamento = 150000) {
 }
 const somaDias = (iso, n) => { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 
+// [03/11/2026] a mesma conta atende mais de uma filial (14424 = 100 e 200): a filial do titulo precisa saltar aos olhos
+const Fil = ({ f }) => f ? <Pilula cls="text-sky-300 border-sky-700/40 bg-sky-900/30" title="Filial do título">Fil {f}</Pilula> : null;
 function Pilula({ cls = '', children, title }) {
   return <span title={title} className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] leading-4 whitespace-nowrap ${cls}`}>{children}</span>;
 }
@@ -232,9 +234,14 @@ export default function BaixarConciliar() {
     const sel = escolha[item.id] || new Set();
     const cands = (item.candidatos || []).filter(c => sel.has(c.lancto)).sort((a, b) => String(a.venc).localeCompare(String(b.venc)));
     let resta = r2(item.valor_banco); const tits = [];
-    for (const c of cands) { const v = r2(Math.min(Number(c.saldo || 0), resta)); if (v > 0) { tits.push({ seq: c.seq, lancto: c.lancto, valor: v, juros: 0, multa: 0, desconto: 0 }); resta = r2(resta - v); } }
+    // [03/11/2026] 1 titulo escolhido cujos encargos calculados fecham com o banco (ex.: gemeo de filial com desconto 4,00): baixa com esses encargos
+    const c1 = cands.length === 1 ? cands[0] : null;
+    if (c1 && Math.abs(r2(Number(c1.valor || 0) + Number(c1.juros || 0) + Number(c1.multa || 0)) - resta) < 0.005 && (c1.juros || c1.multa || c1.desconto)) {
+      tits.push({ seq: c1.seq, lancto: c1.lancto, valor: r2(c1.valor), juros: r2(c1.juros || 0), multa: r2(c1.multa || 0), desconto: r2(c1.desconto || 0) }); resta = 0;
+    }
+    for (const c of (tits.length ? [] : cands)) { const v = r2(Math.min(Number(c.saldo || 0), resta)); if (v > 0) { tits.push({ seq: c.seq, lancto: c.lancto, valor: v, juros: 0, multa: 0, desconto: 0 }); resta = r2(resta - v); } }
     if (resta > 0.005 || !tits.length) return;
-    pedirConfirmacao([{ ...payloadBaixa(item), titulos: tits }], api.bxcExecutar, 'Baixar com os títulos escolhidos?', `${fmt(item.valor_banco)} em ${fmtN(tits.length)} título(s)${tits.some((t, i) => t.valor < Number(cands[i]?.saldo || 0)) ? ' · o último fica com saldo (baixa parcial)' : ''}.`);
+    pedirConfirmacao([{ ...payloadBaixa(item), titulos: tits }], api.bxcExecutar, 'Baixar com os títulos escolhidos?', `${fmt(item.valor_banco)} em ${fmtN(tits.length)} título(s)${tits.some(t => t.desconto > 0 || t.juros > 0 || t.multa > 0) ? ` · encargos pela regra do título (juros ${fmt(tits[0].juros)} · multa ${fmt(tits[0].multa)} · desconto ${fmt(tits[0].desconto)})` : tits.some((t, i) => t.valor < Number(cands[i]?.saldo || 0)) ? ' · o último fica com saldo (baixa parcial)' : ''}.`);
   }
   // [28/10/2026] títulos vindos do painel de busca: soma ≥ banco → o último fica parcial; soma < banco → a diferença vira juros no último
   // (precisa de "Editar encargos" ou do pedido de liberação, como qualquer encargo fora da regra; o servidor confere de novo).
@@ -302,7 +309,7 @@ export default function BaixarConciliar() {
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
         <span className="text-gray-100 truncate max-w-[260px]" title={t.agn_nome}>{t.agn_nome}</span>
         <span className="font-mono text-gray-400">{t.doc}/{t.parcela}</span>
-        <span className="text-gray-500 text-xs">venc. {fmtBr(t.venc)}{t.fil_id ? ` · emp. ${t.fil_id}` : ''}</span>
+        <Fil f={t.fil_id} /><span className="text-gray-500 text-xs">venc. {fmtBr(t.venc)}</span>
         {!compacto && <span className="text-gray-500 text-xs">saldo {fmt(t.saldo)}{x.valor < Number(t.saldo || 0) - 0.005 && !x.desconto ? ' · parcial' : ''}</span>}
         <Encargos t={x} />
         {edits[item.id]?.tit?.[t.lancto] && <Pilula cls="text-prim-400 border-prim-600/40 bg-ink-700/60">editado</Pilula>}
@@ -417,7 +424,7 @@ export default function BaixarConciliar() {
                     const sel = escolha[item.id] || new Set();
                     return <label key={c.lancto} className="flex items-center gap-2 text-sm cursor-pointer">
                       <input type="checkbox" className="accent-prim-500" checked={sel.has(c.lancto)} onChange={() => setEscolha(e => ({ ...e, [item.id]: toggle(sel, c.lancto) }))} />
-                      <span className="text-gray-200 truncate max-w-[220px]">{c.agn_nome}</span><span className="font-mono text-gray-400">{c.doc}/{c.parcela}</span>
+                      <span className="text-gray-200 truncate max-w-[220px]">{c.agn_nome}</span><span className="font-mono text-gray-400">{c.doc}/{c.parcela}</span><Fil f={c.fil_id} />
                       <span className="text-gray-500 text-xs">venc. {fmtBr(c.venc)} · saldo {fmt(c.saldo)}</span>{c.confianca && <Pilula cls={CONF[c.confianca]?.[1]}>{CONF[c.confianca]?.[0]}</Pilula>}
                     </label>; })}
                   {(() => { const sel = escolha[item.id] || new Set(); const soma = (item.candidatos || []).filter(c => sel.has(c.lancto)).reduce((s, c) => s + Number(c.saldo || 0), 0);
@@ -646,7 +653,7 @@ function LancarModal({ modal, setModal, onUsar }) {
 // nome diferente) e "títulos bloqueados aparecem mas com a informação de bloqueado e a caixa de seleção desligada até que seja aprovado".
 function BuscaTitulos({ item, usados, onUsar, onClose }) {
   const pagar = item.tipo === 'P', banco = r2(item.valor_banco);
-  const [f, setF] = useState({ venc_ini: somaDias(item.data, -5), venc_fim: somaDias(item.data, 5), nome: '', doc: '', modo: 'qualquer', valor: '', vmax: '' });
+  const [f, setF] = useState({ venc_ini: somaDias(item.data, -5), venc_fim: somaDias(item.data, 5), nome: '', doc: '', fil: '', modo: 'qualquer', valor: '', vmax: '' });
   const [lista, setLista] = useState(null);
   const [mais, setMais] = useState(false);
   const [sel, setSel] = useState(new Map());          // lancto -> título
@@ -658,7 +665,7 @@ function BuscaTitulos({ item, usados, onUsar, onClose }) {
     const v = num(f.valor), vx = num(f.vmax);
     const faixa = f.modo === 'exato' && v > 0 ? { vmin: v, vmax: v } : f.modo === 'faixa' ? { vmin: v > 0 ? v : '', vmax: vx > 0 ? vx : '' } : {};
     try {
-      const r = await api.bxcTitulos({ tipo: item.tipo, org: item.org, venc_ini: f.venc_ini, venc_fim: f.venc_fim, nome: f.nome.trim(), doc: f.doc.trim(), ...faixa });
+      const r = await api.bxcTitulos({ tipo: item.tipo, org: item.org, venc_ini: f.venc_ini, venc_fim: f.venc_fim, nome: f.nome.trim(), doc: f.doc.trim(), fil: f.fil.trim(), ...faixa });
       setLista(r.titulos || []); setMais(!!r.mais);
     } catch (e) { setAviso(e.detalhe || e.message || 'Falha ao consultar o Mega.'); setLista([]); }
     setCarregando(false);
@@ -689,7 +696,7 @@ function BuscaTitulos({ item, usados, onUsar, onClose }) {
         <label className="text-[11px] text-gray-500 col-span-1">até<input type="date" className="input py-1.5 mt-1" value={f.venc_fim} onChange={e => setF({ ...f, venc_fim: e.target.value })} /></label>
         <label className="text-[11px] text-gray-500 col-span-2">{pagar ? 'Fornecedor' : 'Cliente'} (nome, fantasia ou CNPJ)<input className="input py-1.5 mt-1" autoFocus value={f.nome} onKeyDown={enter} onChange={e => setF({ ...f, nome: e.target.value })} /></label>
         <label className="text-[11px] text-gray-500 col-span-1">Documento<input className="input py-1.5 mt-1" value={f.doc} onKeyDown={enter} onChange={e => setF({ ...f, doc: e.target.value })} /></label>
-        <div className="col-span-1" />
+        <label className="text-[11px] text-gray-500 col-span-1">Filial (vazio = todas)<input className="input py-1.5 mt-1" inputMode="numeric" placeholder="todas" value={f.fil} onKeyDown={enter} onChange={e => setF({ ...f, fil: e.target.value.replace(/\D/g, '') })} /></label>
         <label className="text-[11px] text-gray-500 col-span-1">Valor (saldo)<select className="input py-1.5 mt-1" value={f.modo} onChange={e => setF({ ...f, modo: e.target.value })}><option value="qualquer">qualquer</option><option value="exato">exato</option><option value="faixa">faixa</option></select></label>
         {f.modo !== 'qualquer' && <label className="text-[11px] text-gray-500 col-span-1">{f.modo === 'faixa' ? 'de' : 'valor'}<input className="input py-1.5 mt-1 text-right" inputMode="decimal" placeholder="0,00" value={f.valor} onKeyDown={enter} onChange={e => setF({ ...f, valor: e.target.value })} /></label>}
         {f.modo === 'faixa' && <label className="text-[11px] text-gray-500 col-span-1">até<input className="input py-1.5 mt-1 text-right" inputMode="decimal" placeholder="0,00" value={f.vmax} onKeyDown={enter} onChange={e => setF({ ...f, vmax: e.target.value })} /></label>}
@@ -706,7 +713,7 @@ function BuscaTitulos({ item, usados, onUsar, onClose }) {
                   <input type="checkbox" className="accent-prim-500 w-4 h-4" checked={on} disabled={blq} onChange={() => alterna(t)} />
                   <span className="text-gray-100 truncate max-w-[260px]" title={`${t.agn_nome}${t.fantasia && t.fantasia !== t.agn_nome ? ` (${t.fantasia})` : ''} ${t.cnpj}`}>{t.agn_nome}</span>
                   <span className="font-mono text-gray-400">{t.doc}/{t.parcela}</span>
-                  <span className="text-gray-500 text-xs">venc. {fmtBr(t.venc)}{t.fil_id ? ` · emp. ${t.fil_id}` : ''}</span>
+                  <Fil f={t.fil_id} /><span className="text-gray-500 text-xs">venc. {fmtBr(t.venc)}</span>
                   {blq && <Pilula cls="text-rose-300 border-rose-700/40 bg-rose-900/30">bloqueado: {t.bloqueio}</Pilula>}
                   {usados.has(t.lancto) && <Pilula cls="text-amber-300 border-amber-700/40 bg-amber-900/30" title="O mesmo título está sugerido para outra linha do extrato">já sugerido em outra linha</Pilula>}
                   {t.pedido?.status === 'P' && <Pilula cls="text-amber-300 border-amber-700/40 bg-amber-900/30">liberação pendente</Pilula>}

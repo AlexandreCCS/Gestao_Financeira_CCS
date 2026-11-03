@@ -354,6 +354,7 @@ export async function buscarTitulos(f) {
     const nome = ascii(f.nome, 60).toUpperCase(), digitos = String(f.nome || '').replace(/\D/g, '');
     if (nome) w.push(`(${SEM_ACENTO('A.AGN_ST_NOME')} LIKE '%${nome}%' OR ${SEM_ACENTO('A.AGN_ST_FANTASIA')} LIKE '%${nome}%'${digitos.length >= 5 ? ` OR REGEXP_REPLACE(A.AGN_ST_CGC,'[^0-9]','') LIKE '%${digitos}%'` : ''})`);
     if (f.doc) w.push(`UPPER(P.MOV_ST_DOCUMENTO) LIKE '%${ascii(f.doc, 30).toUpperCase()}%'`);
+    if (f.fil) w.push(`P.FIL_IN_CODIGO = ${num(f.fil)}`);   // [03/11/2026] a mesma conta atende varias filiais da org: o usuario escolhe a do titulo
     if (f.vmin != null) w.push(`P.SALDO_EM_ABERTO >= ${r2(f.vmin)}`);
     if (f.vmax != null) w.push(`P.SALDO_EM_ABERTO <= ${r2(f.vmax)}`);
   }
@@ -548,6 +549,18 @@ export async function motor(agn, filtro = {}) {
       for (const g of grupos) {
         const sub = subconjunto([...g].sort((a, b) => b.saldo - a.saldo).map(t => ({ ...t, vl: t.saldo })), l.vl, P.maxTitulos, 60000);
         if (sub) { escolha = sub.map(t => ({ t, enc: { valor: t.saldo, juros: 0, multa: 0, desconto: 0, atraso: Math.max(0, dias(l.data, t.venc)) } })); conf = sub.some(t => t.nome || t.ident) ? 'alta' : 'media'; motivo = `${sub.length} titulos do mesmo agente somam o valor do banco`; break; }
+      }
+    }
+    // [03/11/2026] a mesma conta atende mais de uma filial (14424 = 100 e 200): titulo "gemeo" em OUTRA filial (mesmo agente, mesmo saldo e
+    //    mesmo vencimento, ex.: NF 1549 fil 100 x NF 1550 fil 200 da PONTEK) torna a escolha ambigua -> Decidir com as duas, o usuario escolhe a filial
+    if (escolha?.length === 1) {
+      const e0 = escolha[0].t;
+      const gemeos = cands.filter(t => t.id !== e0.id && t.agn_id === e0.agn_id && t.fil_id !== e0.fil_id && Math.abs(t.saldo - e0.saldo) < 0.005 && t.venc === e0.venc);
+      if (gemeos.length) {
+        const opc = [escolha[0], ...gemeos.map(t => ({ t: marca(t), enc: escolha[0].enc.desconto > 0 || escolha[0].enc.juros > 0 ? (calcEncargos(tipo, t, l.vl, l.data, P) || escolha[0].enc) : escolha[0].enc }))];
+        it.candidatos = opc.map(x => ({ ...tituloSaida(x.t, x.enc, x.t.dist ?? Math.abs(dias(x.t.venc, l.data))), confianca: 'media' }));
+        itens.push({ ...it, situacao: 'decidir', tipo, confianca: 'baixa', motivo: `Titulos iguais do mesmo agente em filiais diferentes (${[...new Set(opc.map(x => x.t.fil_id))].join(' e ')}): escolha de qual filial e o titulo` });
+        continue;
       }
     }
     if (escolha) {
@@ -848,7 +861,7 @@ export default async function baixarConciliarRoutes(app) {
       if (!filtrado && dias(q.venc_fim, q.venc_ini) > 120) return reply.code(400).send({ error: 'periodo', message: 'Periodo de vencimento de no maximo 120 dias sem filtro: informe o documento ou o cliente para buscar em qualquer periodo.' });
     }
     const valor = x => (x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));
-    return buscarTitulos({ tipo, org, lanctos, venc_ini: q.venc_ini, venc_fim: q.venc_fim, nome: q.nome, doc: q.doc, vmin: valor(q.vmin), vmax: valor(q.vmax) });
+    return buscarTitulos({ tipo, org, lanctos, venc_ini: q.venc_ini, venc_fim: q.venc_fim, nome: q.nome, doc: q.doc, fil: num(q.fil) || null, vmin: valor(q.vmin), vmax: valor(q.vmax) });
   });
 
   // [28/10/2026] cliente (C) ou fornecedor (F) para o adiantamento pelo extrato: nome, fantasia ou CNPJ, ate 30. So leitura.

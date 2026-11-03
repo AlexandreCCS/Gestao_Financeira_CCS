@@ -27,6 +27,36 @@ const motivoAplic = l => /APR D-1/i.test(l.hist) ? 'Previa do rendimento (arquiv
   : l.tpd === 'REND' ? 'Rendimento liquido saindo da aplicacao: a entrada na conta e a linha REND PAGO APLIC AUT MAIS'
   : ['IR', 'IOF'].includes(l.tpd) ? `${l.tpd} do rendimento da aplicacao: ja descontado no liquido, nao lancar`
   : 'Aplicacao automatica / rendimento: movimento interno do banco';
+// [03/11/2026] CHEQUE RECEBIDO DEVOLVIDO: a linha CHRD ("DEV CH NAC|DEP <banco> <n. cheque> <alinea>") nunca e pagamento nem conciliacao
+// (o motor achava guias de ISS ou um 708 "CHDV FEIRAO DE DEBITO" de mesmo valor). Vira informativo com o cheque casado em CUS_FIN_CHEQUESCRE
+// (banco + numero + valor) e as parcelas que ele baixou; o tratamento (reabrir, marcar D, aviso, 971) e o processo do cheque devolvido (sql/37).
+const RX_CHRD = /DEV CH (NAC|DEP) (\d{3}) (\d+) (\d+)/;
+async function chequesDevolvidos(linhas) {
+  const chrd = linhas.map(l => ({ l, m: l.tpd === 'CHRD' ? (l.hist || '').match(RX_CHRD) : null })).filter(x => x.m);
+  const out = new Map();
+  if (!chrd.length) return out;
+  const pares = [...new Set(chrd.map(x => `(LPAD(C.BAN_IN_NUMERO,3,'0') = '${x.m[2]}' AND LTRIM(C.CHEQR_IN_NUMEROCHEQUE,'0') = '${x.m[3].replace(/^0+/, '') || '0'}')`))];
+  const chs = await megaQuery(`SELECT C.CUS_IN_SEQUENCIA SEQ, LPAD(C.BAN_IN_NUMERO,3,'0') BCO, LTRIM(C.CHEQR_IN_NUMEROCHEQUE,'0') NUM, C.CHEQR_RE_VALOR VL, C.CHEQR_CH_STATUS ST, SUBSTR(C.CHEQR_ST_STATUS,1,40) OBS, TO_CHAR(C.CHEQR_DT_DATAPRE,'YYYY-MM-DD') PRE, C.AGN_IN_CODIGO AGN, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = C.AGN_IN_CODIGO) NOME FROM MEGA.CUS_FIN_CHEQUESCRE C WHERE ${pares.join(' OR ')}`);
+  const seqs = [...new Set(chs.map(c => num(c.SEQ)))];
+  const ocos = seqs.length ? await megaQuery(`SELECT O.CUS_IN_SEQUENCIA SEQ, O.MOV_IN_NUMLANCTO_REF REF, SUBSTR(O.CUSO_ST_OCORRENCIA,1,90) OCO, O.CUSO_RE_VALOR VL FROM MEGA.CUS_FIN_CHEQUESCRE_OCO O WHERE UPPER(O.CUSO_ST_TPCONTA) = 'RECEBER' AND O.CUS_IN_SEQUENCIA IN (${seqs.join(',')}) ORDER BY O.CUSO_IN_CODIGO`) : [];
+  for (const { l, m } of chrd) {
+    const ok = chs.filter(c => c.BCO === m[2] && c.NUM === (m[3].replace(/^0+/, '') || '0') && Math.abs(num(c.VL) - l.vl) < 0.005);
+    const c = ok.length === 1 ? ok[0] : null;
+    // parcelas baixadas pelo cheque e ainda nao estornadas (a ocorrencia de estorno repete o REF da baixa)
+    const est = new Set(ocos.filter(o => c && num(o.SEQ) === num(c.SEQ) && /^ESTORNO/.test(o.OCO)).map(o => o.REF));
+    const tits = c ? ocos.filter(o => num(o.SEQ) === num(c.SEQ) && /^BAIXA/.test(o.OCO) && !est.has(o.REF)).map(o => (o.OCO.match(/RECEBER\s+(\S+)/) || [])[1]).filter(Boolean) : [];
+    out.set(l.cba, { tipo: m[1], banco: m[2], numero: m[3], alinea: m[4], cheque: c ? { seq: num(c.SEQ), agn: num(c.AGN), nome: c.NOME || '', status: c.ST, obs: c.OBS || '', bom_para: c.PRE } : null, candidatos: ok.length, titulos: tits });
+  }
+  return out;
+}
+const motivoChdev = (d, P) => {
+  const cab = `Cheque devolvido ${d.banco}/${d.numero}, alinea ${d.alinea}`;
+  if (!d.cheque) return `${cab}: ${d.candidatos ? `${d.candidatos} cheques com esse banco/numero/valor, confira no cadastro de cheques` : 'nenhum cheque recebido com esse banco, numero e valor'}. Nao baixar nem conciliar por aqui.`;
+  const ch = d.cheque;
+  return `${cab}: cheque ${ch.seq} de ${ch.nome} (${ch.agn}), bom para ${ch.bom_para}, ${ch.status === 'D' ? `ja marcado D (${ch.obs})` : 'ainda nao marcado D'}. `
+    + `${d.titulos.length ? `Parcelas baixadas por ele que serao reabertas: ${d.titulos.join(', ')}. ` : 'Nenhuma parcela baixada por ele em aberto de estorno. '}`
+    + `Tratado pelo processo de cheque devolvido (aguardando a contabilizacao da acao ${P.chd.acao}). Nao baixar nem conciliar por aqui.`;
+};
 const TPD_FIN_MAP = { PGTO: 'PGTOM', DEPP: 'DEPR' };
 const UPLOADS = path.resolve(process.env.BXC_UPLOADS || 'uploads/bxc');
 
@@ -404,11 +434,12 @@ export async function motor(agn, filtro = {}) {
   const linhas = await linhasPendentes(agn, ini, fim, { nat, tpd: filtro.tpd });
   const orgs = [...new Set(linhas.map(l => l.org).filter(Boolean))];
   const temD = linhas.some(l => l.nat === 'D'), temC = linhas.some(l => l.nat === 'C');
-  const [movs, deps, candP, candR, cps, vizinhas] = await Promise.all([
+  const [movs, deps, candP, candR, cps, vizinhas, chdev] = await Promise.all([
     movsPendentes(agn, addDias(ini, -P.janela), addDias(fim, P.janela)), deparas(),
     temD ? titulosCandidatos('P', orgs, ini, fim, P, null) : [], temC ? titulosCandidatos('R', orgs, ini, fim, P, filtro.forma) : [],
     linhas.length ? outrasPontas(agn, ini, fim).catch(() => new Map()) : new Map(),
     linhas.length ? linhasPendentes(agn, addDias(ini, -P.janela), addDias(fim, P.janela), { nat, tpd: filtro.tpd }) : [],
+    chequesDevolvidos(linhas).catch(() => new Map()),
   ]);
   // [28/10/2026] rivais de fora do periodo filtrado tambem disputam o lancamento (tela so em 23/10 nao pode dar a 23/10 o lancamento da linha de 21/10)
   const naTela = new Set(linhas.map(l => l.cba));
@@ -429,6 +460,12 @@ export async function motor(agn, filtro = {}) {
   for (const l of [...linhas].sort((a, b) => b.vl - a.vl)) {
     if (l.casada) continue;
     const it = base(l);
+    // 0b) [03/11/2026] cheque recebido devolvido (CHRD): nunca vira pagamento/conciliacao; so informa o cheque e as parcelas dele
+    if (l.tpd === 'CHRD') {
+      const d = chdev.get(l.cba) || { banco: '?', numero: '?', alinea: '?', cheque: null, candidatos: 0, titulos: [] };
+      itens.push({ ...it, situacao: 'informativo', tipo: 'I', confianca: 'alta', chdev: d, motivo: motivoChdev(d, P) });
+      continue;
+    }
     // 1) aplicacao automatica: so informa, salvo de-para COM "historico contem" (rendimento liquido na c/c). [28/10/2026] antes o
     //    INFORMATIVOS vinha antes do de-para e REND/IR/IOF do lote da aplicacao caiam em titulos a pagar (ICMS "fecha com encargos").
     const aplic = INFORMATIVOS.has(l.tpd) || loteAplicacao(l);

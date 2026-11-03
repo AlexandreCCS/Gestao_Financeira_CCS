@@ -66,7 +66,11 @@ async function req(path, opts = {}) {
     if (location.pathname !== '/login') location.href = '/login';
     throw new Error('unauthorized');
   }
-  if (!res.ok) throw new Error((await res.json().catch(()=>({}))).error || res.statusText);
+  if (!res.ok) {
+    // [03/11/2026] message continua sendo o codigo (telas comparam 'ja_liberado' etc.); o texto legivel vai em detalhe
+    const j = await res.json().catch(() => ({}));
+    throw Object.assign(new Error(j.error || res.statusText), { detalhe: j.message || '' });
+  }
   return res.headers.get('content-type')?.includes('json') ? res.json() : res.text();
 }
 

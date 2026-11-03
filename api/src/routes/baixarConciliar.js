@@ -843,7 +843,9 @@ export default async function baixarConciliarRoutes(app) {
     if (!org) return reply.code(400).send({ error: 'org', message: 'Informe a empresa (org) da linha do extrato.' });
     if (!lanctos.length) {
       if (!ehData(q.venc_ini) || !ehData(q.venc_fim) || q.venc_fim < q.venc_ini) return reply.code(400).send({ error: 'periodo', message: 'Informe o vencimento de/ate.' });
-      if (dias(q.venc_fim, q.venc_ini) > 120) return reply.code(400).send({ error: 'periodo', message: 'Periodo de vencimento de no maximo 120 dias.' });
+      // [03/11/2026] o limite so vale sem filtro: com documento ou cliente a consulta ja e leve (titulo de 2012 achado pelo numero)
+      const filtrado = String(q.doc || '').trim().length >= 2 || String(q.nome || '').trim().length >= 3;
+      if (!filtrado && dias(q.venc_fim, q.venc_ini) > 120) return reply.code(400).send({ error: 'periodo', message: 'Periodo de vencimento de no maximo 120 dias sem filtro: informe o documento ou o cliente para buscar em qualquer periodo.' });
     }
     const valor = x => (x == null || x === '' || !Number.isFinite(Number(x)) ? null : Number(x));
     return buscarTitulos({ tipo, org, lanctos, venc_ini: q.venc_ini, venc_fim: q.venc_fim, nome: q.nome, doc: q.doc, vmin: valor(q.vmin), vmax: valor(q.vmax) });

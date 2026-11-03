@@ -660,7 +660,7 @@ function BuscaTitulos({ item, usados, onUsar, onClose }) {
     try {
       const r = await api.bxcTitulos({ tipo: item.tipo, org: item.org, venc_ini: f.venc_ini, venc_fim: f.venc_fim, nome: f.nome.trim(), doc: f.doc.trim(), ...faixa });
       setLista(r.titulos || []); setMais(!!r.mais);
-    } catch (e) { setAviso(e.message || 'Falha ao consultar o Mega.'); setLista([]); }
+    } catch (e) { setAviso(e.detalhe || e.message || 'Falha ao consultar o Mega.'); setLista([]); }
     setCarregando(false);
   }
   useEffect(() => { filtrar(); }, []);

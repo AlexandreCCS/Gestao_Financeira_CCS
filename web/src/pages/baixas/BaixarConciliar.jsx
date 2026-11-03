@@ -22,10 +22,11 @@ const isoDia = n => { const d = new Date(); d.setDate(d.getDate() - (n || 0)); r
 const CONF   = { alta: ['confere', 'text-emerald-300 border-emerald-700/40 bg-emerald-900/30'], media: ['provável', 'text-amber-300 border-amber-700/40 bg-amber-900/30'], baixa: ['só o valor', 'text-gray-400 border-ink-600 bg-ink-700/60'], manual: ['escolhido', 'text-prim-400 border-prim-600/40 bg-ink-700/60'] };
 const TIPO   = { P: 'pagamento', R: 'recebimento', A: 'lançamento', C: 'conciliação', I: 'informativo', L: 'lançamento pelo extrato' };
 // [28/10/2026] lançamento pelo extrato (flag): adiantamento de cliente 704, a fornecedor 702, transferência entre contas 712 (sql/35)
-const LANC   = { ADCLI: 'Adiantamento de Cliente', ADFOR: 'Adiantamento a Fornecedor', TRANSF: 'Transferência entre contas' };
+const LANC   = { ADCLI: 'Adiantamento de Cliente', ADFOR: 'Adiantamento a Fornecedor', TRANSF: 'Transferência entre contas', ADCLIIND: 'Adiantamento de Cliente - Recebimento Indevido', RECDESP: 'Recuperação de Despesas' };
+const ACAO_LANC = { ADCLI: 704, ADFOR: 702, ADCLIIND: 721, RECDESP: 711 };   // [03/11/2026]
 const descLanc = (item, x) => x.tipo === 'TRANSF'
   ? `Transferência entre contas (712) ${item.linhas?.[0]?.natureza === 'C' ? 'vinda de' : 'para'} ${x.conta_nome}${x.cba2 ? ' · concilia as duas contas' : ' · a outra conta concilia depois'}`
-  : `${LANC[x.tipo]} (${x.tipo === 'ADCLI' ? 704 : 702}) · ${x.nome} (${x.agn}) · classe ${x.classe} / CC ${x.ccusto}`;
+  : `${LANC[x.tipo]} (${ACAO_LANC[x.tipo]}) · ${x.nome} (${x.agn}) · classe ${x.classe} / CC ${x.ccusto}${x.fil ? ` · fil ${x.fil}` : ''}`;
 
 // dinheiro que o banco movimentou para este título = principal + juros + multa (o desconto só abate o título: título quita principal + desconto)
 // [25/10/2026] regra alinhada com a procedure CCS_P_GFIN_BXC_X depois da prova simulada
@@ -332,11 +333,11 @@ export default function BaixarConciliar() {
     const s = item.sugestao, atual = lanc[item.id]?.tipo;
     if (!s || res[item.id]?.status === 'B') return null;
     const entrada = item.linhas?.[0]?.natureza === 'C';
-    const op = [s.transf ? ['TRANSF', `Lançar Transferência entre contas (${entrada ? 'vinda de' : 'para'} ${s.transf.conta_nome})`] : s.transf_manual && ['TRANSF', 'Lançar Transferência entre contas (escolher a conta)'], s.adcli && ['ADCLI', 'Lançar como Adiantamento de Cliente'], s.adfor && ['ADFOR', 'Lançar como Adiantamento a Fornecedor']].filter(Boolean);
+    const op = [s.transf ? ['TRANSF', `Lançar Transferência entre contas (${entrada ? 'vinda de' : 'para'} ${s.transf.conta_nome})`] : s.transf_manual && ['TRANSF', 'Lançar Transferência entre contas (escolher a conta)'], s.adcli && ['ADCLI', 'Lançar como Adiantamento de Cliente'], s.adcliind && ['ADCLIIND', 'Lançar como Adiantamento de Cliente - Recebimento Indevido'], s.recdesp && ['RECDESP', `Lançar como Recuperação de Despesas${s.recdesp.regra ? ` (regra: ${s.recdesp.regra})` : ''}`], s.adfor && ['ADFOR', 'Lançar como Adiantamento a Fornecedor']].filter(Boolean);
     const abrir = tp => {
-      const b = tp === 'TRANSF' ? (s.transf || { conta: null, conta_nome: '', cba2: null, data: null, ccusto: s.transf_manual?.ccusto ?? 215, manual: true }) : tp === 'ADCLI' ? s.adcli : s.adfor;
+      const b = tp === 'TRANSF' ? (s.transf || { conta: null, conta_nome: '', cba2: null, data: null, ccusto: s.transf_manual?.ccusto ?? 215, manual: true }) : ({ ADCLI: s.adcli, ADFOR: s.adfor, ADCLIIND: s.adcliind, RECDESP: s.recdesp })[tp];
       setModal({ tipo: 'lancar', item, lt: tp, v: tp === 'TRANSF' ? { tipo: tp, conta: b.conta, conta_nome: b.conta_nome, cba2: b.cba2, data2: b.data, ccusto: b.ccusto, manual: !!b.manual }
-        : { tipo: tp, agn: b.agn, nome: b.nome, classe: b.classe, ccusto: b.ccusto } });
+        : { tipo: tp, agn: b.agn, nome: b.nome, classe: b.classe, ccusto: b.ccusto, regra: b.regra || null } });
     };
     return <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5">{op.map(([tp, txt]) => (
       <label key={tp} className="inline-flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
@@ -615,7 +616,7 @@ function LancarModal({ modal, setModal, onUsar, conta }) {
   // [03/11/2026] filial de cada lado (a mesma conta atende varias filiais); vazio = padrao do servidor
   const [filiais, setFiliais] = useState([]); const [contas, setContas] = useState([]);
   // [03/11/2026] contas da ORGANIZACAO (inclui as fora do Gestor, ex.: 21724 da filial 402), menos a propria
-  useEffect(() => { if (transf) { api.bxcFiliais(item.org).then(r => setFiliais(r.filiais || [])).catch(() => setFiliais([])); api.bxcContasOrg(item.org).then(r => setContas((r.contas || []).filter(c => c.agn_id !== conta))).catch(() => setContas([])); } }, []);
+  useEffect(() => { api.bxcFiliais(item.org).then(r => setFiliais(r.filiais || [])).catch(() => setFiliais([])); if (transf) { api.bxcContasOrg(item.org).then(r => setContas((r.contas || []).filter(c => c.agn_id !== conta))).catch(() => setContas([])); } }, []);
   const filLinha = item.linhas?.[0]?.fil || null, filConta = contas.find(c => c.agn_id === v.conta)?.fil_id || null;
   const [busca, setBusca] = useState(''); const [achados, setAchados] = useState(null); const [aviso, setAviso] = useState('');
   const set = (k, val) => setModal({ ...modal, v: { ...v, [k]: val } });
@@ -653,8 +654,8 @@ function LancarModal({ modal, setModal, onUsar, conta }) {
         <div className="text-xs text-gray-400">{v.cba2 ? `A linha de ${fmtBr(v.data2)} da outra conta também fica conciliada (as duas empresas na mesma operação).` : 'A outra conta não tem a linha aberta no extrato: o lançamento dela fica para conciliar lá.'}</div>
         <label className="text-xs text-gray-400 space-y-1 block w-40"><span>Centro de custo</span><input type="number" className="input" value={v.ccusto ?? ''} onChange={e => set('ccusto', e.target.value)} /></label>
       </div> : <div className="space-y-3">
-        <div className="text-sm">{lt === 'ADCLI' ? 'Cliente' : 'Fornecedor'}: {v.agn ? <b>{v.nome} ({v.agn})</b> : <span className="text-amber-300">escolha abaixo</span>}</div>
-        <div className="flex gap-2"><input className="input flex-1" placeholder={`buscar ${lt === 'ADCLI' ? 'cliente' : 'fornecedor'} por nome, fantasia, CNPJ ou código`} value={busca} onChange={e => setBusca(e.target.value)} onKeyDown={e => e.key === 'Enter' && procurar()} />
+        <div className="text-sm">{lt === 'ADFOR' ? 'Fornecedor' : lt === 'RECDESP' ? 'Agente (padrão 2400 MOVIMENTO À VISTA)' : 'Cliente'}: {v.agn ? <b>{v.nome} ({v.agn})</b> : <span className="text-amber-300">escolha abaixo</span>}</div>
+        <div className="flex gap-2"><input className="input flex-1" placeholder={`buscar ${lt === 'ADFOR' ? 'fornecedor' : 'cliente'} por nome, fantasia, CNPJ ou código`} value={busca} onChange={e => setBusca(e.target.value)} onKeyDown={e => e.key === 'Enter' && procurar()} />
           <button className="btn-ghost" onClick={procurar} disabled={busca.trim().length < 3}><Search size={14} /> Buscar</button></div>
         {aviso && <div className="text-xs text-amber-300">{aviso}</div>}
         {achados?.length > 0 && <div className="max-h-48 overflow-y-auto border border-ink-700 rounded divide-y divide-ink-700">{achados.map(a => (
@@ -663,8 +664,13 @@ function LancarModal({ modal, setModal, onUsar, conta }) {
         <div className="flex gap-3">
           <label className="text-xs text-gray-400 space-y-1 w-32"><span>Classe</span><input type="number" className="input" value={v.classe ?? ''} onChange={e => set('classe', e.target.value)} /></label>
           <label className="text-xs text-gray-400 space-y-1 w-32"><span>Centro de custo</span><input type="number" className="input" value={v.ccusto ?? ''} onChange={e => set('ccusto', e.target.value)} /></label>
+          {filiais.length > 1 && <label className="text-xs text-gray-400 space-y-1"><span>Filial</span>
+            <select className="input" value={v.fil ?? item.linhas?.[0]?.fil ?? ''} onChange={e => set('fil', Number(e.target.value) || null)}>
+              {filiais.map(f => <option key={f.fil} value={f.fil}>{f.fil} · {f.nome}</option>)}</select></label>}
         </div>
-        <div className="text-xs text-gray-500">Como na tela do Mega: {lt === 'ADCLI' ? 'ADCLI na conta + CREDITO no cliente (adiantamento em aberto para descontar depois)' : 'ADIFOR na conta + DEBITO no fornecedor (adiantamento em aberto para descontar depois)'}, já conciliado com a linha do extrato.</div>
+        {v.regra && <div className="text-xs text-sky-300">Classe e centro de custo pela regra “{v.regra}” (Configurar).</div>}
+        <div className="text-xs text-gray-500">Como na tela do Mega: {({ ADCLI: 'ADCLI na conta + CREDITO no cliente (adiantamento em aberto para descontar depois) · ação 704', ADFOR: 'ADIFOR na conta + DEBITO no fornecedor (adiantamento em aberto para descontar depois) · ação 702',
+          ADCLIIND: 'ADCLI na conta + CREDITO no cliente, adiantamento em aberto para devolver ou descontar · ação 721 (Recebimento Indevido)', RECDESP: 'entrada na conta + CREDITO à vista no agente com a classe da despesa recuperada · ação 711' })[lt]}, já conciliado com a linha do extrato.</div>
       </div>}
     </Modal>
   );

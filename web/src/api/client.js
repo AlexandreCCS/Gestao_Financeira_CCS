@@ -235,6 +235,9 @@ export const api = {
   bxcReal: (body) => req('/bxc/real', { method: 'POST', body: JSON.stringify(body) }),
   bxcLancar: (body) => req('/bxc/lancar', { method: 'POST', body: JSON.stringify(body) }),
   bxcContasOrg: (org) => req(`/bxc/contas-org?org=${encodeURIComponent(org || '')}`),   // [03/11/2026]
+  bxcRecRegras: () => req('/bxc/recdesp-regras'),   // [03/11/2026] regras da recuperacao de despesas (711)
+  bxcRecRegraSalvar: (body) => req('/bxc/recdesp-regras', { method: 'POST', body: JSON.stringify(body) }),
+  bxcRecRegraExcluir: (id) => req(`/bxc/recdesp-regras/${id}`, { method: 'DELETE' }),
   bxcFiliais: (org) => req(`/bxc/filiais?org=${encodeURIComponent(org || '')}`),   // [03/11/2026]
   bxcChdev: (body) => req('/bxc/chdev', { method: 'POST', body: JSON.stringify(body) }),   // [03/11/2026] cheque recebido devolvido
   bxcAgentes: (params) => req(`/bxc/agentes?${new URLSearchParams(params || {})}`),

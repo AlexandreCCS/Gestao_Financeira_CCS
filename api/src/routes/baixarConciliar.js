@@ -49,6 +49,11 @@ async function chequesDevolvidos(linhas) {
   }
   return out;
 }
+// [03/11/2026] regras da recuperacao de despesas (711): historico do extrato contem X -> classe/CC/agente (tela Configurar)
+async function regrasRecDesp() {
+  const rows = await megaQuery(`SELECT R.REG_IN_CODIGO ID, R.REG_ST_HIST_LIKE H, R.CLA_IN_REDUZIDO CLA, R.CCF_IN_REDUZIDO CC, R.AGN_IN_CODIGO AGN, R.REG_ST_DESCRICAO D, R.REG_CH_ATIVO AT, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = R.AGN_IN_CODIGO) NOME FROM MEGA.CCS_TB_GFIN_BXC_RECDESP_REGRA R ORDER BY R.REG_IN_CODIGO`);
+  return rows.map(r => ({ id: num(r.ID), hist_like: r.H || '', classe: num(r.CLA), ccusto: num(r.CC), agn: r.AGN ? num(r.AGN) : null, agn_nome: r.NOME || '', descricao: r.D || '', ativo: r.AT === 'S' }));
+}
 const motivoChdev = (d, P) => {
   const cab = `Cheque devolvido ${d.banco}/${d.numero}, alinea ${d.alinea}`;
   if (!d.cheque) return `${cab}: ${d.candidatos ? `${d.candidatos} cheques com esse banco/numero/valor, confira no cadastro de cheques` : 'nenhum cheque recebido com esse banco, numero e valor'}. Nao baixar nem conciliar por aqui.`;
@@ -443,6 +448,7 @@ export async function motor(agn, filtro = {}) {
     linhas.length ? linhasPendentes(agn, addDias(ini, -P.janela), addDias(fim, P.janela), { nat, tpd: filtro.tpd }) : [],
     chequesDevolvidos(linhas).catch(() => new Map()),
   ]);
+  const regrasRec = linhas.some(l => l.nat === 'C') ? (await regrasRecDesp().catch(() => [])).filter(r => r.ativo) : [];
   // [28/10/2026] rivais de fora do periodo filtrado tambem disputam o lancamento (tela so em 23/10 nao pode dar a 23/10 o lancamento da linha de 21/10)
   const naTela = new Set(linhas.map(l => l.cba));
   const rivaisPool = [...linhas, ...vizinhas.filter(v => !naTela.has(v.cba))];
@@ -609,6 +615,12 @@ export async function motor(agn, filtro = {}) {
     const grupo = cp && !cp.mesma_raiz ? { agn: cp.fil, nome: cp.fil_nome } : null;
     const sug = {};
     if (l.natureza === 'C') sug.adcli = { agn: grupo?.agn || null, nome: grupo?.nome || '', classe: 505, ccusto: 196 };
+    // [03/11/2026] 721 recebimento indevido (813/196) e 711 recuperacao de despesas (regra por historico ou 571/135, agente 2400)
+    if (l.natureza === 'C') sug.adcliind = { agn: grupo?.agn || null, nome: grupo?.nome || '', classe: 813, ccusto: 196 };
+    if (l.natureza === 'C') {
+      const rg = regrasRec.find(r => String(l.historico || '').toUpperCase().includes(r.hist_like.toUpperCase()));
+      sug.recdesp = { agn: rg?.agn || 2400, nome: rg?.agn ? (rg.agn_nome || '') : 'MOVIMENTO A VISTA', classe: rg?.classe || 571, ccusto: rg?.ccusto || 135, regra: rg ? rg.descricao || rg.hist_like : null };
+    }
     if (l.natureza === 'D' && grupo) sug.adfor = { agn: grupo.agn, nome: grupo.nome, classe: 500, ccusto: 232 };
     if (cp && cp.mesma_raiz && cp.mesma_org) sug.transf = { conta: cp.conta, conta_nome: cp.conta_nome, cba2: cp.conciliada ? null : cp.cba, data: cp.data, conciliada: cp.conciliada, ccusto: 215 };
     // [03/11/2026] outra ponta nao importada ainda (ex.: PIX TRANSF QUALITY 242.000 de 30/10 sem o extrato da conta de origem): o usuario escolhe a conta.
@@ -972,6 +984,18 @@ export default async function baixarConciliarRoutes(app) {
     return { simular: ctx.simular, resultados };
   });
 
+  // [03/11/2026] regras da recuperacao de despesas (711): lista (todos) e grava/exclui (admin)
+  app.get('/bxc/recdesp-regras', auth, async () => ({ itens: await regrasRecDesp() }));
+  app.post('/bxc/recdesp-regras', { ...admin, schema: { body: { type: 'object', required: ['hist_like', 'classe', 'ccusto'], properties: { id: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, hist_like: { type: 'string', minLength: 2, maxLength: 60 },
+    classe: { type: 'integer', minimum: 1 }, ccusto: { type: 'integer', minimum: 1 }, agn: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, descricao: { type: 'string', maxLength: 120 }, ativo: { type: 'boolean' } } } } }, async (req) => {
+    const b = req.body, ctx = ctxDe(req), h = ascii(b.hist_like, 60).toUpperCase(), d = ascii(b.descricao || '', 120), at = b.ativo === false ? 'N' : 'S', agn = b.agn ? num(b.agn) : 'NULL';
+    if (b.id) await megaExec(`BEGIN UPDATE MEGA.CCS_TB_GFIN_BXC_RECDESP_REGRA SET REG_ST_HIST_LIKE = '${h}', CLA_IN_REDUZIDO = ${num(b.classe)}, CCF_IN_REDUZIDO = ${num(b.ccusto)}, AGN_IN_CODIGO = ${agn}, REG_ST_DESCRICAO = '${d}', REG_CH_ATIVO = '${at}', REG_DT_ALTERACAO = SYSDATE, REG_IN_USU = ${ctx.usu}, REG_ST_USU = '${ascii(ctx.login, 60)}' WHERE REG_IN_CODIGO = ${num(b.id)}; COMMIT; END;`);
+    else await megaExec(`BEGIN INSERT INTO MEGA.CCS_TB_GFIN_BXC_RECDESP_REGRA (REG_IN_CODIGO, REG_ST_HIST_LIKE, CLA_IN_REDUZIDO, CCF_IN_REDUZIDO, AGN_IN_CODIGO, REG_ST_DESCRICAO, REG_CH_ATIVO, REG_IN_USU, REG_ST_USU) VALUES (MEGA.CCS_SEQ_GFIN_BXC_RECDESP_REGRA.NEXTVAL, '${h}', ${num(b.classe)}, ${num(b.ccusto)}, ${agn}, '${d}', '${at}', ${ctx.usu}, '${ascii(ctx.login, 60)}'); COMMIT; END;`);
+    req.log.info({ gfin: 'bxc_recdesp_regra', usu: ctx.usu, id: b.id || null, hist: h }, 'regra de recuperacao salva');
+    return { itens: await regrasRecDesp() };
+  });
+  app.delete('/bxc/recdesp-regras/:id', admin, async (req) => { await megaExec(`BEGIN DELETE FROM MEGA.CCS_TB_GFIN_BXC_RECDESP_REGRA WHERE REG_IN_CODIGO = ${num(req.params.id)}; COMMIT; END;`); return { itens: await regrasRecDesp() }; });
+
   // [03/11/2026] contas bancarias da ORGANIZACAO (as do escopo e as que so tem movimento na org no ultimo ano, ex.: 21724 da filial 402):
   //    a outra ponta da transferencia nem sempre esta cadastrada no Gestor. Filial = a mais usada da conta na org.
   app.get('/bxc/contas-org', auth, async (req) => {
@@ -993,7 +1017,7 @@ export default async function baixarConciliarRoutes(app) {
   app.post('/bxc/lancar', {
     ...opera, schema: { body: { type: 'object', required: ['itens'], properties: { simular: { type: 'boolean' },
       itens: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['cba', 'tipo', 'agn'], properties: { ref: { type: 'string', maxLength: 40 }, cba: { type: 'integer', minimum: 1 },
-        tipo: { type: 'string', enum: ['ADCLI', 'ADFOR', 'TRANSF'] }, agn: { type: 'integer', minimum: 1 }, cba2: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
+        tipo: { type: 'string', enum: ['ADCLI', 'ADFOR', 'TRANSF', 'ADCLIIND', 'RECDESP'] }, agn: { type: 'integer', minimum: 1 }, cba2: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
         classe: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, ccusto: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, hist: { type: 'string', maxLength: 400 },
         fil: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, fil2: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] } } } } } } }
   }, async (req) => {

@@ -50,10 +50,13 @@ export default function ConfigBaixarConciliar() {
   const [rodando, setRodando] = useState(false);
   const [robo, setRobo]     = useState(null);
   const [editDep, setEditDep] = useState(null);
+  const [regras, setRegras] = useState(null);   // [03/11/2026] recuperacao de despesas (711)
+  const [novaReg, setNovaReg] = useState({ hist_like: '', classe: 571, ccusto: 135, agn: '', descricao: '' });
 
   const carregar = () => {
     api.bxcConfig().then(setCfg).catch(e => setErro(e.message || 'Falha ao carregar os parâmetros.'));
     api.bxcDepara().then(r => setDepara(r.itens || [])).catch(() => setDepara([]));
+    api.bxcRecRegras().then(r => setRegras(r.itens || [])).catch(() => setRegras([]));
   };
   useEffect(() => { carregar(); }, []);
   const aviso = m => { setOk(m); setTimeout(() => setOk(''), 4000); };
@@ -75,6 +78,13 @@ export default function ConfigBaixarConciliar() {
     try { await api.bxcDeparaExcluir(id); carregar(); } catch (e) { setErro(e.message); }
     setRodando(false);
   }
+  async function salvarReg(r) {
+    setRodando(true); setErro('');
+    try { const out = await api.bxcRecRegraSalvar({ ...r, classe: Number(r.classe), ccusto: Number(r.ccusto), agn: r.agn ? Number(r.agn) : null }); setRegras(out.itens || []); if (!r.id) setNovaReg({ hist_like: '', classe: 571, ccusto: 135, agn: '', descricao: '' }); aviso('Regra gravada.'); }
+    catch (e) { setErro(e.detalhe || e.message || 'Não consegui gravar a regra.'); }
+    setRodando(false);
+  }
+  async function excluirReg(id) { setRodando(true); try { const out = await api.bxcRecRegraExcluir(id); setRegras(out.itens || []); } catch (e) { setErro(e.detalhe || e.message); } setRodando(false); }
   async function rodarRobo() {
     setRodando(true); setRobo(null);
     try { setRobo(await api.bxcRoboRodar()); } catch (e) { setErro(e.message || 'O robô não rodou.'); }
@@ -179,6 +189,34 @@ export default function ConfigBaixarConciliar() {
                 <td className="p-3 text-right"><button className="text-gray-500 hover:text-rose-300" onClick={e => { e.stopPropagation(); excluirDep(d.id); }} title="excluir"><Trash2 size={14} /></button></td>
               </tr>))}
               {depara && depara.length === 0 && <tr><td colSpan={11} className="p-6 text-center text-gray-500">Nenhum de-para. Crie um para TARBANC, IOF, IR e REND.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex items-center gap-3">
+          <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Recuperação de despesas (711) · regras</h2>
+          <span className="text-xs text-gray-500">histórico do extrato contém o texto → classe e centro de custo sugeridos em “Lançar como Recuperação de Despesas”; sem regra: 571 / 135, agente 2400</span>
+        </div>
+        <div className="card overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="text-[11px] uppercase text-gray-500 bg-ink-900"><tr><th className="text-left p-3">Histórico contém</th><th className="p-3">Classe</th><th className="p-3">C. custo</th><th className="text-left p-3">Agente</th><th className="text-left p-3">Descrição</th><th className="p-3">Ativa</th><th className="p-3"></th></tr></thead>
+            <tbody>{(regras || []).map(r => (
+              <tr key={r.id} className="border-t border-ink-700">
+                <td className="p-3 font-mono text-gray-200">{r.hist_like}</td><td className="p-3 text-center text-gray-300">{r.classe}</td><td className="p-3 text-center text-gray-300">{r.ccusto}</td>
+                <td className="p-3 text-gray-400">{r.agn ? `${r.agn} · ${r.agn_nome}` : <span className="text-gray-600">2400 (padrão)</span>}</td><td className="p-3 text-gray-400">{r.descricao || '—'}</td>
+                <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={r.ativo} disabled={rodando} onChange={e => salvarReg({ ...r, ativo: e.target.checked })} /></td>
+                <td className="p-3 text-right"><button className="text-gray-500 hover:text-rose-300" disabled={rodando} onClick={() => excluirReg(r.id)} title="excluir"><Trash2 size={14} /></button></td>
+              </tr>))}
+              <tr className="border-t border-ink-700 bg-ink-900/40">
+                <td className="p-2"><input className="input py-1" placeholder="ex.: TESTE CIELO" value={novaReg.hist_like} onChange={e => setNovaReg({ ...novaReg, hist_like: e.target.value })} /></td>
+                <td className="p-2"><input type="number" className="input py-1 w-20" value={novaReg.classe} onChange={e => setNovaReg({ ...novaReg, classe: e.target.value })} /></td>
+                <td className="p-2"><input type="number" className="input py-1 w-20" value={novaReg.ccusto} onChange={e => setNovaReg({ ...novaReg, ccusto: e.target.value })} /></td>
+                <td className="p-2"><input type="number" className="input py-1 w-28" placeholder="2400" value={novaReg.agn} onChange={e => setNovaReg({ ...novaReg, agn: e.target.value })} /></td>
+                <td className="p-2"><input className="input py-1" placeholder="descrição (opcional)" value={novaReg.descricao} onChange={e => setNovaReg({ ...novaReg, descricao: e.target.value })} /></td>
+                <td className="p-2" colSpan={2}><button className="btn-prim text-xs py-1.5" disabled={rodando || novaReg.hist_like.trim().length < 2 || !(Number(novaReg.classe) > 0) || !(Number(novaReg.ccusto) > 0)} onClick={() => salvarReg(novaReg)}><Plus size={13} /> Incluir</button></td>
+              </tr>
             </tbody>
           </table>
         </div>

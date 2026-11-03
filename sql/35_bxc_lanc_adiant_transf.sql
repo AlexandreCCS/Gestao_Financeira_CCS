@@ -153,9 +153,10 @@ BEGIN
     EXCEPTION WHEN NO_DATA_FOUND THEN RAISE_APPLICATION_ERROR(-20100, 'Conta ' || B.AGN_IN_CODIGO || ' fora do escopo do Baixar e Conciliar.');
     END;
     IF P_AGN IS NULL THEN RAISE_APPLICATION_ERROR(-20100, CASE P_TIPO WHEN 'TRANSF' THEN 'Informe a outra conta da transferencia.' ELSE 'Informe o agente do adiantamento.' END); END IF;
-    W_ACAO := CASE P_TIPO WHEN 'ADCLI' THEN 704 WHEN 'ADFOR' THEN 702 WHEN 'TRANSF' THEN 712 END;
+    W_ACAO := CASE P_TIPO WHEN 'ADCLI' THEN 704 WHEN 'ADFOR' THEN 702 WHEN 'TRANSF' THEN 712 WHEN 'ADCLIIND' THEN 721 WHEN 'RECDESP' THEN 711 END;   /* [03/11/2026] 721 recebimento indevido; 711 recuperacao de despesas */
     IF W_ACAO IS NULL THEN RAISE_APPLICATION_ERROR(-20100, 'Tipo de lancamento invalido: ' || P_TIPO || '.'); END IF;
     IF P_TIPO = 'ADCLI' AND B.CBA_CH_NATUREZA <> 'C' THEN RAISE_APPLICATION_ERROR(-20100, 'Adiantamento de cliente so em entrada (credito) do extrato.'); END IF;
+    IF P_TIPO IN ('ADCLIIND', 'RECDESP') AND B.CBA_CH_NATUREZA <> 'C' THEN RAISE_APPLICATION_ERROR(-20100, CASE P_TIPO WHEN 'RECDESP' THEN 'Recuperacao de despesas' ELSE 'Recebimento indevido' END || ' so em entrada (credito) do extrato.'); END IF;
     IF P_TIPO = 'ADFOR' AND B.CBA_CH_NATUREZA <> 'D' THEN RAISE_APPLICATION_ERROR(-20100, 'Adiantamento a fornecedor so em saida (debito) do extrato.'); END IF;
     W_VAL := ROUND(NVL(B.CBA_RE_VALOR, 0), 2);
     IF W_VAL <= 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Linha do extrato sem valor.'); END IF;
@@ -208,7 +209,7 @@ BEGIN
            AND NVL(M.MOV_CH_CONCILIADO, 'N') = 'N' AND NVL(M.MOV_CH_SITUACAO, 'A') <> 'C';
         IF W_N > 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Ja existe transferencia deste valor nesta conta, nao conciliada, a ate 1 dia. Concilie com ela em vez de lancar outra.'); END IF;
     ELSE
-        W_OUT_TAU := CASE P_TIPO WHEN 'ADCLI' THEN 'C' ELSE 'F' END;
+        W_OUT_TAU := CASE WHEN P_TIPO IN ('ADCLI', 'ADCLIIND', 'RECDESP') THEN 'C' ELSE 'F' END;
         BEGIN
             SELECT I.AGN_PAD_IN_CODIGO INTO W_OUT_PAD FROM MEGA.GLO_AGENTES_ID I WHERE I.AGN_TAB_IN_CODIGO = C_ORG_TAB AND I.AGN_IN_CODIGO = P_AGN AND I.AGN_TAU_ST_CODIGO = W_OUT_TAU AND ROWNUM = 1;
         EXCEPTION WHEN NO_DATA_FOUND THEN RAISE_APPLICATION_ERROR(-20100, 'Agente ' || P_AGN || ' nao esta cadastrado como ' || CASE W_OUT_TAU WHEN 'C' THEN 'cliente' ELSE 'fornecedor' END || '.');
@@ -230,7 +231,7 @@ BEGIN
     IF W_HUS IS NULL THEN RAISE_APPLICATION_ERROR(-20100, 'Usuario ' || P_USU || ' sem hierarquia no Mov. Financeiro do Mega.'); END IF;
 
     W_DOC := 'EXT' || P_CBA;
-    W_HIST := SUBSTR(NVL(P_HIST, CASE P_TIPO WHEN 'ADCLI' THEN 'ADIANTAMENTO DE CLIENTE' WHEN 'ADFOR' THEN 'ADIANTAMENTO A FORNECEDOR' ELSE 'TRANSFERENCIA ENTRE CONTAS' END
+    W_HIST := SUBSTR(NVL(P_HIST, CASE P_TIPO WHEN 'ADCLI' THEN 'ADIANTAMENTO DE CLIENTE' WHEN 'ADFOR' THEN 'ADIANTAMENTO A FORNECEDOR' WHEN 'ADCLIIND' THEN 'ADIANTAMENTO DE CLIENTE - RECEBIMENTO INDEVIDO' WHEN 'RECDESP' THEN 'RECUPERACAO DE DESPESAS' ELSE 'TRANSFERENCIA ENTRE CONTAS' END
                  || ' - ' || NVL(B.CBA_ST_HISTORICO, '') || ' (GESTOR FINANCEIRO)'), 1, 500);
     FIN_PCK_MOVIMENTO.COMP_ST_NOME := 'MEGA'; FIN_PCK_MOVIMENTO.USU_IN_CODIGO := P_USU;
     W_SEQ := PCK_MEGA.ACHASEQUENCIADATABELA(P_ORG, C_MOV_TAB, W_DATA);
@@ -247,14 +248,24 @@ BEGIN
     ( C_ORG_TAB, C_ORG_PAD, P_ORG, C_ORG_TAU, W_ACAOM, 55, 1, W_ACAO, W_DOC, W_DATA, W_DATA, P_USU, P_USU, SYSDATE, SYSDATE,
       W_VAL, W_VAL, 0, 0, 0, 0, 0, 0, P_ORG, W_FIL, 'S', 14001 );
 
-    IF P_TIPO = 'ADCLI' THEN
+    IF P_TIPO IN ('ADCLI', 'ADCLIIND') THEN   /* [03/11/2026] 721 = mesma pegada do 704 (ORG 10 / ACAOM 91685666), classe padrao 813 */
         INS_MOV(W_AQUI, W_FIL, 'ADCLI', 'D', NULL, W_CTA_PAD, B.AGN_IN_CODIGO, 'N', 'S');
         INS_RATEIO(W_AQUI, '9', 2, '9', 2, 'C');
         ATUALIZA(W_AQUI, W_FIL, W_CTA_PAD, B.AGN_IN_CODIGO, 'N', NULL, 'D');
         INS_MOV(W_LA, W_FIL, 'CREDITO', 'C', 'ADIANT', W_OUT_PAD, P_AGN, 'C', 'N');
         INS_REF(W_LA, W_AQUI, W_LA, 'ADIANT');
-        INS_RATEIO(W_LA, '1', NVL(P_CLA, 505), '1', NVL(P_CC, 196), 'D');
+        INS_RATEIO(W_LA, '1', NVL(P_CLA, CASE WHEN P_TIPO = 'ADCLIIND' THEN 813 ELSE 505 END), '1', NVL(P_CC, 196), 'D');
         ATUALIZA(W_LA, W_FIL, W_OUT_PAD, P_AGN, 'C', 'ADIANT', 'C');
+    ELSIF P_TIPO = 'RECDESP' THEN
+        /* [03/11/2026] 711 recuperacao de despesas (pegada ORG 20 / ACAOM 6576880): entrada na conta com o TPD da linha (rateio 9/2) +
+           CREDITO AVISTA no agente (padrao 2400 MOVIMENTO A VISTA) com a classe/CC da tela (padrao 571/135), REF AVISTA */
+        INS_MOV(W_AQUI, W_FIL, NVL(B.TPD_ST_CODIGO, 'AVCRED'), 'D', NULL, W_CTA_PAD, B.AGN_IN_CODIGO, 'N', 'S');
+        INS_RATEIO(W_AQUI, '9', 2, '9', 2, 'C');
+        ATUALIZA(W_AQUI, W_FIL, W_CTA_PAD, B.AGN_IN_CODIGO, 'N', NULL, 'D');
+        INS_MOV(W_LA, W_FIL, 'CREDITO', 'C', 'AVISTA', W_OUT_PAD, P_AGN, 'C', 'N');
+        INS_REF(W_LA, W_AQUI, W_LA, 'AVISTA');
+        INS_RATEIO(W_LA, '1', NVL(P_CLA, 571), '1', NVL(P_CC, 135), 'D');
+        ATUALIZA(W_LA, W_FIL, W_OUT_PAD, P_AGN, 'C', 'AVISTA', 'C');
     ELSIF P_TIPO = 'ADFOR' THEN
         INS_MOV(W_AQUI, W_FIL, 'ADIFOR', 'C', NULL, W_CTA_PAD, B.AGN_IN_CODIGO, 'N', 'S');
         INS_RATEIO(W_AQUI, '9', 2, '9', 2, 'D');

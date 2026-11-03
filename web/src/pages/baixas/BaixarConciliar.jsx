@@ -222,7 +222,7 @@ export default function BaixarConciliar() {
   }
 
   // ações
-  const payloadLanc = item => { const x = lanc[item.id]; return { _fn: api.bxcLancar, ref: item.id, cba: item.linhas[0]?.cba, tipo: x.tipo, agn: x.tipo === 'TRANSF' ? x.conta : x.agn, cba2: x.cba2 || null, classe: x.classe || null, ccusto: x.ccusto || null }; };
+  const payloadLanc = item => { const x = lanc[item.id]; return { _fn: api.bxcLancar, ref: item.id, cba: item.linhas[0]?.cba, tipo: x.tipo, agn: x.tipo === 'TRANSF' ? x.conta : x.agn, cba2: x.cba2 || null, classe: x.classe || null, ccusto: x.ccusto || null, fil: x.fil || null, fil2: x.fil2 || null }; };
   const baixarSelecionados = () => pedirConfirmacao(selecionados.map(i => (lanc[i.id] ? payloadLanc(i) : payloadBaixa(i))), api.bxcExecutar, `Baixar e conciliar ${fmtN(selecionados.length)} item(ns)?`, `${fmt(somaSel)} na conta ${contaAtual?.nome || conta}. Cada item vira baixa no Mega, na data do banco, já conciliada com a linha do extrato. Primeiro valido tudo; só gravo o que passar.`);
   // [03/11/2026] cheque recebido devolvido: 971 conciliada + reabre as parcelas que o cheque baixou (a nova baixa e do usuario, como hoje)
   const tratarChdev = item => { const d = item.chdev, ch = d.cheque;
@@ -612,6 +612,10 @@ function EncargosModal({ modal, setModal, onSalvar, onPedir, pedido, rodando }) 
 // "nas duas filiais"; do lado de quem pagou (empresa do grupo), Adiantamento a Fornecedor se ainda não existe. Aqui só confirma agente/classe/CC.
 function LancarModal({ modal, setModal, onUsar, contas = [] }) {
   const { item, lt, v } = modal, transf = lt === 'TRANSF', entrada = item.linhas?.[0]?.natureza === 'C';
+  // [03/11/2026] filial de cada lado (a mesma conta atende varias filiais); vazio = padrao do servidor
+  const [filiais, setFiliais] = useState([]);
+  useEffect(() => { if (transf) api.bxcFiliais(item.org).then(r => setFiliais(r.filiais || [])).catch(() => setFiliais([])); }, []);
+  const filLinha = item.linhas?.[0]?.fil || null, filConta = contas.find(c => c.agn_id === v.conta)?.fil_id || null;
   const [busca, setBusca] = useState(''); const [achados, setAchados] = useState(null); const [aviso, setAviso] = useState('');
   const set = (k, val) => setModal({ ...modal, v: { ...v, [k]: val } });
   async function procurar() {
@@ -636,6 +640,15 @@ function LancarModal({ modal, setModal, onUsar, contas = [] }) {
               </select></label>
           : null}
         {v.conta && <div>{entrada ? 'Sai de' : 'Vai para'} <b>{v.conta_nome}</b> ({v.conta}). Nasce o TRANSFD na conta de origem e o TRANSFC na de destino, como na tela do Mega.</div>}
+        {filiais.length > 1 && <div className="flex flex-wrap gap-3">
+          <label className="text-xs text-gray-400 space-y-1 block"><span>Filial desta conta ({entrada ? 'destino' : 'origem'})</span>
+            <select className="input" value={v.fil ?? filLinha ?? ''} onChange={e => set('fil', Number(e.target.value) || null)}>
+              {filiais.map(f => <option key={f.fil} value={f.fil}>{f.fil} · {f.nome}</option>)}</select></label>
+          <label className="text-xs text-gray-400 space-y-1 block"><span>Filial da outra conta ({entrada ? 'origem' : 'destino'})</span>
+            <select className="input" value={v.fil2 ?? filConta ?? ''} onChange={e => set('fil2', Number(e.target.value) || null)}>
+              <option value="">padrão da conta</option>
+              {filiais.map(f => <option key={f.fil} value={f.fil}>{f.fil} · {f.nome}</option>)}</select></label>
+        </div>}
         <div className="text-xs text-gray-400">{v.cba2 ? `A linha de ${fmtBr(v.data2)} da outra conta também fica conciliada (as duas empresas na mesma operação).` : 'A outra conta não tem a linha aberta no extrato: o lançamento dela fica para conciliar lá.'}</div>
         <label className="text-xs text-gray-400 space-y-1 block w-40"><span>Centro de custo</span><input type="number" className="input" value={v.ccusto ?? ''} onChange={e => set('ccusto', e.target.value)} /></label>
       </div> : <div className="space-y-3">

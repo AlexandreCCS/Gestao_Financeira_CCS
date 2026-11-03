@@ -448,7 +448,7 @@ export async function motor(agn, filtro = {}) {
   const rivaisPool = [...linhas, ...vizinhas.filter(v => !naTela.has(v.cba))];
   const depAtivos = deps.filter(d => d.ativo);
   const itens = [];
-  const base = l => ({ id: `L${l.cba}`, linhas: [{ cba: l.cba, data: l.data, valor: l.vl, natureza: l.nat, historico: l.hist, documento: l.doc, tpd: l.tpd, arquivo: l.arquivo }], valor_banco: l.vl, data: l.data, org: l.org,
+  const base = l => ({ id: `L${l.cba}`, linhas: [{ cba: l.cba, data: l.data, valor: l.vl, natureza: l.nat, historico: l.hist, documento: l.doc, tpd: l.tpd, arquivo: l.arquivo, fil: l.fil }], valor_banco: l.vl, data: l.data, org: l.org,
     tpd_fin: tpdFinDe(l), doc_fin: docFinDe(l), titulos: [], candidatos: [], movs: [], depara: null, motivo: '', selecionado: false });
 
   // 0) [29/10/2026] cobranca do dia fechada no centavo: lote nivel 1 (o robo da cobranca concilia sozinho); vem antes de tudo para nenhuma
@@ -697,7 +697,7 @@ async function executarLanc(item, ctx) {
   const token = crypto.randomUUID();
   const n = v => (v == null || v === '' ? 'NULL' : num(v));
   try {
-    await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_LANC('${token}', ${num(item.org)}, ${num(item.cba)}, '${item.tipo}', ${n(item.agn)}, ${n(item.cba2)}, ${n(item.classe)}, ${n(item.ccusto)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', ${item.hist ? `'${ascii(item.hist, 400)}'` : 'NULL'}, '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}'); END;`);
+    await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_LANC('${token}', ${num(item.org)}, ${num(item.cba)}, '${item.tipo}', ${n(item.agn)}, ${n(item.cba2)}, ${n(item.classe)}, ${n(item.ccusto)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', ${item.hist ? `'${ascii(item.hist, 400)}'` : 'NULL'}, '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}', ${n(item.fil)}, ${n(item.fil2)}); END;`);   // [03/11/2026] filiais escolhidas (vazio = padrao)
     return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado deste lancamento.' };
   } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'o lancamento'); }
 }
@@ -972,12 +972,21 @@ export default async function baixarConciliarRoutes(app) {
     return { simular: ctx.simular, resultados };
   });
 
+  // [03/11/2026] filiais da organizacao (a mesma conta atende varias filiais: a tela escolhe a de cada lado da transferencia)
+  app.get('/bxc/filiais', auth, async (req) => {
+    const org = num(req.query.org);
+    if (!org) return { filiais: [] };
+    const rows = await megaQuery(`SELECT A.AGN_IN_CODIGO FIL, SUBSTR(NVL(A.AGN_ST_FANTASIA, A.AGN_ST_NOME),1,50) NOME FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.PAI_AGN_TAB_IN_CODIGO = 53 AND A.PAI_AGN_IN_CODIGO = ${org} ORDER BY 1`);
+    return { filiais: rows.map(r => ({ fil: num(r.FIL), nome: r.NOME || '' })) };
+  });
+
   // [28/10/2026] lancamento pelo extrato: adiantamento de cliente / a fornecedor / transferencia entre contas (flag da tela)
   app.post('/bxc/lancar', {
     ...opera, schema: { body: { type: 'object', required: ['itens'], properties: { simular: { type: 'boolean' },
       itens: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['cba', 'tipo', 'agn'], properties: { ref: { type: 'string', maxLength: 40 }, cba: { type: 'integer', minimum: 1 },
         tipo: { type: 'string', enum: ['ADCLI', 'ADFOR', 'TRANSF'] }, agn: { type: 'integer', minimum: 1 }, cba2: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
-        classe: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, ccusto: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, hist: { type: 'string', maxLength: 400 } } } } } } }
+        classe: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, ccusto: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, hist: { type: 'string', maxLength: 400 },
+        fil: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, fil2: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] } } } } } } }
   }, async (req) => {
     const ctx = ctxDe(req, req.body.simular === true), resultados = [];
     for (const it of req.body.itens) {

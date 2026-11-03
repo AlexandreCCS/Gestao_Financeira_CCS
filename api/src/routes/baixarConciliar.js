@@ -57,6 +57,10 @@ export async function params() {
     diasForte: v.CB_DIAS_FORTE ?? 2, janelaCb: Math.min(v.CB_JANELA ?? 5, v.BXC_JANELA_DIAS ?? 5),
     exigeComprov: (v.BXC_EXIGE_COMPROV ?? 0) === 1, comprovAcima: v.BXC_COMPROV_ACIMA ?? 0, bruto: v,
     autoCob: (v.BXC_AUTO_COB ?? 0) === 1, usuCob: v.BXC_USU_COB ?? 0,   // [29/10/2026] robo da cobranca
+    // [03/11/2026] cheque recebido devolvido (linha CHRD do extrato x CUS_FIN_CHEQUESCRE): sql/37
+    chd: { ativo: (v.BXC_CHD_ATIVO ?? 0) === 1, usu: v.BXC_CHD_USU ?? 0, desde: String(v.BXC_CHD_DESDE ?? 20261023).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3'), teto: v.BXC_CHD_TETO ?? 10000, janela: v.BXC_CHD_JANELA ?? 90,
+      reabre: (v.BXC_CHD_REABRE ?? 1) === 1, marca: (v.BXC_CHD_MARCA ?? 1) === 1, whats: (v.BXC_CHD_WHATS ?? 0) === 1, zapLista: v.BXC_CHD_ZAP_LISTA ?? 11,
+      acao: v.BXC_CHD_ACAO ?? 971, classe: v.BXC_CHD_CLASSE ?? 0, ccusto: v.BXC_CHD_CCUSTO ?? 0 },
   };
   cacheParams = { t: Date.now(), v: p };
   return p;
@@ -946,19 +950,20 @@ export default async function baixarConciliarRoutes(app) {
   app.delete('/bxc/depara/:id', admin, async (req) => { await megaExec(`BEGIN DELETE FROM MEGA.CCS_TB_GFIN_BXC_DEPARA WHERE DEP_IN_CODIGO = ${num(req.params.id)}; COMMIT; END;`); return { itens: await deparas() }; });
 
   // -------- configuracao (admin): parametros BXC_* e contas do escopo
-  const CHAVES = ['BXC_TOLERANCIA', 'BXC_TETO_ROBO', 'BXC_ROBO_ATIVO', 'BXC_USU_ROBO', 'BXC_JANELA_DIAS', 'BXC_TIT_DIAS_ANTES', 'BXC_TIT_DIAS_DEPOIS', 'BXC_MAX_TITULOS', 'BXC_CLA_CP_JUROS', 'BXC_CLA_CP_DESC', 'BXC_CLA_CR_JUROS', 'BXC_CLA_CR_MULTA', 'BXC_CLA_CR_DESC', 'BXC_EXIGE_COMPROV', 'BXC_COMPROV_ACIMA', 'BXC_AUTO_COB', 'BXC_USU_COB'];
+  const CHAVES = ['BXC_TOLERANCIA', 'BXC_TETO_ROBO', 'BXC_ROBO_ATIVO', 'BXC_USU_ROBO', 'BXC_JANELA_DIAS', 'BXC_TIT_DIAS_ANTES', 'BXC_TIT_DIAS_DEPOIS', 'BXC_MAX_TITULOS', 'BXC_CLA_CP_JUROS', 'BXC_CLA_CP_DESC', 'BXC_CLA_CR_JUROS', 'BXC_CLA_CR_MULTA', 'BXC_CLA_CR_DESC', 'BXC_EXIGE_COMPROV', 'BXC_COMPROV_ACIMA', 'BXC_AUTO_COB', 'BXC_USU_COB',
+    'BXC_CHD_ATIVO', 'BXC_CHD_DESDE', 'BXC_CHD_USU', 'BXC_CHD_TETO', 'BXC_CHD_JANELA', 'BXC_CHD_REABRE', 'BXC_CHD_MARCA', 'BXC_CHD_WHATS', 'BXC_CHD_ZAP_LISTA', 'BXC_CHD_ACAO', 'BXC_CHD_CLASSE', 'BXC_CHD_CCUSTO'];
   app.get('/bxc/config', auth, async () => {
     const rows = await megaQuery(`SELECT PARAM_ST_CHAVE K, PARAM_RE_VALOR V, PARAM_ST_DESCRICAO D, TO_CHAR(PARAM_DT_ALTERACAO,'YYYY-MM-DD HH24:MI') EM, PARAM_ST_USU U FROM MEGA.CCS_TB_GFIN_PARAM WHERE PARAM_ST_CHAVE LIKE 'BXC_%' ORDER BY 1`);
     const contas = (await megaQuery(`SELECT K.*, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.AGN_IN_CODIGO) NOME,
         (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.CTA_IN_AGN_BANCO) BANCO_NOME FROM MEGA.CCS_TB_GFIN_BXC_CONTA K ORDER BY K.FIL_IN_CODIGO, K.AGN_IN_CODIGO`))
-      .map(k => ({ agn_id: num(k.AGN_IN_CODIGO), nome: k.NOME || '', fil_id: num(k.FIL_IN_CODIGO), ativa: k.CTA_CH_ATIVA === 'S', robo: k.CTA_CH_ROBO === 'S', auto_cob: k.CTA_CH_AUTO_COB === 'S', teto_robo: k.CTA_RE_TETO_ROBO ? num(k.CTA_RE_TETO_ROBO) : null, agn_banco: k.CTA_IN_AGN_BANCO ? num(k.CTA_IN_AGN_BANCO) : null, banco_nome: k.BANCO_NOME || '', obs: k.CTA_ST_OBS || '' }));
+      .map(k => ({ agn_id: num(k.AGN_IN_CODIGO), nome: k.NOME || '', fil_id: num(k.FIL_IN_CODIGO), ativa: k.CTA_CH_ATIVA === 'S', robo: k.CTA_CH_ROBO === 'S', auto_cob: k.CTA_CH_AUTO_COB === 'S', auto_chd: k.CTA_CH_AUTO_CHD === 'S', teto_robo: k.CTA_RE_TETO_ROBO ? num(k.CTA_RE_TETO_ROBO) : null, agn_banco: k.CTA_IN_AGN_BANCO ? num(k.CTA_IN_AGN_BANCO) : null, banco_nome: k.BANCO_NOME || '', obs: k.CTA_ST_OBS || '' }));
     const usuRobo = rows.find(r => r.K === 'BXC_USU_ROBO');
     const robo = usuRobo && num(usuRobo.V) > 0 ? (await megaQuery(`SELECT GRU_ST_NOME N FROM MEGA.GLO_GRUPO_USUARIO WHERE GRU_IN_CODIGO = ${num(usuRobo.V)}`))[0]?.N : null;
     return { params: Object.fromEntries(rows.map(r => [r.K, num(r.V)])), detalhes: rows.map(r => ({ chave: r.K, valor: num(r.V), descricao: r.D || '', alterado_em: r.EM || '', alterado_por: r.U || '' })), contas, usuario_robo_nome: robo || '' };
   });
   app.put('/bxc/config', { ...admin, schema: { body: { type: 'object', properties: {
     params: { type: 'object', additionalProperties: { type: 'number' } },
-    contas: { type: 'array', maxItems: 100, items: { type: 'object', required: ['agn_id'], properties: { agn_id: { type: 'integer' }, fil_id: { type: 'integer' }, ativa: { type: 'boolean' }, robo: { type: 'boolean' }, auto_cob: { type: 'boolean' }, teto_robo: { anyOf: [{ type: 'number' }, { type: 'null' }] }, agn_banco: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, obs: { type: 'string', maxLength: 200 } } } } } } }
+    contas: { type: 'array', maxItems: 100, items: { type: 'object', required: ['agn_id'], properties: { agn_id: { type: 'integer' }, fil_id: { type: 'integer' }, ativa: { type: 'boolean' }, robo: { type: 'boolean' }, auto_cob: { type: 'boolean' }, auto_chd: { type: 'boolean' }, teto_robo: { anyOf: [{ type: 'number' }, { type: 'null' }] }, agn_banco: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, obs: { type: 'string', maxLength: 200 } } } } } } }
   }, async (req) => {
     const ctx = ctxDe(req), ps = req.body.params || {}, cs = req.body.contas || [];
     for (const [k, v] of Object.entries(ps)) {
@@ -967,7 +972,7 @@ export default async function baixarConciliarRoutes(app) {
     }
     for (const c of cs) {
       const existe = (await megaQuery(`SELECT COUNT(*) N FROM MEGA.CCS_TB_GFIN_BXC_CONTA WHERE AGN_IN_CODIGO = ${num(c.agn_id)}`))[0];
-      const sets = `${c.fil_id ? `FIL_IN_CODIGO = ${num(c.fil_id)},` : ''} CTA_CH_ATIVA = '${c.ativa === false ? 'N' : 'S'}', CTA_CH_ROBO = '${c.robo ? 'S' : 'N'}', ${c.auto_cob == null ? '' : `CTA_CH_AUTO_COB = '${c.auto_cob ? 'S' : 'N'}',`} CTA_RE_TETO_ROBO = ${c.teto_robo == null ? 'NULL' : Number(c.teto_robo)}, CTA_IN_AGN_BANCO = ${c.agn_banco == null ? 'NULL' : num(c.agn_banco)}, CTA_ST_OBS = '${ascii(c.obs, 200)}', CTA_DT_ALTERACAO = SYSDATE, CTA_IN_USU = ${ctx.usu}, CTA_ST_USU = '${ascii(ctx.login, 60)}'`;
+      const sets = `${c.fil_id ? `FIL_IN_CODIGO = ${num(c.fil_id)},` : ''} CTA_CH_ATIVA = '${c.ativa === false ? 'N' : 'S'}', CTA_CH_ROBO = '${c.robo ? 'S' : 'N'}', ${c.auto_cob == null ? '' : `CTA_CH_AUTO_COB = '${c.auto_cob ? 'S' : 'N'}',`} ${c.auto_chd == null ? '' : `CTA_CH_AUTO_CHD = '${c.auto_chd ? 'S' : 'N'}',`} CTA_RE_TETO_ROBO = ${c.teto_robo == null ? 'NULL' : Number(c.teto_robo)}, CTA_IN_AGN_BANCO = ${c.agn_banco == null ? 'NULL' : num(c.agn_banco)}, CTA_ST_OBS = '${ascii(c.obs, 200)}', CTA_DT_ALTERACAO = SYSDATE, CTA_IN_USU = ${ctx.usu}, CTA_ST_USU = '${ascii(ctx.login, 60)}'`;
       if (num(existe?.N)) await megaExec(`BEGIN UPDATE MEGA.CCS_TB_GFIN_BXC_CONTA SET ${sets} WHERE AGN_IN_CODIGO = ${num(c.agn_id)}; COMMIT; END;`);
       else if (c.fil_id) await megaExec(`BEGIN INSERT INTO MEGA.CCS_TB_GFIN_BXC_CONTA (AGN_IN_CODIGO, FIL_IN_CODIGO) VALUES (${num(c.agn_id)}, ${num(c.fil_id)}); UPDATE MEGA.CCS_TB_GFIN_BXC_CONTA SET ${sets} WHERE AGN_IN_CODIGO = ${num(c.agn_id)}; COMMIT; END;`);
     }

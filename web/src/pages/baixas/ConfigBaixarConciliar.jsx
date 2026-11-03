@@ -25,6 +25,21 @@ const PARAMS = [
   ['BXC_CLA_CR_MULTA',    'Classe: multas recebidas',         'int',  'Classe financeira da multa nas baixas a receber (68).'],
   ['BXC_CLA_CR_DESC',     'Classe: descontos concedidos',     'int',  'Classe financeira do desconto nas baixas a receber (468 na indústria).'],
 ];
+// [03/11/2026] Cheque recebido devolvido: linha CHRD do extrato ("DEV CH NAC <banco> <cheque> <alínea>") casada com o cheque recebido (sql/37).
+const PARAMS_CHD = [
+  ['BXC_CHD_ATIVO',  'Robô do cheque devolvido ligado',   'bool', 'Quando ligado, a devolução (CHRD) das contas marcadas é tratada sozinha quando casa com um único cheque pelo banco, número e valor.'],
+  ['BXC_CHD_DESDE',  'Tratar devoluções a partir de',     'data', 'Só as linhas CHRD com data igual ou posterior entram; as anteriores ficam como estão no Mega.'],
+  ['BXC_CHD_USU',    'Usuário do Mega do cheque devolvido', 'int', 'Código do usuário em nome de quem o estorno dos títulos e o lançamento da devolução são gravados.'],
+  ['BXC_CHD_TETO',   'Teto por cheque (R$)',              'num',  'Acima disso o robô não trata sozinho: o cheque vai para a tela.'],
+  ['BXC_CHD_JANELA', 'Devolução até N dias após o bom para', 'int', 'Distância máxima entre o bom para do cheque e a data da devolução no extrato.'],
+  ['BXC_CHD_REABRE', 'Reabrir os títulos do cheque',      'bool', 'Estorna as baixas feitas pelo cheque: as parcelas voltam a ficar em aberto com o vencimento delas.'],
+  ['BXC_CHD_MARCA',  'Marcar o cheque como devolvido',    'bool', 'Muda o cheque para D e grava a alínea do extrato (ex.: MOTIVO 11).'],
+  ['BXC_CHD_WHATS',  'Avisar a equipe por WhatsApp',      'bool', 'Manda para a equipe interna o cheque devolvido (cliente, cheque, alínea, valor e títulos reabertos).'],
+  ['BXC_CHD_ZAP_LISTA', 'Lista do WhatsApp',              'int',  'Lista de distribuição do Mega que recebe o aviso (11 = Contas a Receber e Cobrança).'],
+  ['BXC_CHD_ACAO',   'Ação do lançamento da devolução',   'int',  'Movimento financeiro que concilia o débito CHRD no extrato (971 · Estorno Devolução de Cheque recebido).'],
+  ['BXC_CHD_CLASSE', 'Classe: cheque devolvido',          'int',  'Classe financeira do lançamento da devolução (0 = a definir com a contabilidade).'],
+  ['BXC_CHD_CCUSTO', 'Centro de custo: cheque devolvido', 'int',  'Centro de custo do lançamento da devolução (0 = a definir).'],
+];
 const DEP_VAZIO = { id: null, banco: '', conta: '', tpd: '', hist_like: '', natureza: 'D', acao: 710, agente: '', tpd_fin: '', classe: '', classe_ide: '1', ccusto: '', ccusto_ide: '1', projeto: 2, historico: '', auto: 'N', teto: '', ativo: 'S' };
 
 export default function ConfigBaixarConciliar() {
@@ -67,6 +82,19 @@ export default function ConfigBaixarConciliar() {
   }
   const setParam = (k, v) => setCfg(c => ({ ...c, params: { ...c.params, [k]: v } }));
   const setConta = (agn, patch) => setCfg(c => ({ ...c, contas: c.contas.map(x => x.agn_id === agn ? { ...x, ...patch } : x) }));
+  const cardParam = ([k, l, tp, d]) => (
+    <label key={k} className="card p-4 flex items-start gap-4">
+      <div className="flex-1">
+        <div className="text-sm text-gray-100">{l}</div>
+        <div className="text-xs text-gray-500 mt-0.5">{d}</div>
+      </div>
+      {tp === 'bool'
+        ? <button type="button" onClick={() => setParam(k, Number(cfg.params[k]) ? 0 : 1)} className={`w-12 h-7 rounded-full transition relative ${Number(cfg.params[k]) ? 'bg-prim-600' : 'bg-ink-700'}`}><span className={`absolute top-1 w-5 h-5 rounded-full bg-white transition ${Number(cfg.params[k]) ? 'left-6' : 'left-1'}`} /></button>
+        : tp === 'data'   // gravada como AAAAMMDD (PARAM_RE_VALOR e numerico)
+        ? <input type="date" className="input w-40" value={String(cfg.params[k] ?? '').replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')} onChange={e => setParam(k, Number(e.target.value.replace(/-/g, '')) || 0)} />
+        : <input type="number" step={tp === 'num' ? '0.01' : '1'} className="input w-36 text-right" value={cfg.params[k] ?? ''} onChange={e => setParam(k, e.target.value)} />}
+    </label>
+  );
 
   if (!cfg) return <div className="p-6 text-sm text-gray-400 flex items-center gap-2"><Loader2 size={16} className="animate-spin" /> carregando…</div>;
   return (
@@ -92,26 +120,22 @@ export default function ConfigBaixarConciliar() {
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Parâmetros</h2>
-        <div className="grid md:grid-cols-2 gap-3">
-          {PARAMS.map(([k, l, tp, d]) => (
-            <label key={k} className="card p-4 flex items-start gap-4">
-              <div className="flex-1">
-                <div className="text-sm text-gray-100">{l}</div>
-                <div className="text-xs text-gray-500 mt-0.5">{d}</div>
-              </div>
-              {tp === 'bool'
-                ? <button type="button" onClick={() => setParam(k, Number(cfg.params[k]) ? 0 : 1)} className={`w-12 h-7 rounded-full transition relative ${Number(cfg.params[k]) ? 'bg-prim-600' : 'bg-ink-700'}`}><span className={`absolute top-1 w-5 h-5 rounded-full bg-white transition ${Number(cfg.params[k]) ? 'left-6' : 'left-1'}`} /></button>
-                : <input type="number" step={tp === 'num' ? '0.01' : '1'} className="input w-36 text-right" value={cfg.params[k] ?? ''} onChange={e => setParam(k, e.target.value)} />}
-            </label>
-          ))}
+        <div className="grid md:grid-cols-2 gap-3">{PARAMS.map(cardParam)}</div>
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex items-center gap-3">
+          <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Cheque recebido devolvido</h2>
+          <span className="text-xs text-gray-500">linha CHRD do extrato casada com o cheque recebido; as contas são marcadas na coluna "Cheque dev." abaixo</span>
         </div>
+        <div className="grid md:grid-cols-2 gap-3">{PARAMS_CHD.map(cardParam)}</div>
       </section>
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-gray-200 uppercase tracking-wider">Contas no escopo</h2>
         <div className="card overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="text-[11px] uppercase text-gray-500 bg-ink-900"><tr><th className="text-left p-3">Conta</th><th className="text-left p-3">Filial</th><th className="p-3">Ativa</th><th className="p-3">Robô</th><th className="p-3" title="Concilia sozinho o dia de cobrança (retorno x extrato) fechado no centavo">Cobrança auto.</th><th className="text-right p-3">Teto do robô (R$)</th><th className="text-right p-3">Agente banco (tarifas)</th><th className="text-right p-3">Pendentes</th></tr></thead>
+            <thead className="text-[11px] uppercase text-gray-500 bg-ink-900"><tr><th className="text-left p-3">Conta</th><th className="text-left p-3">Filial</th><th className="p-3">Ativa</th><th className="p-3">Robô</th><th className="p-3" title="Concilia sozinho o dia de cobrança (retorno x extrato) fechado no centavo">Cobrança auto.</th><th className="p-3" title="Trata sozinho a devolução de cheque (linha CHRD do extrato)">Cheque dev.</th><th className="text-right p-3">Teto do robô (R$)</th><th className="text-right p-3">Agente banco (tarifas)</th><th className="text-right p-3">Pendentes</th></tr></thead>
             <tbody>{(cfg.contas || []).map(c => (
               <tr key={c.agn_id} className="border-t border-ink-700">
                 <td className="p-3 text-gray-200">{c.agn_id} · {c.nome}</td>
@@ -119,6 +143,7 @@ export default function ConfigBaixarConciliar() {
                 <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={c.ativa === 'S' || c.ativa === true} onChange={e => setConta(c.agn_id, { ativa: e.target.checked })} /></td>
                 <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={c.robo === 'S' || c.robo === true} onChange={e => setConta(c.agn_id, { robo: e.target.checked })} /></td>
                 <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={c.auto_cob === true} onChange={e => setConta(c.agn_id, { auto_cob: e.target.checked })} /></td>
+                <td className="p-3 text-center"><input type="checkbox" className="accent-prim-500 w-4 h-4" checked={c.auto_chd === true} onChange={e => setConta(c.agn_id, { auto_chd: e.target.checked })} /></td>
                 <td className="p-3 text-right"><input type="number" step="0.01" className="input w-32 text-right py-1" value={c.teto_robo ?? ''} placeholder="geral" onChange={e => setConta(c.agn_id, { teto_robo: e.target.value })} /></td>
                 <td className="p-3 text-right"><input type="number" className="input w-28 text-right py-1" value={c.agn_banco ?? ''} onChange={e => setConta(c.agn_id, { agn_banco: e.target.value })} /></td>
                 <td className="p-3 text-right text-gray-400">{fmtN(c.pendentes)}</td>

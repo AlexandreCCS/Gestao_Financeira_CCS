@@ -115,7 +115,7 @@ export default function BaixarConciliar() {
   const [res, setRes]         = useState({});       // ref -> { fase, simular, status, mensagem, lancto_fin }
   const [rodando, setRodando] = useState(false);
   const [confirma, setConfirma] = useState(null);   // { payloads, fn, titulo, texto, fase, recusas, validos }
-  const [secoes, setSecoes]   = useState({ decidir: true, real: true, lote: true, conciliar: true, info: false, feitas: true });
+  const [secoes, setSecoes]   = useState({ chdev: true, decidir: true, real: true, lote: true, conciliar: true, info: false, feitas: true });
   const [feitas, setFeitas]   = useState([]);
   const [modal, setModal]     = useState(null);     // { tipo: 'encargos'|'pedido'|'ignorar'|'desfazer', ... }
   const [escolha, setEscolha] = useState({});       // id -> Set(lancto) na seção Decidir
@@ -164,7 +164,9 @@ export default function BaixarConciliar() {
   const itens = useMemo(() => (dados?.itens || []).map(i => lanc[i.id] ? { ...i, tipo: 'L', situacao: 'pronto', confianca: 'manual', titulos: [], candidatos: [], movs: [], motivo: LANC[lanc[i.id].tipo] }
     : manual[i.id]?.length ? { ...i, tipo: tipoTit(i), situacao: 'pronto', confianca: 'manual', titulos: manual[i.id], candidatos: [], motivo: 'Títulos escolhidos na busca' } : i).filter(i => !q || JSON.stringify([i.linhas, i.titulos?.map(t => [t.agn_nome, t.doc])]).toLowerCase().includes(q)), [dados, q, manual, lanc]);
   const por = s => itens.filter(i => i.situacao === s);
-  const prontos = por('pronto'), decidir = por('decidir'), reais = por('real'), lotes = por('lote'), conciliar = por('conciliar'), infos = por('informativo');
+  const prontos = por('pronto'), decidir = por('decidir'), reais = por('real'), lotes = por('lote'), conciliar = por('conciliar');
+  // [03/11/2026] cheque recebido devolvido (CHRD) tem secao propria e aberta: dentro de Informativos (fechada) parecia ter sumido
+  const chdevs = por('informativo').filter(i => i.chdev), infos = por('informativo').filter(i => !i.chdev);
   const selecionados = prontos.filter(i => marcados.has(i.id) && res[i.id]?.status !== 'B');
   const somaSel = selecionados.reduce((s, i) => s + Number(i.valor_banco || 0), 0);
   const contaAtual = contas?.find(c => c.agn_id === conta);
@@ -508,13 +510,15 @@ export default function BaixarConciliar() {
         </section>
       )}
 
+      {chdevs.length > 0 && <Secao titulo="Cheques devolvidos" qt={chdevs.length} icone={Undo2} aberta={secoes.chdev} onToggle={() => setSecoes(s => ({ ...s, chdev: !s.chdev }))} nota="linha CHRD do extrato: Tratar devolução lança a 971 conciliada e reabre as parcelas do cheque">
+        {chdevs.map(i => <Card key={i.id} item={i} />)}</Secao>}
       {decidir.length > 0 && <Secao titulo="Decidir" qt={decidir.length} icone={Info} aberta={secoes.decidir} onToggle={() => setSecoes(s => ({ ...s, decidir: !s.decidir }))} nota="casamento ambíguo ou parcial: escolha o título">
         {decidir.map(i => <Card key={i.id} item={i} />)}</Secao>}
       {reais.length > 0 && <Secao titulo="Lançar no Mega" qt={reais.length} icone={FilePlus2} aberta={secoes.real} onToggle={() => setSecoes(s => ({ ...s, real: !s.real }))} nota="tarifas e outros movimentos reais, sem título">
         {reais.map(i => <Card key={i.id} item={i} acao={<button className="btn-prim text-xs py-1.5" disabled={rodando || res[i.id]?.status === 'B' || !i.depara?.id || !i.depara?.classe} title={!i.depara?.id ? 'sem de-para para esta linha' : !i.depara?.classe ? 'de-para sem classe financeira: configure' : ''} onClick={() => lancarReal(i)}><FilePlus2 size={13} /> Lançar</button>} />)}</Secao>}
       {(lotes.length + conciliar.length) > 0 && <Secao titulo="Conciliar" qt={lotes.length + conciliar.length} icone={Link2} aberta={secoes.conciliar} onToggle={() => setSecoes(s => ({ ...s, conciliar: !s.conciliar }))} nota="já está no Mega, só falta ligar ao extrato (inclui lote de cobrança)">
         {[...lotes, ...conciliar].map(i => <Card key={i.id} item={i} acao={<button className="btn-prim text-xs py-1.5" disabled={rodando || res[i.id]?.status === 'B' || !(i.movs || []).length} onClick={() => conciliarItem(i)}><Link2 size={13} /> Conciliar</button>} />)}</Secao>}
-      {infos.length > 0 && <Secao titulo="Informativos" qt={infos.length} icone={Info} aberta={secoes.info} onToggle={() => setSecoes(s => ({ ...s, info: !s.info }))} nota="aplicação automática, rendimentos e cheques devolvidos (CHRD): não são títulos">
+      {infos.length > 0 && <Secao titulo="Informativos" qt={infos.length} icone={Info} aberta={secoes.info} onToggle={() => setSecoes(s => ({ ...s, info: !s.info }))} nota="aplicação automática e rendimentos: não são títulos">
         {infos.map(i => <Card key={i.id} item={i} />)}</Secao>}
 
       <Secao titulo="Feitas hoje" qt={feitas.length} icone={CheckCircle2} aberta={secoes.feitas} onToggle={() => setSecoes(s => ({ ...s, feitas: !s.feitas }))} nota="trilha do que foi gravado por aqui, pela tela ou pelo robô">

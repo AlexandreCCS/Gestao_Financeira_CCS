@@ -96,7 +96,9 @@ export default function ConfigBaixarConciliar() {
     </label>
   );
 
-  if (!cfg) return <div className="p-6 text-sm text-gray-400 flex items-center gap-2"><Loader2 size={16} className="animate-spin" /> carregando…</div>;
+  if (!cfg) return erro   // [03/11/2026] sem isto a falha do GET ficava presa em "carregando…"
+    ? <div className="p-6"><div className="bg-rose-900/40 text-rose-200 text-sm rounded-lg p-3">{erro}</div></div>
+    : <div className="p-6 text-sm text-gray-400 flex items-center gap-2"><Loader2 size={16} className="animate-spin" /> carregando…</div>;
   return (
     <div className="p-6 space-y-8 max-w-[1300px] mx-auto">
       <div className="flex flex-wrap items-end gap-4">

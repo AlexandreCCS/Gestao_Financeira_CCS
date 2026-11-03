@@ -954,8 +954,9 @@ export default async function baixarConciliarRoutes(app) {
     'BXC_CHD_ATIVO', 'BXC_CHD_DESDE', 'BXC_CHD_USU', 'BXC_CHD_TETO', 'BXC_CHD_JANELA', 'BXC_CHD_REABRE', 'BXC_CHD_MARCA', 'BXC_CHD_WHATS', 'BXC_CHD_ZAP_LISTA', 'BXC_CHD_ACAO', 'BXC_CHD_CLASSE', 'BXC_CHD_CCUSTO'];
   app.get('/bxc/config', auth, async () => {
     const rows = await megaQuery(`SELECT PARAM_ST_CHAVE K, PARAM_RE_VALOR V, PARAM_ST_DESCRICAO D, TO_CHAR(PARAM_DT_ALTERACAO,'YYYY-MM-DD HH24:MI') EM, PARAM_ST_USU U FROM MEGA.CCS_TB_GFIN_PARAM WHERE PARAM_ST_CHAVE LIKE 'BXC_%' ORDER BY 1`);
-    const contas = (await megaQuery(`SELECT K.*, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.AGN_IN_CODIGO) NOME,
-        (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.CTA_IN_AGN_BANCO) BANCO_NOME FROM MEGA.CCS_TB_GFIN_BXC_CONTA K ORDER BY K.FIL_IN_CODIGO, K.AGN_IN_CODIGO`))
+    // [03/11/2026] uma linha so: com a coluna CTA_CH_AUTO_CHD o gateway SOAP passou a devolver "indice fora dos limites da matriz"
+    // (pegadinha do gateway: quebra de linha + ORDER BY com 2 colunas; ver TMS_CCS.md)
+    const contas = (await megaQuery(`SELECT K.*, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.AGN_IN_CODIGO) NOME, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.CTA_IN_AGN_BANCO) BANCO_NOME FROM MEGA.CCS_TB_GFIN_BXC_CONTA K ORDER BY K.FIL_IN_CODIGO, K.AGN_IN_CODIGO`))
       .map(k => ({ agn_id: num(k.AGN_IN_CODIGO), nome: k.NOME || '', fil_id: num(k.FIL_IN_CODIGO), ativa: k.CTA_CH_ATIVA === 'S', robo: k.CTA_CH_ROBO === 'S', auto_cob: k.CTA_CH_AUTO_COB === 'S', auto_chd: k.CTA_CH_AUTO_CHD === 'S', teto_robo: k.CTA_RE_TETO_ROBO ? num(k.CTA_RE_TETO_ROBO) : null, agn_banco: k.CTA_IN_AGN_BANCO ? num(k.CTA_IN_AGN_BANCO) : null, banco_nome: k.BANCO_NOME || '', obs: k.CTA_ST_OBS || '' }));
     const usuRobo = rows.find(r => r.K === 'BXC_USU_ROBO');
     const robo = usuRobo && num(usuRobo.V) > 0 ? (await megaQuery(`SELECT GRU_ST_NOME N FROM MEGA.GLO_GRUPO_USUARIO WHERE GRU_IN_CODIGO = ${num(usuRobo.V)}`))[0]?.N : null;

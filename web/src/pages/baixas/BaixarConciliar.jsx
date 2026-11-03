@@ -563,7 +563,7 @@ export default function BaixarConciliar() {
       {modal?.tipo === 'pedido' && <EncargosModal modal={modal} setModal={setModal} pedido onPedir={pedirLiberacao} rodando={rodando} />}
       {modal?.tipo === 'buscar' && <BuscaTitulos item={modal.item} usados={new Set(itens.filter(i => i.id !== modal.item.id).flatMap(i => (i.titulos || []).map(t => t.lancto)))}
         onUsar={sel => usarTitulos(modal.item, sel)} onClose={() => setModal(null)} />}
-      {modal?.tipo === 'lancar' && <LancarModal modal={modal} setModal={setModal} onUsar={usarLanc} contas={(contas || []).filter(c => c.agn_id !== conta)} />}
+      {modal?.tipo === 'lancar' && <LancarModal modal={modal} setModal={setModal} onUsar={usarLanc} conta={conta} />}
       {modal?.tipo === 'ignorar' && (
         <Modal titulo="Ignorar esta linha do extrato?" onClose={() => setModal(null)} acoes={<><button className="btn-ghost" onClick={() => setModal(null)}>Voltar</button><button className="btn-prim" disabled={rodando || !modal.motivo.trim()} onClick={() => ignorar(modal.item, modal.motivo.trim())}>Ignorar</button></>}>
           <p>Ela deixa de aparecer aqui. Não muda nada no Mega.</p>
@@ -610,11 +610,12 @@ function EncargosModal({ modal, setModal, onSalvar, onPedir, pedido, rodando }) 
 // ---------------------------------------------------------------------------------------------------- [28/10/2026] lançamento pelo extrato
 // Pedido do Alexandre: em depósito, perguntar (flag) se lança Adiantamento de Cliente; mesma raiz de CNPJ dos dois lados, Transferência entre contas
 // "nas duas filiais"; do lado de quem pagou (empresa do grupo), Adiantamento a Fornecedor se ainda não existe. Aqui só confirma agente/classe/CC.
-function LancarModal({ modal, setModal, onUsar, contas = [] }) {
+function LancarModal({ modal, setModal, onUsar, conta }) {
   const { item, lt, v } = modal, transf = lt === 'TRANSF', entrada = item.linhas?.[0]?.natureza === 'C';
   // [03/11/2026] filial de cada lado (a mesma conta atende varias filiais); vazio = padrao do servidor
-  const [filiais, setFiliais] = useState([]);
-  useEffect(() => { if (transf) api.bxcFiliais(item.org).then(r => setFiliais(r.filiais || [])).catch(() => setFiliais([])); }, []);
+  const [filiais, setFiliais] = useState([]); const [contas, setContas] = useState([]);
+  // [03/11/2026] contas da ORGANIZACAO (inclui as fora do Gestor, ex.: 21724 da filial 402), menos a propria
+  useEffect(() => { if (transf) { api.bxcFiliais(item.org).then(r => setFiliais(r.filiais || [])).catch(() => setFiliais([])); api.bxcContasOrg(item.org).then(r => setContas((r.contas || []).filter(c => c.agn_id !== conta))).catch(() => setContas([])); } }, []);
   const filLinha = item.linhas?.[0]?.fil || null, filConta = contas.find(c => c.agn_id === v.conta)?.fil_id || null;
   const [busca, setBusca] = useState(''); const [achados, setAchados] = useState(null); const [aviso, setAviso] = useState('');
   const set = (k, val) => setModal({ ...modal, v: { ...v, [k]: val } });
@@ -636,7 +637,7 @@ function LancarModal({ modal, setModal, onUsar, contas = [] }) {
           ? <label className="text-xs text-gray-400 space-y-1 block"><span>{entrada ? 'Conta de origem (de onde saiu o dinheiro)' : 'Conta de destino (para onde foi o dinheiro)'}</span>
               <select className="input" value={v.conta ?? ''} onChange={e => { const c = contas.find(x => x.agn_id === Number(e.target.value)); setModal({ ...modal, v: { ...v, conta: c ? c.agn_id : null, conta_nome: c ? c.nome : '' } }); }}>
                 <option value="">escolha a conta</option>
-                {contas.map(c => <option key={c.agn_id} value={c.agn_id}>{c.agn_id} · {c.nome} · fil {c.fil_id}</option>)}
+                {contas.map(c => <option key={c.agn_id} value={c.agn_id}>{c.agn_id} · {c.nome} · fil {c.fil_id}{c.escopo ? '' : ' (fora do Gestor)'}</option>)}
               </select></label>
           : null}
         {v.conta && <div>{entrada ? 'Sai de' : 'Vai para'} <b>{v.conta_nome}</b> ({v.conta}). Nasce o TRANSFD na conta de origem e o TRANSFC na de destino, como na tela do Mega.</div>}

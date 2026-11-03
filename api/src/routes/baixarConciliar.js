@@ -972,6 +972,15 @@ export default async function baixarConciliarRoutes(app) {
     return { simular: ctx.simular, resultados };
   });
 
+  // [03/11/2026] contas bancarias da ORGANIZACAO (as do escopo e as que so tem movimento na org no ultimo ano, ex.: 21724 da filial 402):
+  //    a outra ponta da transferencia nem sempre esta cadastrada no Gestor. Filial = a mais usada da conta na org.
+  app.get('/bxc/contas-org', auth, async (req) => {
+    const org = num(req.query.org);
+    if (!org) return { contas: [] };
+    const rows = await megaQuery(`SELECT X.AGN AGN, X.FIL FIL, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = X.AGN) NOME, (SELECT MAX(K.CTA_CH_ATIVA) FROM MEGA.CCS_TB_GFIN_BXC_CONTA K WHERE K.AGN_IN_CODIGO = X.AGN) ESC FROM (SELECT M.AGN_IN_CODIGO AGN, STATS_MODE(M.FIL_IN_CODIGO) FIL FROM MEGA.FIN_MOVIMENTO M, MEGA.GLO_CONTASFIN C WHERE M.ORG_IN_CODIGO = ${org} AND M.AGN_TAU_ST_CODIGO = 'N' AND M.MOV_DT_DATADOCTO >= TRUNC(SYSDATE) - 365 AND C.AGN_TAB_IN_CODIGO = 53 AND C.AGN_IN_CODIGO = M.AGN_IN_CODIGO AND C.AGN_TAU_ST_CODIGO = 'N' AND NVL(C.BAN_IN_NUMERO, 999) <> 999 GROUP BY M.AGN_IN_CODIGO) X ORDER BY 3`);
+    return { contas: rows.map(r => ({ agn_id: num(r.AGN), nome: r.NOME || '', fil_id: r.FIL ? num(r.FIL) : null, escopo: r.ESC === 'S' })) };
+  });
+
   // [03/11/2026] filiais da organizacao (a mesma conta atende varias filiais: a tela escolhe a de cada lado da transferencia)
   app.get('/bxc/filiais', auth, async (req) => {
     const org = num(req.query.org);

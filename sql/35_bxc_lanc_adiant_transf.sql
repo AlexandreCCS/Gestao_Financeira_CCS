@@ -188,6 +188,7 @@ BEGIN
             W_TEM_B2 := TRUE; W_OUT_FIL := B2.FIL_IN_CODIGO;
         ELSE
             SELECT MAX(FIL_IN_CODIGO) INTO W_OUT_FIL FROM MEGA.CCS_TB_GFIN_BXC_CONTA WHERE AGN_IN_CODIGO = P_AGN;
+            W_OUT_FIL := NVL(P_FIL_LA, W_OUT_FIL);   /* [03/11/2026] filial escolhida dispensa cadastro/extrato da outra conta (ex.: 21724 fora do escopo) */
             IF W_OUT_FIL IS NULL THEN
                 SELECT MAX(X.FIL_IN_CODIGO) KEEP (DENSE_RANK LAST ORDER BY X.CBA_DT_DATA) INTO W_OUT_FIL FROM MEGA.FIN_CONCILIACAO X WHERE X.AGN_IN_CODIGO = P_AGN AND X.ORG_IN_CODIGO = P_ORG;
             END IF;

@@ -220,6 +220,10 @@ export default function BaixarConciliar() {
   // ações
   const payloadLanc = item => { const x = lanc[item.id]; return { _fn: api.bxcLancar, ref: item.id, cba: item.linhas[0]?.cba, tipo: x.tipo, agn: x.tipo === 'TRANSF' ? x.conta : x.agn, cba2: x.cba2 || null, classe: x.classe || null, ccusto: x.ccusto || null }; };
   const baixarSelecionados = () => pedirConfirmacao(selecionados.map(i => (lanc[i.id] ? payloadLanc(i) : payloadBaixa(i))), api.bxcExecutar, `Baixar e conciliar ${fmtN(selecionados.length)} item(ns)?`, `${fmt(somaSel)} na conta ${contaAtual?.nome || conta}. Cada item vira baixa no Mega, na data do banco, já conciliada com a linha do extrato. Primeiro valido tudo; só gravo o que passar.`);
+  // [03/11/2026] cheque recebido devolvido: 971 conciliada + reabre as parcelas que o cheque baixou (a nova baixa e do usuario, como hoje)
+  const tratarChdev = item => { const d = item.chdev, ch = d.cheque;
+    pedirConfirmacao([{ ref: item.id, cba: item.linhas[0]?.cba, cheque: ch.seq }], api.bxcChdev, 'Tratar a devolução do cheque?',
+      `${fmt(item.valor_banco)} · cheque ${d.banco}/${d.numero} de ${ch.nome}, alínea ${d.alinea}. Lança a ação 971 já conciliada com esta linha${d.titulos.length ? ` e reabre ${d.titulos.join(', ')}` : ''}. A nova baixa dessas parcelas é feita como hoje.`); };
   const lancarReal = item => pedirConfirmacao([{ ref: item.id, cba: item.linhas[0]?.cba, dep_id: item.depara?.id, hist: item.linhas[0]?.historico }], api.bxcReal, 'Lançar no Mega?', `${fmt(item.valor_banco)} · ${item.linhas[0]?.historico} → ${item.depara?.descricao || 'de-para'}. Nasce o lançamento avulso já conciliado.`);
   const conciliarItem = item => pedirConfirmacao([{ ref: item.id, conta, movs: (item.movs || []).map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: (item.linhas || []).map(l => l.cba) }], api.bxcConciliar, 'Conciliar no Mega?', `${fmtN(item.movs?.length || 0)} lançamento(s) × ${fmtN(item.linhas?.length || 0)} linha(s) do extrato · ${fmt(item.valor_banco)}.`);
   function decidirBaixar(item) {
@@ -347,6 +351,7 @@ export default function BaixarConciliar() {
               {(manual[item.id] || lanc[item.id]) && <button className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={12} /> Desfazer escolha</button>}
             </div>}
             {!aberto && !feito && <OpcoesLanc item={item} />}
+            {!feito && item.chdev?.cheque && <div className="mt-1.5"><button className="btn-prim text-xs py-1.5" disabled={rodando} onClick={() => tratarChdev(item)}><Undo2 size={13} /> Tratar devolução</button></div>}
           </div>
           <div className="text-right shrink-0">
             <div className={`text-lg font-semibold ${nat === 'D' ? 'text-rose-300' : 'text-emerald-300'}`}>{nat === 'D' ? '−' : '+'} {fmt(item.valor_banco)}</div>

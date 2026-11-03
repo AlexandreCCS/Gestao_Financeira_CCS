@@ -230,6 +230,7 @@ export const api = {
   bxcConciliar: (body) => req('/bxc/conciliar', { method: 'POST', body: JSON.stringify(body) }),
   bxcReal: (body) => req('/bxc/real', { method: 'POST', body: JSON.stringify(body) }),
   bxcLancar: (body) => req('/bxc/lancar', { method: 'POST', body: JSON.stringify(body) }),
+  bxcChdev: (body) => req('/bxc/chdev', { method: 'POST', body: JSON.stringify(body) }),   // [03/11/2026] cheque recebido devolvido
   bxcAgentes: (params) => req(`/bxc/agentes?${new URLSearchParams(params || {})}`),
   bxcEstornar: (log_id) => req('/bxc/estornar', { method: 'POST', body: JSON.stringify({ log_id }) }),
   bxcFeitas: (params) => req(`/bxc/feitas?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),

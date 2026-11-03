@@ -55,8 +55,9 @@ const motivoChdev = (d, P) => {
   const ch = d.cheque;
   return `${cab}: cheque ${ch.seq} de ${ch.nome} (${ch.agn}), bom para ${ch.bom_para}, ${ch.status === 'D' ? `ja marcado D (${ch.obs})` : 'ainda nao marcado D'}. `
     + `${d.titulos.length ? `Parcelas baixadas por ele que serao reabertas: ${d.titulos.join(', ')}. ` : 'Nenhuma parcela baixada por ele em aberto de estorno. '}`
-    + `Tratado pelo processo de cheque devolvido (aguardando a contabilizacao da acao ${P.chd.acao}). Nao baixar nem conciliar por aqui.`;
+    + `Use "Tratar devolucao": lanca a acao ${P.chd.acao} conciliada com esta linha${P.chd.reabre ? ' e reabre as parcelas' : ''}. A nova baixa das parcelas e feita como hoje.`;
 };
+const chdevTratavel = (it, P) => !!it.chdev?.cheque && it.data >= P.chd.desde && it.valor_banco <= P.chd.teto;
 const TPD_FIN_MAP = { PGTO: 'PGTOM', DEPP: 'DEPR' };
 const UPLOADS = path.resolve(process.env.BXC_UPLOADS || 'uploads/bxc');
 
@@ -666,6 +667,15 @@ async function executarReal(item, ctx) {
   } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'o lancamento'); }
 }
 
+// [03/11/2026] cheque recebido devolvido (sql/38): 971 conciliada com a linha CHRD + reabre as parcelas do cheque + marca D + aviso, numa transacao
+async function executarChdev(item, ctx) {
+  const token = crypto.randomUUID();
+  try {
+    await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_CHDEV('${token}', ${num(item.org)}, ${num(item.cba)}, ${num(item.cheque)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}'); END;`);
+    return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado do cheque devolvido.' };
+  } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'o cheque e as parcelas'); }
+}
+
 // [28/10/2026] adiantamento de cliente (ADCLI) / a fornecedor (ADFOR) / transferencia (TRANSF) pela linha do extrato, ja conciliado (sql/35)
 async function executarLanc(item, ctx) {
   const token = crypto.randomUUID();
@@ -734,6 +744,30 @@ export async function rodarRobo(app, disparo = 'agendado') {
     }
   }
   app.log.info({ bxc: 'robo', ...resumo, detalhes: undefined }, 'robo do Baixar e conciliar');
+  return resumo;
+}
+
+// [03/11/2026] ROBO DO CHEQUE DEVOLVIDO: nas contas marcadas (CTA_CH_AUTO_CHD = 'S'), cada linha CHRD a partir de BXC_CHD_DESDE que casa com UM
+// cheque e cabe no BXC_CHD_TETO vira 971 + parcelas reabertas (CCS_P_GFIN_BXC_CHDEV), em nome de BXC_CHD_USU, origem R. Desligado = nada.
+export async function rodarChdev(app, disparo = 'agendado') {
+  const P = await params();
+  const resumo = { disparo, contas: 0, executados: 0, recusados: 0, pulados: 0, detalhes: [] };
+  if (!P.chd.ativo || P.chd.usu <= 0) { resumo.motivo = !P.chd.ativo ? 'Robo do cheque devolvido desligado (BXC_CHD_ATIVO = 0)' : 'Usuario do cheque devolvido nao definido (BXC_CHD_USU)'; return resumo; }
+  const contas = await megaQuery(`SELECT AGN_IN_CODIGO AGN FROM MEGA.CCS_TB_GFIN_BXC_CONTA WHERE CTA_CH_ATIVA = 'S' AND CTA_CH_AUTO_CHD = 'S'`);
+  const ctx = { usu: P.chd.usu, login: 'ROBO CHEQUE DEVOLVIDO', origem: 'R', simular: false };
+  for (const c of contas) {
+    const agn = num(c.AGN);
+    resumo.contas++;
+    let m;
+    try { m = await motor(agn, { ini: P.chd.desde > addDias(isoHoje(), -60) ? P.chd.desde : addDias(isoHoje(), -60), tpd: 'CHRD' }); } catch (e) { resumo.detalhes.push({ conta: agn, erro: String(e.message || e).slice(0, 200) }); continue; }
+    for (const it of m.itens.filter(i => i.chdev)) {
+      if (!chdevTratavel(it, P)) { resumo.pulados++; continue; }
+      const r = await executarChdev({ org: it.org, cba: it.linhas[0].cba, cheque: it.chdev.cheque.seq }, ctx);
+      if (r.status === 'B') resumo.executados++; else resumo.recusados++;
+      resumo.detalhes.push({ conta: agn, item: it.id, valor: it.valor_banco, status: r.status, log_id: r.log_id || null, mensagem: r.mensagem || '' });
+    }
+  }
+  if (resumo.detalhes.length) app?.log?.info({ bxc: 'chdev', ...resumo }, 'robo do cheque devolvido');
   return resumo;
 }
 
@@ -899,6 +933,22 @@ export default async function baixarConciliarRoutes(app) {
       try { const li = await orgDasLinhas([it.cba]); r = await executarReal({ org: li.org, cba: it.cba, dep_id: it.dep_id, hist: it.hist }, ctx); }
       catch (e) { r = { status: 'X', mensagem: String(e.message || e).slice(0, 300) }; }
       req.log.info({ gfin: 'bxc_real', usu: ctx.usu, ref: it.ref, status: r.status, msg: r.mensagem }, 'movimento real');
+      resultados.push({ ref: it.ref || '', ...r });
+    }
+    return { simular: ctx.simular, resultados };
+  });
+
+  // [03/11/2026] cheque recebido devolvido: "Tratar devolucao" (ou Simular) no card informativo da linha CHRD
+  app.post('/bxc/chdev', {
+    ...opera, schema: { body: { type: 'object', required: ['itens'], properties: { simular: { type: 'boolean' },
+      itens: { type: 'array', minItems: 1, maxItems: 50, items: { type: 'object', required: ['cba', 'cheque'], properties: { ref: { type: 'string', maxLength: 40 }, cba: { type: 'integer', minimum: 1 }, cheque: { type: 'integer', minimum: 1 } } } } } } }
+  }, async (req) => {
+    const ctx = ctxDe(req, req.body.simular === true), resultados = [];
+    for (const it of req.body.itens) {
+      let r;
+      try { const li = await orgDasLinhas([it.cba]); r = await executarChdev({ org: li.org, cba: it.cba, cheque: it.cheque }, ctx); }
+      catch (e) { r = { status: 'X', mensagem: String(e.message || e).slice(0, 300) }; }
+      req.log.info({ gfin: 'bxc_chdev', usu: ctx.usu, ref: it.ref, cba: it.cba, cheque: it.cheque, status: r.status, msg: r.mensagem }, 'cheque devolvido');
       resultados.push({ ref: it.ref || '', ...r });
     }
     return { simular: ctx.simular, resultados };
@@ -1111,13 +1161,14 @@ export default async function baixarConciliarRoutes(app) {
   // -------- robo
   app.post('/bxc/robo/rodar', admin, async (req) => {
     const quem = `manual por ${req.user.login || req.user.sub}`;
-    return { ...(await rodarRobo(app, quem)), cobranca: await rodarCobranca(app, quem) };
+    return { ...(await rodarRobo(app, quem)), cobranca: await rodarCobranca(app, quem), chdev: await rodarChdev(app, quem) };
   });
   if (process.env.BXC_ROBO !== '0') {
     let rodando = false, rodandoCob = false;
     const timer = setInterval(async () => {
       if (rodando) return; rodando = true;
-      try { await rodarRobo(app, 'agendado'); } catch (e) { app.log.error({ bxc: 'robo', err: String(e.message || e) }, 'robo falhou'); } finally { rodando = false; }
+      try { await rodarRobo(app, 'agendado'); } catch (e) { app.log.error({ bxc: 'robo', err: String(e.message || e) }, 'robo falhou'); }
+      try { await rodarChdev(app, 'agendado'); } catch (e) { app.log.error({ bxc: 'chdev', err: String(e.message || e) }, 'robo do cheque devolvido falhou'); } finally { rodando = false; }
     }, 10 * 60 * 1000);
     timer.unref?.();
     const timerCob = setInterval(async () => {

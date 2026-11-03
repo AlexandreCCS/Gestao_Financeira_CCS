@@ -116,6 +116,7 @@ export default function ConfigBaixarConciliar() {
       {robo && <div className="card p-4 text-sm text-gray-300">
         <div className="font-semibold text-gray-100 flex items-center gap-2"><Bot size={15} /> Robô rodou</div>
         <div className="text-gray-400 mt-1">{robo.motivo || `${fmtN(robo.contas || 0)} conta(s): ${fmtN(robo.executados || 0)} gravado(s), ${fmtN(robo.recusados || 0)} recusado(s), ${fmtN(robo.pulados || 0)} deixado(s) para a tela`}</div>
+        {robo.chdev && <div className="text-gray-400 mt-1">Cheque devolvido: {robo.chdev.motivo || `${fmtN(robo.chdev.executados || 0)} tratado(s), ${fmtN(robo.chdev.recusados || 0)} recusado(s), ${fmtN(robo.chdev.pulados || 0)} deixado(s) para a tela`}</div>}
         {robo.cobranca && <div className="text-gray-400 mt-1">Cobrança: {robo.cobranca.motivo || `${fmtN(robo.cobranca.executados || 0)} dia(s) conciliado(s), ${fmtN(robo.cobranca.recusados || 0)} recusado(s)`}</div>}
         {Array.isArray(robo.itens) && robo.itens.length > 0 && <ul className="mt-2 text-xs text-gray-500 space-y-0.5">{robo.itens.slice(0, 30).map((x, i) => <li key={i}>• {x.conta ? `conta ${x.conta} · ` : ''}{x.mensagem || x.status}</li>)}</ul>}
       </div>}

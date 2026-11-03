@@ -204,9 +204,9 @@ BEGIN
         /* ja lancada (pelo financeiro ou pela outra conta) e ainda nao conciliada aqui? entao e conciliar, nao lancar */
         SELECT COUNT(*) INTO W_N FROM MEGA.FIN_MOVIMENTO M
          WHERE M.ORG_IN_CODIGO = P_ORG AND M.MOV_TAB_IN_CODIGO = C_MOV_TAB AND M.AGN_IN_CODIGO = B.AGN_IN_CODIGO AND M.AGN_TAU_ST_CODIGO = 'N' AND M.ACAO_IN_CODIGO = 712
-           AND M.MOV_CH_NATUREZA = CASE WHEN W_ORI = 'S' THEN 'C' ELSE 'D' END AND ABS(M.MOV_RE_VALOR - W_VAL) < 0.005 AND ABS(TRUNC(M.MOV_DT_DATADOCTO) - W_DATA) <= 5
+           AND M.MOV_CH_NATUREZA = CASE WHEN W_ORI = 'S' THEN 'C' ELSE 'D' END AND ABS(M.MOV_RE_VALOR - W_VAL) < 0.005 AND ABS(TRUNC(M.MOV_DT_DATADOCTO) - W_DATA) <= 1   /* [03/11/2026] 5 -> 1 dia (Alexandre): 2 transferencias de 40.000 de 28/10 barravam a de 30/10 */
            AND NVL(M.MOV_CH_CONCILIADO, 'N') = 'N' AND NVL(M.MOV_CH_SITUACAO, 'A') <> 'C';
-        IF W_N > 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Ja existe transferencia deste valor nesta conta, nao conciliada, a ate 5 dias. Concilie com ela em vez de lancar outra.'); END IF;
+        IF W_N > 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Ja existe transferencia deste valor nesta conta, nao conciliada, a ate 1 dia. Concilie com ela em vez de lancar outra.'); END IF;
     ELSE
         W_OUT_TAU := CASE P_TIPO WHEN 'ADCLI' THEN 'C' ELSE 'F' END;
         BEGIN

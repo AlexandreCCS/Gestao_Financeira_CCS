@@ -611,6 +611,9 @@ export async function motor(agn, filtro = {}) {
     if (l.natureza === 'C') sug.adcli = { agn: grupo?.agn || null, nome: grupo?.nome || '', classe: 505, ccusto: 196 };
     if (l.natureza === 'D' && grupo) sug.adfor = { agn: grupo.agn, nome: grupo.nome, classe: 500, ccusto: 232 };
     if (cp && cp.mesma_raiz && cp.mesma_org) sug.transf = { conta: cp.conta, conta_nome: cp.conta_nome, cba2: cp.conciliada ? null : cp.cba, data: cp.data, conciliada: cp.conciliada, ccusto: 215 };
+    // [03/11/2026] outra ponta nao importada ainda (ex.: PIX TRANSF QUALITY 242.000 de 30/10 sem o extrato da conta de origem): o usuario escolhe a conta.
+    //    CCS_P_GFIN_BXC_LANC_X ja aceita TRANSF sem P_CBA2 e confere raiz de CNPJ e duplicidade; a linha da outra conta concilia depois com o lancamento.
+    else sug.transf_manual = { ccusto: 215 };
     if (Object.keys(sug).length) it.sugestao = sug;
   }
 

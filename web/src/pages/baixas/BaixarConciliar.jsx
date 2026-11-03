@@ -332,10 +332,10 @@ export default function BaixarConciliar() {
     const s = item.sugestao, atual = lanc[item.id]?.tipo;
     if (!s || res[item.id]?.status === 'B') return null;
     const entrada = item.linhas?.[0]?.natureza === 'C';
-    const op = [s.transf && ['TRANSF', `Lançar Transferência entre contas (${entrada ? 'vinda de' : 'para'} ${s.transf.conta_nome})`], s.adcli && ['ADCLI', 'Lançar como Adiantamento de Cliente'], s.adfor && ['ADFOR', 'Lançar como Adiantamento a Fornecedor']].filter(Boolean);
+    const op = [s.transf ? ['TRANSF', `Lançar Transferência entre contas (${entrada ? 'vinda de' : 'para'} ${s.transf.conta_nome})`] : s.transf_manual && ['TRANSF', 'Lançar Transferência entre contas (escolher a conta)'], s.adcli && ['ADCLI', 'Lançar como Adiantamento de Cliente'], s.adfor && ['ADFOR', 'Lançar como Adiantamento a Fornecedor']].filter(Boolean);
     const abrir = tp => {
-      const b = tp === 'TRANSF' ? s.transf : tp === 'ADCLI' ? s.adcli : s.adfor;
-      setModal({ tipo: 'lancar', item, lt: tp, v: tp === 'TRANSF' ? { tipo: tp, conta: b.conta, conta_nome: b.conta_nome, cba2: b.cba2, data2: b.data, ccusto: b.ccusto }
+      const b = tp === 'TRANSF' ? (s.transf || { conta: null, conta_nome: '', cba2: null, data: null, ccusto: s.transf_manual?.ccusto ?? 215, manual: true }) : tp === 'ADCLI' ? s.adcli : s.adfor;
+      setModal({ tipo: 'lancar', item, lt: tp, v: tp === 'TRANSF' ? { tipo: tp, conta: b.conta, conta_nome: b.conta_nome, cba2: b.cba2, data2: b.data, ccusto: b.ccusto, manual: !!b.manual }
         : { tipo: tp, agn: b.agn, nome: b.nome, classe: b.classe, ccusto: b.ccusto } });
     };
     return <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5">{op.map(([tp, txt]) => (
@@ -563,7 +563,7 @@ export default function BaixarConciliar() {
       {modal?.tipo === 'pedido' && <EncargosModal modal={modal} setModal={setModal} pedido onPedir={pedirLiberacao} rodando={rodando} />}
       {modal?.tipo === 'buscar' && <BuscaTitulos item={modal.item} usados={new Set(itens.filter(i => i.id !== modal.item.id).flatMap(i => (i.titulos || []).map(t => t.lancto)))}
         onUsar={sel => usarTitulos(modal.item, sel)} onClose={() => setModal(null)} />}
-      {modal?.tipo === 'lancar' && <LancarModal modal={modal} setModal={setModal} onUsar={usarLanc} />}
+      {modal?.tipo === 'lancar' && <LancarModal modal={modal} setModal={setModal} onUsar={usarLanc} contas={(contas || []).filter(c => c.agn_id !== conta)} />}
       {modal?.tipo === 'ignorar' && (
         <Modal titulo="Ignorar esta linha do extrato?" onClose={() => setModal(null)} acoes={<><button className="btn-ghost" onClick={() => setModal(null)}>Voltar</button><button className="btn-prim" disabled={rodando || !modal.motivo.trim()} onClick={() => ignorar(modal.item, modal.motivo.trim())}>Ignorar</button></>}>
           <p>Ela deixa de aparecer aqui. Não muda nada no Mega.</p>
@@ -610,7 +610,7 @@ function EncargosModal({ modal, setModal, onSalvar, onPedir, pedido, rodando }) 
 // ---------------------------------------------------------------------------------------------------- [28/10/2026] lançamento pelo extrato
 // Pedido do Alexandre: em depósito, perguntar (flag) se lança Adiantamento de Cliente; mesma raiz de CNPJ dos dois lados, Transferência entre contas
 // "nas duas filiais"; do lado de quem pagou (empresa do grupo), Adiantamento a Fornecedor se ainda não existe. Aqui só confirma agente/classe/CC.
-function LancarModal({ modal, setModal, onUsar }) {
+function LancarModal({ modal, setModal, onUsar, contas = [] }) {
   const { item, lt, v } = modal, transf = lt === 'TRANSF', entrada = item.linhas?.[0]?.natureza === 'C';
   const [busca, setBusca] = useState(''); const [achados, setAchados] = useState(null); const [aviso, setAviso] = useState('');
   const set = (k, val) => setModal({ ...modal, v: { ...v, [k]: val } });
@@ -627,7 +627,15 @@ function LancarModal({ modal, setModal, onUsar }) {
     </>}>
       <div className="text-xs text-gray-400">{fmtBr(item.data)} · {item.linhas?.[0]?.historico} · <b className={entrada ? 'text-emerald-300' : 'text-rose-300'}>{entrada ? '+' : '−'} {fmt(item.valor_banco)}</b> · documento EXT{item.linhas?.[0]?.cba}</div>
       {transf ? <div className="space-y-2 text-sm">
-        <div>{entrada ? 'Sai de' : 'Vai para'} <b>{v.conta_nome}</b> ({v.conta}). Nasce o TRANSFD na conta de origem e o TRANSFC na de destino, como na tela do Mega.</div>
+        {v.manual
+          // [03/11/2026] outra ponta nao importada: o usuario escolhe a conta (o servidor confere raiz de CNPJ e duplicidade)
+          ? <label className="text-xs text-gray-400 space-y-1 block"><span>{entrada ? 'Conta de origem (de onde saiu o dinheiro)' : 'Conta de destino (para onde foi o dinheiro)'}</span>
+              <select className="input" value={v.conta ?? ''} onChange={e => { const c = contas.find(x => x.agn_id === Number(e.target.value)); setModal({ ...modal, v: { ...v, conta: c ? c.agn_id : null, conta_nome: c ? c.nome : '' } }); }}>
+                <option value="">escolha a conta</option>
+                {contas.map(c => <option key={c.agn_id} value={c.agn_id}>{c.agn_id} · {c.nome} · fil {c.fil_id}</option>)}
+              </select></label>
+          : null}
+        {v.conta && <div>{entrada ? 'Sai de' : 'Vai para'} <b>{v.conta_nome}</b> ({v.conta}). Nasce o TRANSFD na conta de origem e o TRANSFC na de destino, como na tela do Mega.</div>}
         <div className="text-xs text-gray-400">{v.cba2 ? `A linha de ${fmtBr(v.data2)} da outra conta também fica conciliada (as duas empresas na mesma operação).` : 'A outra conta não tem a linha aberta no extrato: o lançamento dela fica para conciliar lá.'}</div>
         <label className="text-xs text-gray-400 space-y-1 block w-40"><span>Centro de custo</span><input type="number" className="input" value={v.ccusto ?? ''} onChange={e => set('ccusto', e.target.value)} /></label>
       </div> : <div className="space-y-3">

@@ -56,8 +56,8 @@ export default function AprovacaoFrete() {
         <div>
           <h1 className="text-xl font-bold text-gray-100 flex items-center gap-2"><Truck size={20} className="text-prim-400" /> Frete › 2ª aprovação</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            Cargas com o adiantamento gerado na 1ª aprovação (portal). Ao aprovar, nasce o título final já com o adiantamento baixado,
-            bloqueado no Approvo para a Odette ou a Renata.
+            Cargas com o adiantamento (1ª AP, à vista) gerado na 1ª aprovação (portal). Ao aprovar, nasce a 2ª AP com o saldo
+            (frete − vale − adiantamento, 20 dias), bloqueada no Approvo para a Odette ou a Renata.
           </p>
         </div>
         <button className="btn-ghost !py-1.5" onClick={carrega}><RefreshCw size={14} /> Atualizar</button>
@@ -159,7 +159,7 @@ function Tabela({ cargas, vazio, acao, feitos }) {
             <th className="p-2 text-right">Frete</th>
             <th className="p-2 text-right">Recibo</th>
             <th className="p-2 text-right">Adiantamento</th>
-            <th className="p-2 text-right">{feitos ? 'Situação' : 'Saldo final'}</th>
+            <th className="p-2 text-right">{feitos ? 'Situação' : '2ª AP (saldo)'}</th>
             <th className="p-2"></th>
           </tr>
         </thead>

@@ -2,6 +2,7 @@
 // 1ª aprovação = Portal de Dados da Indústria (gera o ADIANTAMENTO: 70% quando paga a PRO, 67% quando é MEI com nota, bloqueado no Approvo).
 // Aqui, quando a carga encerra, a 2ª aprovação gera o TÍTULO FINAL já com o adiantamento vinculado e baixado:
 //   adiantamento pago → abatido (DESCADI/AMORTADI); não pago → estornado e o final paga o frete inteiro menos o recibo de combustível.
+// [05/11/2026] PRO mudou: o adiantamento é a 1ª AP 503 (condição 0) e aqui nasce a 2ª AP = frete − vale − adiantamento (condição 75).
 //   MEI com nota → o título final nasce na entrada da NF do MEI (a 2ª aprovação só registra).
 // Os títulos nascem bloqueados no Approvo (regra "Portal Fretes - Frete e Vale Combustivel": Odette ou Renata).
 import React, { useEffect, useMemo, useState } from 'react';
@@ -127,10 +128,10 @@ export default function AprovacaoFrete() {
                 <>
                   <Linha k="Frete" v={fmt(confirmar.frete)} />
                   <Linha k="(−) Recibo de combustível" v={fmt(confirmar.vale)} />
-                  <Linha k="(−) Adiantamento pago (abatido)" v={fmt(confirmar.adto_pago)} />
-                  {confirmar.adto_aberto > 0 && <Linha k="Adiantamento não pago (estornado)" v={fmt(confirmar.adto_aberto)} cinza />}
-                  <Linha k="Saldo do título final" v={fmt(confirmar.saldo_previsto)} forte />
-                  <p className="text-xs text-gray-500 pt-1">O título final nasce bloqueado no Approvo. Adiantamento: {confirmar.adto_aps || '—'}.</p>
+                  {/* [05/11/2026] PRO: 2a AP do frete = saldo (503/711/1080401, condicao 75 = 20 dias); o adiantamento e a 1a AP */}
+                  <Linha k={`(−) Adiantamento (1ª AP ${confirmar.adto_aps || '—'})`} v={fmt(confirmar.adto)} />
+                  <Linha k="2ª AP — saldo (20 dias)" v={fmt(confirmar.saldo_previsto)} forte />
+                  <p className="text-xs text-gray-500 pt-1">A 2ª AP nasce bloqueada no Approvo, com o número da 1ª AP na observação.</p>
                 </>
               )}
               {erro && <div className="text-rose-300 text-xs bg-rose-900/30 rounded p-2">{erro}</div>}

@@ -57,8 +57,8 @@ export default async function freteAprovacaoRoutes(app) {
           motorista: r.MOTORISTA || '', placa: r.PLACA || '', tipo: r.TIPO || '',
           frete, vale, adto, adto_pago: pago, adto_aberto: Math.round((adto - pago) * 100) / 100,
           adto_aps: r.ADTO_APS || '', adto_approvo: r.ADTO_APPROVO || '',
-          // previsao do saldo do titulo final (PRO): frete - recibo - parte paga do adiantamento (a nao paga e estornada)
-          saldo_previsto: mei ? null : Math.round((frete - vale - pago) * 100) / 100,
+          // [05/11/2026] 2a AP do frete (PRO): frete - vale - adiantamento (1a AP 503), pago ou nao
+          saldo_previsto: mei ? null : Math.round((frete - vale - adto) * 100) / 100,
           status: r.TIT_STATUS, msg: r.TIT_ST_MSG || '', aprov2_dt: r.APROV2_DT || '', aprov2_por: r.APROV2_POR || '',
         };
       }),

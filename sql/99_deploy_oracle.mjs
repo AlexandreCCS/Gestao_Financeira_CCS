@@ -21,7 +21,25 @@ const FILES = [
   { f: '02_pck_saldos_banco.sql',    mode: 'slash' },
   { f: '03_pck_conciliacao.sql',     mode: 'slash' },
   { f: '04_pck_fluxo_previo.sql',    mode: 'slash' },
-  { f: '05_pck_fluxo_previo_func.sql', mode: 'slash' }
+  { f: '05_pck_fluxo_previo_func.sql', mode: 'slash' },
+  // [14/05/2026 - Alexandre Carvalho] 06 estava faltando na lista de deploy
+  { f: '06_pck_gfin_docs.sql',       mode: 'slash' },
+  // [14/05/2026 - Alexandre Carvalho] admin de permissoes (tabelas + seed)
+  { f: '07_admin_permissoes.sql',    mode: 'slash' },
+  // [14/05/2026 - Alexandre Carvalho] modulo Inadimplencia no catalogo
+  { f: '08_inadimplencia_modulo.sql', mode: 'slash' },
+  // [14/05/2026 - Alexandre Carvalho] Inadimplencia > Bloqueios: log + logger.
+  // Obs: a instrumentacao das procedures CCS_P_BLOQUEIA_CLIENTE / _RESERVA e
+  // feita a parte (deploy_bloqueios.mjs) - sao objetos core da Quality.
+  { f: '09_inadimplencia_bloqueios.sql', mode: 'slash' },
+  // [14/05/2026 - Alexandre Carvalho] Inteligencia de Credito Fase 1.1:
+  // modelo de dados + snapshot diario da carteira + job DBMS_SCHEDULER.
+  { f: '10_credito_snapshot.sql',     mode: 'slash' },
+  // [14/05/2026 - Alexandre Carvalho] Inteligencia de Credito Fase 1.2:
+  // refresh da estatistica nativa (FIN_PCK_ESTATISTICA) + motor de score.
+  { f: '11_credito_score.sql',        mode: 'slash' },
+  // [14/05/2026 - Alexandre Carvalho] modulo Inteligencia de Credito no catalogo
+  { f: '12_credito_modulo.sql',       mode: 'slash' }
 ];
 
 function escXml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }

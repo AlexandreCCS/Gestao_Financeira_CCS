@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Filter, FileSpreadsheet, FileText, AlertTriangle,
-  TrendingUp, Activity, Clock, Search
+  TrendingUp, Activity, Clock, Search, X, ListChecks
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
@@ -35,7 +35,25 @@ export default function Conciliacao() {
   const [busy,    setBusy]    = useState(false);
   const [err,     setErr]     = useState('');
 
+  // [01/07/2026] Modal de pendencias por conta
+  const [modalConta, setModalConta] = useState(null);   // linha da conta clicada
+  const [modalResp,  setModalResp]  = useState(null);
+  const [modalBusy,  setModalBusy]  = useState(false);
+  const [modalErr,   setModalErr]   = useState('');
+  const [modalBusca, setModalBusca] = useState('');
+
   useEffect(() => { api.saldosBancoFiliais().then(setFiliais).catch(()=>{}); }, []);
+
+  async function abrirPendentes(l) {
+    if (!l || l.qt_pend <= 0) return;
+    setModalConta(l); setModalResp(null); setModalErr(''); setModalBusca(''); setModalBusy(true);
+    try {
+      setModalResp(await api.conciliacaoPendentes(l.agn_id, l.fil_id, dataIni, dataFim));
+    } catch (e) {
+      setModalErr(e.message || 'Erro ao carregar lançamentos pendentes');
+    } finally { setModalBusy(false); }
+  }
+  function fecharModal() { setModalConta(null); setModalResp(null); setModalErr(''); }
 
   async function consultar() {
     setBusy(true); setErr('');
@@ -241,8 +259,12 @@ export default function Conciliacao() {
               <tbody>
                 {linhasFiltradas.map((l, i) => {
                   const st = statusByPct(l.pct_conc);
+                  const temPend = l.qt_pend > 0;
                   return (
-                    <tr key={i} className="border-t border-ink-700 hover:bg-ink-800/40">
+                    <tr key={i}
+                        className={`border-t border-ink-700 hover:bg-ink-800/40 ${temPend ? 'cursor-pointer' : ''}`}
+                        onClick={temPend ? () => abrirPendentes(l) : undefined}
+                        title={temPend ? 'Clique para ver os lançamentos pendentes de conciliar' : ''}>
                       <td className="p-2 pl-4 text-gray-300 text-xs">
                         <span className="text-gray-500 font-mono">{l.fil_id}</span> — {(l.fil_nome||'').slice(0, 35)}
                       </td>
@@ -254,7 +276,13 @@ export default function Conciliacao() {
                       </td>
                       <td className="p-2 text-right font-mono">{fmtN(l.qt_mov)}</td>
                       <td className="p-2 text-right font-mono text-emerald-400">{fmtN(l.qt_conc)}</td>
-                      <td className="p-2 text-right font-mono text-amber-400">{fmtN(l.qt_pend)}</td>
+                      <td className="p-2 text-right font-mono">
+                        {temPend
+                          ? <span className="inline-flex items-center gap-1 text-amber-400 underline decoration-dotted underline-offset-2">
+                              <ListChecks size={12} /> {fmtN(l.qt_pend)}
+                            </span>
+                          : <span className="text-gray-500">0</span>}
+                      </td>
                       <td className="p-2">
                         <div className="flex items-center gap-2">
                           <div className="flex-1 h-2 bg-ink-700 rounded overflow-hidden">
@@ -290,6 +318,166 @@ export default function Conciliacao() {
           </div>
         </div>
       )}
+
+      {/* [01/07/2026] Modal: lançamentos pendentes de conciliar da conta clicada */}
+      {modalConta && (
+        <ModalPendentes
+          conta={modalConta} resp={modalResp} busy={modalBusy} erro={modalErr}
+          busca={modalBusca} setBusca={setModalBusca}
+          dataIni={dataIni} dataFim={dataFim} onClose={fecharModal} />
+      )}
+    </div>
+  );
+}
+
+// Tag do tipo de contraparte
+function CpTag({ tipo }) {
+  const map = {
+    CLIENTE:    'bg-prim-700/30 text-prim-300',
+    FORNECEDOR: 'bg-amber-700/30 text-amber-300',
+    CONTA:      'bg-sky-700/30 text-sky-300',
+    OUTROS:     'bg-ink-700 text-gray-400'
+  };
+  const cls = map[tipo] || map.OUTROS;
+  const lbl = tipo === 'CLIENTE' ? 'Cliente' : tipo === 'FORNECEDOR' ? 'Fornec.'
+            : tipo === 'CONTA' ? 'Conta' : 'Outros';
+  return <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold shrink-0 ${cls}`}>{lbl}</span>;
+}
+
+function ModalPendentes({ conta, resp, busy, erro, busca, setBusca, dataIni, dataFim, onClose }) {
+  // ESC fecha
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+
+  const linhas = useMemo(() => {
+    const arr = resp?.lancamentos || [];
+    if (!busca.trim()) return arr;
+    const q = busca.toLowerCase();
+    return arr.filter(l =>
+      (l.documento || '').toLowerCase().includes(q) ||
+      (l.historico || '').toLowerCase().includes(q) ||
+      (l.cp_nome || '').toLowerCase().includes(q) ||
+      String(l.cp_id || '').includes(q) ||
+      (l.tpd || '').toLowerCase().includes(q) ||
+      String(l.fil_id).includes(q)
+    );
+  }, [resp, busca]);
+
+  const somaFiltro = useMemo(() => linhas.reduce((s, l) => s + l.valor, 0), [linhas]);
+
+  function exportXlsx() {
+    const dados = linhas.map(l => ({
+      Filial:      `${l.fil_id} - ${l.fil_nome || ''}`,
+      Vencimento:  fmtBr(l.vencto),
+      'Dt. Documento': fmtBr(l.docto),
+      'Agente banco': `${l.agn_banco_id} - ${l.agn_banco_nome || ''}`,
+      'Contraparte (tipo)': l.cp_tipo || '',
+      'Cliente/Fornecedor': l.cp_id ? `${l.cp_id} - ${l.cp_nome || ''}` : '',
+      Tipo:        l.tpd,
+      Documento:   l.documento,
+      Histórico:   l.historico,
+      Débito:      l.deb,
+      Crédito:     l.cre,
+      Valor:       l.valor
+    }));
+    const ws = XLSX.utils.json_to_sheet(dados);
+    ws['!cols'] = [ {wch:30},{wch:12},{wch:12},{wch:40},{wch:12},{wch:44},{wch:10},{wch:16},{wch:50},{wch:14},{wch:14},{wch:14} ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Pendentes');
+    XLSX.writeFile(wb, `pendentes-conc-${conta.agn_id}-fil${conta.fil_id}.xlsx`);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+         onClick={onClose}>
+      <div className="card w-full max-w-5xl max-h-[88vh] flex flex-col overflow-hidden"
+           onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="bg-ink-900 px-4 py-3 border-b border-ink-700 flex items-start gap-3">
+          <ListChecks size={18} className="text-amber-400 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-gray-100 truncate">{conta.agn_nome}</div>
+            <div className="text-xs text-gray-500">
+              cód. {conta.agn_id} · filial <span className="font-mono">{conta.fil_id}</span> {conta.fil_nome ? `— ${conta.fil_nome}` : ''}
+              {' · '}pendentes de conciliar · {fmtBr(dataIni)} a {fmtBr(dataFim)}
+            </div>
+          </div>
+          <button className="text-gray-400 hover:text-white p-1" onClick={onClose} title="Fechar (Esc)">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Toolbar */}
+        <div className="px-4 py-2 bg-ink-900/50 border-b border-ink-700 flex flex-wrap items-center gap-3 text-xs">
+          <div className="flex items-center gap-2 bg-ink-800 px-2 rounded">
+            <Search size={13} className="text-gray-500" />
+            <input className="bg-transparent outline-none py-1 w-64"
+                   placeholder="Buscar por documento, histórico, tipo..."
+                   value={busca} onChange={e => setBusca(e.target.value)} />
+          </div>
+          <span className="text-gray-400">{fmtN(linhas.length)} lançamento(s)</span>
+          <span className="text-gray-400">Soma (déb-créd): <span className={`font-mono ${somaFiltro < 0 ? 'text-rose-300' : 'text-prim-300'}`}>{fmt(somaFiltro)}</span></span>
+          {resp?.total?.truncado && (
+            <span className="text-amber-400">⚠ lista truncada em {fmtN(resp.filtro.limit)} linhas</span>
+          )}
+          <button className="btn-ghost ml-auto py-1" onClick={exportXlsx} disabled={linhas.length === 0}>
+            <FileSpreadsheet size={14} /> Excel
+          </button>
+        </div>
+
+        {erro && <div className="m-3 bg-red-900/40 text-red-200 text-sm rounded p-3">{erro}</div>}
+
+        {/* Lista */}
+        <div className="overflow-auto flex-1">
+          <table className="w-full text-sm">
+            <thead className="bg-ink-900/70 text-gray-400 uppercase text-xs sticky top-0">
+              <tr>
+                <th className="text-left p-2 pl-4">Vencimento</th>
+                <th className="text-center p-2">Filial</th>
+                <th className="text-left p-2">Cliente / Fornecedor</th>
+                <th className="text-left p-2">Tipo</th>
+                <th className="text-left p-2">Documento</th>
+                <th className="text-left p-2">Histórico</th>
+                <th className="text-right p-2 pr-4">Valor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {linhas.map((l, i) => (
+                <tr key={i} className="border-t border-ink-700 hover:bg-ink-800/40">
+                  <td className="p-2 pl-4 text-gray-300 font-mono text-xs">{fmtBr(l.vencto)}</td>
+                  <td className="p-2 text-center font-mono text-xs text-gray-400">{l.fil_id}</td>
+                  <td className="p-2 text-xs">
+                    {l.cp_id ? (
+                      <div className="flex items-center gap-1.5">
+                        <CpTag tipo={l.cp_tipo} />
+                        <span className="text-gray-200">{l.cp_nome}</span>
+                        <span className="text-gray-500 font-mono">({l.cp_id})</span>
+                      </div>
+                    ) : <span className="text-gray-600">—</span>}
+                  </td>
+                  <td className="p-2 text-xs text-gray-400">{l.tpd}</td>
+                  <td className="p-2 font-mono text-xs text-gray-300">{l.documento}</td>
+                  <td className="p-2 text-xs text-gray-300">{l.historico}</td>
+                  <td className={`p-2 pr-4 text-right font-mono font-semibold ${l.valor < 0 ? 'text-rose-400' : 'text-prim-400'}`}>
+                    {fmt(l.valor)}
+                  </td>
+                </tr>
+              ))}
+              {!busy && linhas.length === 0 && (
+                <tr><td colSpan={7} className="p-8 text-center text-gray-500">
+                  {resp ? 'Nenhum lançamento pendente no filtro.' : ''}
+                </td></tr>
+              )}
+              {busy && (
+                <tr><td colSpan={7} className="p-8 text-center text-gray-500">Carregando lançamentos...</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,0 +1,224 @@
+CREATE OR REPLACE PROCEDURE      CCS_P_BLOQUEIA_CLIENTE(pORG_IN_CODIGO INTEGER,
+                                                        pSEQ_IN_CODIGO INTEGER,
+                                                        pNOT_IN_CODIGO INTEGER) IS
+  --*******************************************************************************--
+  --NÃO INCLUIR COMMIT, POIS PROCEDURE É CHAMADA NO PROCESSO PENDENTE
+  --NÃO INCLUIR COMMIT, POIS PROCEDURE É CHAMADA NO PROCESSO PENDENTE
+  --NÃO INCLUIR COMMIT, POIS PROCEDURE É CHAMADA NO PROCESSO PENDENTE
+  --*******************************************************************************--
+  -- [07/05/2026 - ALTERADO POR ALEXANDRE CARVALHO] V2: A APROVACAO MANUAL (AGN_BO_BLOQUEIO='S')
+  -- DEIXA DE SER "ONE-SHOT POR NOTA" E PASSA A VALER PELO DIA INTEIRO. O RESET
+  -- DIARIO E FEITO PELO JOB MEGA.CCS_JOB_RESET_BLOQ_CLI (DBMS_SCHEDULER 03:00),
+  -- QUE ZERA AGN_BO_BLOQUEIO='S' -> 'N' DE TODOS OS CLIENTES. ASSIM, O CLIENTE
+  -- LIBERADO DE MANHA EMITE TODAS AS NFS DO DIA SEM REAPROVACAO, E NO DIA
+  -- SEGUINTE PRECISA DE NOVA APROVACAO.
+  vCLIENTE       NUMBER := 0;
+  vPOSSUI        VARCHAR2(1);
+  vPEDIDOS       VARCHAR2(4000);
+  vTEMBLOQUEIO   VARCHAR2(1);
+  vTIPODOCUMENTO NUMBER;
+  vEXECUTA       VARCHAR2(1);
+  vDESCONSIDERA  VARCHAR2(1) := 'N';
+  vTITULOS       VARCHAR2(4000) := '';
+  vGRUPO         VARCHAR2(1);
+  -- [11/05/2026 - ALEXANDRE CARVALHO] V3: BLOQUEIO POR SUFRAMA BLOQUEADO (CNPJa)
+  vBLOQ_SUF        VARCHAR2(1);
+  vTEMBLOQUEIO_SUF VARCHAR2(1);
+BEGIN
+  BEGIN
+    SELECT DISTINCT X.AGN_IN_CODIGO, X.TPD_IN_CODIGO
+      INTO vCLIENTE, vTIPODOCUMENTO
+      FROM MEGA.VEN_NOTAFISCAL X
+     WHERE X.ORG_IN_CODIGO = pORG_IN_CODIGO
+       AND X.SEQ_IN_CODIGO = pSEQ_IN_CODIGO
+       AND X.NOT_IN_CODIGO = pNOT_IN_CODIGO
+       AND X.NOT_CH_SITUACAO <> 'C';
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      vCLIENTE := 0;
+  END;
+  BEGIN
+    SELECT MAX(A.TPD_CH_BLOQUEIA_NOTA)
+      INTO vEXECUTA
+      FROM MEGA.Ven_Tipodocumentocmpesp A
+     WHERE A.TPD_IN_CODIGO = vTIPODOCUMENTO;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      vEXECUTA := 'S';
+  END;
+  IF NVL(vCLIENTE, 0) <> 0 AND NVL(vEXECUTA, 'N') = 'S' THEN
+    -- VERIFICA SE CLIENTE TEM ATRASO
+    BEGIN
+      SELECT DISTINCT 'S'
+        INTO vPOSSUI
+        FROM MEGA.FIN_VW_CONTASRECEBER X
+       WHERE X.SALDO_EM_ABERTO > 0
+         AND X.MOV_DT_PRORROGADO < TRUNC(SYSDATE - 2)
+         AND X.AGN_IN_CODIGO = vCLIENTE
+         AND X.TPD_ST_CODIGO NOT IN ('PDV');
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        vPOSSUI := 'N';
+    END;
+    -- VERIFICA SE CLIENTE ESTA EM GRUPO DE CREDITO
+    FOR cGR IN (SELECT DISTINCT GR.GCR_ST_CODIGO
+                FROM
+                    MEGA.VEN_AGENTESGRUPO GR
+                WHERE GR.AGN_IN_CODIGO = vCLIENTE)
+     LOOP
+        BEGIN
+          FOR cCLIGR IN (SELECT * 
+                         FROM MEGA.VEN_AGENTESGRUPO M
+                         WHERE M.GCR_ST_CODIGO = cGR.Gcr_St_Codigo)
+          LOOP
+             BEGIN
+               BEGIN
+                  SELECT DISTINCT 'S'
+                    INTO vGRUPO
+                    FROM MEGA.FIN_VW_CONTASRECEBER X
+                   WHERE X.SALDO_EM_ABERTO > 0
+                     AND X.MOV_DT_PRORROGADO < TRUNC(SYSDATE - 1)
+                     AND X.AGN_IN_CODIGO = cCLIGR.Agn_In_Codigo
+                     AND X.TPD_ST_CODIGO NOT IN ('PDV');
+                EXCEPTION
+                  WHEN NO_DATA_FOUND THEN
+                    NULL;
+                END;
+                IF NVL(vGRUPO,'N') = 'S' THEN
+                 vPOSSUI := 'S';
+                END IF;
+             END;
+          END LOOP;
+        END;
+     END LOOP;
+    vPEDIDOS := '';
+    vTITULOS := '';
+    IF NVL(vPOSSUI, 'N') = 'S' THEN
+      FOR ZI IN (SELECT X.MOV_ST_DOCUMENTO, X.FIL_IN_CODIGO
+                   FROM MEGA.FIN_VW_CONTASRECEBER X
+                  WHERE X.SALDO_EM_ABERTO > 0
+                    AND X.MOV_DT_PRORROGADO < TRUNC(SYSDATE - 2)
+                    AND X.AGN_IN_CODIGO = vCLIENTE
+                    AND X.TPD_ST_CODIGO NOT IN ('PDV')
+                    AND X.FIL_IN_CODIGO not in (401, 501)) LOOP -- #2378
+        BEGIN
+          vTITULOS := vTITULOS || ' - ' || ZI.MOV_ST_DOCUMENTO || ' - ' ||
+                      ZI.FIL_IN_CODIGO || ' - ';
+        END;
+      END LOOP;
+    END IF;
+    -- ANALISA GRUPO DE CRÉDITO
+    IF NVL(vPOSSUI, 'N') = 'S'AND NVL(vTITULOS,'N') = 'N' THEN
+      vTITULOS := vTITULOS || 'TITULOS DO GRUPO COM PENDENCIA';
+    END IF;
+    BEGIN
+      SELECT DISTINCT 'S'
+        INTO vDESCONSIDERA
+        FROM MEGA.VEN_AGENTESGRUPO AGN, MEGA.VEN_GRUPOCREDITOCMPESP GCR
+       WHERE AGN.GCR_TAB_IN_CODIGO = GCR.GCR_TAB_IN_CODIGO
+         AND AGN.GCR_PAD_IN_CODIGO = GCR.GCR_PAD_IN_CODIGO
+         AND AGN.GCR_ST_CODIGO = GCR.GCR_ST_CODIGO
+         AND NVL(GCR.GCR_ST_NAOBLOQUEIA, 'N') = 'S'
+         AND AGN.AGN_IN_CODIGO = vCLIENTE;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        vDESCONSIDERA := 'N';
+    END;
+    IF NVL(vDESCONSIDERA, 'N') = 'N' THEN
+      IF NVL(vPOSSUI, 'N') = 'S' THEN
+        -- VERIFICA SE CLIENTE POSSUI APROVACAO PENDENTE
+        BEGIN
+          SELECT DISTINCT 'S'
+            INTO vTEMBLOQUEIO
+            FROM MEGA.GLO_AGENTESCMPESP A
+           WHERE A.AGN_IN_CODIGO = vCLIENTE
+             AND NVL(A.AGN_BO_BLOQUEIO, 'N') = 'S';
+        EXCEPTION
+          WHEN NO_DATA_FOUND THEN
+            vTEMBLOQUEIO := 'N';
+        END;
+        IF NVL(vTEMBLOQUEIO, 'N') = 'N' THEN
+          -- CASO TENHA BLOQUEIO, DIGA QUAL OE DE QUAL CLIENTE TEM TITULO ATRASADO
+          BEGIN
+            -- VERIFICA QUAL PEDIDOS QUE ESTÃO BLOQUEADOS
+            FOR C IN (SELECT DISTINCT ITPITN.PE_PED_IN_CODIGO
+                        FROM MEGA.VEN_ITEMPEDI_VEN_ITEMNOT ITPITN
+                       WHERE 1 = 1
+                         AND ITPITN.NF_ORG_IN_CODIGO = pORG_IN_CODIGO
+                         AND ITPITN.NF_SEQ_IN_CODIGO = pSEQ_IN_CODIGO
+                         AND ITPITN.NF_NOT_IN_CODIGO = pNOT_IN_CODIGO) LOOP
+              BEGIN
+                vPEDIDOS := vPEDIDOS || C.PE_PED_IN_CODIGO || ', ';
+              END;
+            END LOOP;
+            vPEDIDOS := SUBSTR(vPEDIDOS, 1, LENGTH(vPEDIDOS) - 1);
+            vPEDIDOS := 'Pedido(s): ' || vPEDIDOS;
+          END;
+          BEGIN
+            INSERT INTO MEGA.CCS_TB_PEDIDOS_BLOQUEADOS
+              (ORG_IN_CODIGO,
+               SEQ_IN_CODIGO,
+               PED_ST_CODIGOS,
+               AGN_IN_CODIGO,
+               DATA_GERACAO,
+               CONTADOR)
+            VALUES
+              (pORG_IN_CODIGO,
+               pSEQ_IN_CODIGO,
+               vPEDIDOS,
+               vCLIENTE,
+               TRUNC(SYSDATE),
+               1);
+          END;
+          -- [14/05/2026 - ALTERADO POR ALEXANDRE CARVALHO] LOG DO BLOQUEIO PARA O
+          -- GESTOR FINANCEIRO CCS (MODULO INADIMPLENCIA > BLOQUEIOS). O LOGGER E
+          -- AUTONOMOUS_TRANSACTION: O REGISTRO SOBREVIVE AO ROLLBACK DESTE RAISE.
+          MEGA.CCS_P_GFIN_LOG_BLOQUEIO('NF', vCLIENTE, NULL,
+            'NF ' || pNOT_IN_CODIGO, 'FINANCEIRO', vTITULOS);
+          RAISE_APPLICATION_ERROR(-20000,
+                                  'Cliente possui titulos em aberto, favor solicitar aprovação! Titulos: ' ||
+                                  vTITULOS);
+        ELSE
+          -- [07/05/2026 - ALTERADO POR ALEXANDRE CARVALHO] V2: NAO CONSOME MAIS
+          -- A APROVACAO A CADA NF. O FLAG AGN_BO_BLOQUEIO='S' E ZERADO DIARIAMENTE
+          -- PELO JOB MEGA.CCS_JOB_RESET_BLOQ_CLI (DBMS_SCHEDULER 03:00).
+          NULL;
+        END IF;
+      END IF;
+      -- [11/05/2026 - ALEXANDRE CARVALHO] V3: BLOQUEIO POR SUFRAMA BLOQUEADO.
+      -- LE FLAG AGN_ST_BLOQ_SUFRAMA_CNPJA EM CCS_TB_AGENTES_CNPJA (CACHE DA API CNPJa,
+      -- POPULADO PELO CRON VPS srv-ccs/cnpja-suframa). RESPEITA APROVACAO MANUAL DO DIA
+      -- (GLO_AGENTESCMPESP.AGN_BO_BLOQUEIO='S') E O CRITERIO DE GRUPO ISENTO JA AVALIADO.
+      BEGIN
+        SELECT 'S'
+          INTO vBLOQ_SUF
+          FROM MEGA.CCS_TB_AGENTES_CNPJA
+         WHERE AGN_IN_CODIGO = vCLIENTE
+           AND NVL(AGN_ST_BLOQ_SUFRAMA_CNPJA, 'N') = 'S'
+           AND ROWNUM = 1;
+      EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+          vBLOQ_SUF := 'N';
+      END;
+      IF NVL(vBLOQ_SUF, 'N') = 'S' THEN
+        BEGIN
+          SELECT DISTINCT 'S'
+            INTO vTEMBLOQUEIO_SUF
+            FROM MEGA.GLO_AGENTESCMPESP A
+           WHERE A.AGN_IN_CODIGO = vCLIENTE
+             AND NVL(A.AGN_BO_BLOQUEIO, 'N') = 'S';
+        EXCEPTION
+          WHEN NO_DATA_FOUND THEN
+            vTEMBLOQUEIO_SUF := 'N';
+        END;
+        IF NVL(vTEMBLOQUEIO_SUF, 'N') = 'N' THEN
+          -- [14/05/2026 - ALTERADO POR ALEXANDRE CARVALHO] LOG DO BLOQUEIO (SUFRAMA).
+          MEGA.CCS_P_GFIN_LOG_BLOQUEIO('NF', vCLIENTE, NULL,
+            'NF ' || pNOT_IN_CODIGO, 'SUFRAMA', NULL);
+          RAISE_APPLICATION_ERROR(-20000,
+            'Cliente ' || vCLIENTE || ' bloqueado no SUFRAMA (consulta CNPJa). Faturamento bloqueado.');
+        END IF;
+      END IF;
+    END IF;
+  END IF;
+END;

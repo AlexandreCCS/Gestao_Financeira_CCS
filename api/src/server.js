@@ -6,6 +6,7 @@ import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import IORedis from 'ioredis';
 
+import { createMemRedis } from './redis-mem.js';
 import { jwtConfig } from './auth/jwt.js';
 import authRoutes         from './routes/auth.js';
 import fluxoCaixaRoutes   from './routes/fluxoCaixa.js';
@@ -13,6 +14,26 @@ import saldosBancoRoutes  from './routes/saldosBanco.js';
 import conciliacaoRoutes  from './routes/conciliacao.js';
 import fluxoPrevioRoutes  from './routes/fluxoPrevio.js';
 import fluxoDocsRoutes    from './routes/fluxoDocs.js';
+import adminRoutes        from './routes/admin.js';
+import inadimplenciaRoutes from './routes/inadimplencia.js';
+import creditoRoutes       from './routes/credito.js';
+// [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa
+import liberacaoBaixaRoutes from './routes/liberacaoBaixa.js';
+// [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes (flag de bloqueio por atraso)
+import liberacaoAgentesRoutes from './routes/liberacaoAgentes.js';
+// [09/10/2026 - Alexandre Carvalho] liberacao de troca de forma de recebimento
+import liberacaoFormaRecRoutes from './routes/liberacaoFormaRec.js';
+// [21/09/2026 - Alexandre Carvalho] Baixas/Conciliacao: baixa automatica de contas a pagar pelo extrato do banco
+import baixasExtratoRoutes from './routes/baixasExtrato.js';
+// [23/09/2026 - Alexandre Carvalho] BI Fechamento (grupo) - dashboard consolidado
+import biFechamentoRoutes from './routes/biFechamento.js';
+// [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*)
+// [30/10/2026 - Alexandre Carvalho] Frete > 2a aprovacao (fluxo novo do frete: titulo final com o adiantamento baixado)
+import freteAprovacaoRoutes from './routes/freteAprovacao.js';
+// [25/10/2026 - Alexandre Carvalho] Fase 2 Quality: Baixar e conciliar (motor, execucao, encargos, de-para, comprovante OCR, robo)
+import baixarConciliarRoutes from './routes/baixarConciliar.js';
+// [26/10/2026 - Alexandre Carvalho] Conciliacao bancaria: importacao do extrato + conferencia em niveis (Quality)
+import conciliacaoBancariaRoutes from './routes/conciliacaoBancaria.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -25,14 +46,15 @@ await app.register(cors, {
 });
 await app.register(cookie);
 await app.register(jwt, jwtConfig);
+// [09/07/2026 - Alexandre Carvalho] DEV LOCAL sem REDIS_URL: shim em memoria + rate-limit in-memory (so na copia ~/dev)
 await app.register(rateLimit, {
   global: false,
   max: 200, timeWindow: '1 minute',
-  redis: new IORedis(process.env.REDIS_URL)
+  ...(process.env.REDIS_URL ? { redis: new IORedis(process.env.REDIS_URL) } : {})
 });
 
 // Redis client + decorator
-const redis = new IORedis(process.env.REDIS_URL);
+const redis = process.env.REDIS_URL ? new IORedis(process.env.REDIS_URL) : createMemRedis();
 app.decorate('redis', redis);
 
 // Auth middleware
@@ -50,11 +72,22 @@ app.get('/health', async () => ({
 
 // Rotas
 await app.register(authRoutes);
+await app.register(biFechamentoRoutes);
 await app.register(saldosBancoRoutes);
 await app.register(conciliacaoRoutes);
 await app.register(fluxoPrevioRoutes);
 await app.register(fluxoDocsRoutes);
 await app.register(fluxoCaixaRoutes);
+await app.register(adminRoutes);
+await app.register(inadimplenciaRoutes);
+await app.register(creditoRoutes);
+await app.register(liberacaoBaixaRoutes);
+await app.register(liberacaoAgentesRoutes);
+await app.register(liberacaoFormaRecRoutes);
+await app.register(baixasExtratoRoutes);
+await app.register(freteAprovacaoRoutes);
+await app.register(baixarConciliarRoutes);
+await app.register(conciliacaoBancariaRoutes);
 
 const port = parseInt(process.env.PORT || '3000', 10);
 app.listen({ host: '0.0.0.0', port })

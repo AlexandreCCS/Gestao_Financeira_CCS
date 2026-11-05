@@ -181,7 +181,11 @@ function Tabela({ cargas, vazio, acao, feitos }) {
                 <td className="p-2 text-right">
                   {feitos
                     ? <div className="text-xs text-gray-300" title={c.msg}>{c.status === 'FINAL' ? 'título final gerado' : 'MEI: final na NF'}<div className="text-[10px] text-gray-500">{fmtBrHr(c.aprov2_dt)} · {c.aprov2_por}</div></div>
-                    : <span className="font-mono text-gray-100">{c.mei_nota ? 'na NF' : fmt(c.saldo_previsto)}</span>}
+                    : c.mei_nota
+                      ? <div className="text-right"><span className="font-mono text-gray-100">na NF</span>
+                          {/* [05/11/2026] referencia para o financeiro: nota (frete - vale) - adiantamento */}
+                          <div className="font-mono text-[10px] text-gray-500" title="Referência: nota do MEI (frete − vale) menos o adiantamento. O título nasce na entrada da NF.">saldo {fmt(c.saldo_nf)}</div></div>
+                      : <span className="font-mono text-gray-100">{fmt(c.saldo_previsto)}</span>}
                 </td>
                 <td className="p-2 text-right">{acao ? acao(c) : null}</td>
               </tr>

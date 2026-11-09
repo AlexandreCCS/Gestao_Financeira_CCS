@@ -44,8 +44,12 @@ async function contasDoBanco(banco) {
     importa_extrato: r.IMPEXT === 'S', implantacao: r.IMPLANT || null, no_escopo: num(r.ESCOPO) > 0 }));
 }
 // agencia: o Mega guarda o numero (453) ou numero+DV (32111); conta: digitos do texto (com DV) = conta do arquivo + DV (ou sem DV)
+// [09/11/2026 - Alexandre Carvalho] Bradesco manda o DV "P" quando o digito e 0 (arquivo CC0511A00.RET: 73344-P; no Mega 73344-0).
+// Antes o "P" sumia no digitos() e a conta 1003 nao era achada ("Conta nao encontrada no cadastro..."). DV nao numerico: P = 0.
 function casarConta(contas, agencia, conta, dv) {
-  const ag = String(parseInt(agencia, 10) || ''), ct = digitos(conta), alvo = new Set([`${ct}${String(dv || '').trim()}`, ct].map(digitos).filter(Boolean));
+  const dvTxt = String(dv || '').trim().toUpperCase();
+  const dvN = dvTxt === 'P' ? '0' : dvTxt;
+  const ag = String(parseInt(agencia, 10) || ''), ct = digitos(conta), alvo = new Set([`${ct}${dvN}`, ct].map(digitos).filter(Boolean));
   return contas.filter(c => {
     const a = digitos(c.agencia);
     const agOk = a === ag || (a.length === ag.length + 1 && a.startsWith(ag));

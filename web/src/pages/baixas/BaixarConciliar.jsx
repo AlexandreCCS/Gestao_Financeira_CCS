@@ -175,8 +175,12 @@ export default function BaixarConciliar() {
   const contaAtual = contas?.find(c => c.agn_id === conta);
 
   // título com os encargos editados nesta tela (o dinheiro do banco não muda; o principal se ajusta)
+  // [10/11/2026 - Alexandre Carvalho] pedido de encargos LIBERADO manda: usa os valores liberados mesmo sem edicao local.
+  // Antes, recarregar a tela depois da liberacao perdia o juros (Quality, IMPCREC 12968/003: juros 99,56 liberado,
+  // baixa saiu com juros 0 e o pedido ficou como usado). O servidor tambem confere o pedido sempre.
   const titEditado = (item, t) => {
-    const e = edits[item.id]?.tit?.[t.lancto];
+    const ped = t.pedido?.status === 'L' ? t.pedido : null;
+    const e = ped || edits[item.id]?.tit?.[t.lancto];
     if (!e) return { ...t };
     const juros = r2(e.juros), multa = r2(e.multa), desconto = r2(e.desconto);
     return { ...t, juros, multa, desconto, valor: r2(parcelaBanco(t) - juros - multa) };

@@ -915,13 +915,19 @@ export default async function baixarConciliarRoutes(app) {
         if (it.tipo === 'P') titulos.forEach((t, i) => { t.juros = r2(t.juros + r2(it.titulos[i].multa || 0)); });  // pagar: multa vira juros
         // encargos: o que o usuario mandou x o que a regra do titulo calcula hoje
         const conf = await esperadoDosTitulos(it.tipo, titulos, li.valor, it.data, P);
+        // [10/11/2026 - Alexandre Carvalho] titulo com pedido de liberacao: confere o pedido SEMPRE (antes so quando os encargos
+        // diferiam da regra — juros 0 enviado com um pedido de juros 99,56 passava e o pedido era consumido sem o juros).
         for (const t of conf) {
+          if (t.ped_id) {
+            const ped = (await megaQuery(`SELECT PED_CH_STATUS ST, PED_RE_JUROS_PED J, PED_RE_MULTA_PED M, PED_RE_DESC_PED D FROM MEGA.CCS_TB_GFIN_BXC_PEDIDO WHERE PED_IN_CODIGO = ${t.ped_id} AND MOV_SEQ_IN_CODIGO = ${t.seq} AND MOV_IN_NUMLANCTO = ${t.lancto}`))[0];
+            if (!ped || ped.ST !== 'L') throw Object.assign(new Error(`Titulo ${t.lancto}: pedido de liberacao ${!ped ? 'nao encontrado' : ped.ST === 'P' ? 'ainda pendente' : ped.ST === 'N' ? 'negado' : 'ja usado'}.`), { statusCode: 409 });
+            const pJ = it.tipo === 'P' ? r2(num(ped.J) + num(ped.M)) : r2(ped.J), pM = it.tipo === 'P' ? 0 : r2(ped.M);   // pagar: multa vira juros
+            if (difere(t.juros, pJ) || difere(t.multa, pM) || difere(t.desconto, ped.D)) throw Object.assign(new Error(`Titulo ${t.lancto}: encargos diferentes dos liberados (juros ${f2(pJ)}, multa ${f2(pM)}, desconto ${f2(ped.D)}). Recarregue a tela e baixe de novo.`), { statusCode: 409 });
+            continue;
+          }
           const alterou = !t.esperado || difere(t.juros, t.esperado.juros) || difere(t.multa, t.esperado.multa) || difere(t.desconto, t.esperado.desconto);
           if (!alterou || liberaDireto) continue;
-          if (!t.ped_id) throw Object.assign(new Error(`Titulo ${t.lancto}: encargos diferentes da regra. Peca a liberacao de encargos antes de baixar.`), { statusCode: 409 });
-          const ped = (await megaQuery(`SELECT PED_CH_STATUS ST, PED_RE_JUROS_PED J, PED_RE_MULTA_PED M, PED_RE_DESC_PED D FROM MEGA.CCS_TB_GFIN_BXC_PEDIDO WHERE PED_IN_CODIGO = ${t.ped_id} AND MOV_SEQ_IN_CODIGO = ${t.seq} AND MOV_IN_NUMLANCTO = ${t.lancto}`))[0];
-          if (!ped || ped.ST !== 'L') throw Object.assign(new Error(`Titulo ${t.lancto}: pedido de liberacao ${!ped ? 'nao encontrado' : ped.ST === 'P' ? 'ainda pendente' : ped.ST === 'N' ? 'negado' : 'ja usado'}.`), { statusCode: 409 });
-          if (difere(t.juros, ped.J) || difere(t.multa, ped.M) || difere(t.desconto, ped.D)) throw Object.assign(new Error(`Titulo ${t.lancto}: encargos diferentes dos liberados (juros ${f2(ped.J)}, multa ${f2(ped.M)}, desconto ${f2(ped.D)}).`), { statusCode: 409 });
+          throw Object.assign(new Error(`Titulo ${t.lancto}: encargos diferentes da regra. Peca a liberacao de encargos antes de baixar.`), { statusCode: 409 });
         }
         if (P.exigeComprov && !simular && li.valor >= P.comprovAcima && ['PIX', 'DOCTEDP', 'DOCTEDR'].includes(it.tpd_fin) && !it.comp_id) throw Object.assign(new Error('Comprovante obrigatorio para PIX/TED deste valor.'), { statusCode: 409 });
         r = await executarBaixa({ tipo: it.tipo, org: li.org, conta: li.conta, data: it.data, tpd_fin: it.tpd_fin || (it.tipo === 'P' ? 'PGTOM' : 'DEPR'), doc_fin: it.doc_fin || `EXT${it.cbas[0]}`, hist: it.hist || '', cbas: it.cbas, titulos, arquivo: req.body.arquivo || '', comp_id: it.comp_id }, ctx);

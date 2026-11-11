@@ -39,13 +39,28 @@ export default async function freteAprovacaoRoutes(app) {
              (SELECT LISTAGG(T.CPA_IN_AP || ' (' || T.FIL_IN_CODIGO || ')', ', ') WITHIN GROUP (ORDER BY T.FIL_IN_CODIGO) FROM MEGA.CCS_TB_FRT_TITULO T
                WHERE T.ROM_IN_CODIGO_EXP = E.ROM_IN_CODIGO_EXP AND T.TIPO = 'ADTO' AND T.STATUS = 'GERADO' AND MEGA.CCS_PCK_FRETE_TIT.F_VIVO(T.ORG_IN_CODIGO, T.MOV_IN_NUMLANCTO) = 1) AS ADTO_APS,
              (SELECT MIN(D.STATUS_DOCUMENTO) FROM MEGA.CCS_TB_FRT_TITULO T, MEGA.WGLO_ALCADA_DOCUMENTO D
-               WHERE T.ROM_IN_CODIGO_EXP = E.ROM_IN_CODIGO_EXP AND T.TIPO = 'ADTO' AND T.STATUS = 'GERADO' AND MEGA.CCS_PCK_FRETE_TIT.F_VIVO(T.ORG_IN_CODIGO, T.MOV_IN_NUMLANCTO) = 1 AND D.DOC_IN_CODIGO = T.ALC_DOC_IN_CODIGO) AS ADTO_APPROVO
+               WHERE T.ROM_IN_CODIGO_EXP = E.ROM_IN_CODIGO_EXP AND T.TIPO = 'ADTO' AND T.STATUS = 'GERADO' AND MEGA.CCS_PCK_FRETE_TIT.F_VIVO(T.ORG_IN_CODIGO, T.MOV_IN_NUMLANCTO) = 1 AND D.DOC_IN_CODIGO = T.ALC_DOC_IN_CODIGO) AS ADTO_APPROVO,
+             -- [11/11/2026] ULTIMO "REFAZER FRETE (MEI/PRO)" DO PORTAL PARA ESTE ROMANEIO (CCS_PCK_FRETE_REFAZ, sql/81 do portal da industria)
+             (SELECT MAX(TO_CHAR(F.DT_REFAZ, 'YYYY-MM-DD HH24:MI')) KEEP (DENSE_RANK LAST ORDER BY F.REF_IN_CODIGO)
+                FROM MEGA.CCS_TB_FRT_REFAZ F, MEGA.CCS_TB_FRT_REFAZ_ITEM X WHERE X.REF_IN_CODIGO = F.REF_IN_CODIGO AND X.ROM_IN_CODIGO_EXP = E.ROM_IN_CODIGO_EXP) AS REFEITO_DT,
+             (SELECT MAX(F.USU_IN_CODIGO) KEEP (DENSE_RANK LAST ORDER BY F.REF_IN_CODIGO)
+                FROM MEGA.CCS_TB_FRT_REFAZ F, MEGA.CCS_TB_FRT_REFAZ_ITEM X WHERE X.REF_IN_CODIGO = F.REF_IN_CODIGO AND X.ROM_IN_CODIGO_EXP = E.ROM_IN_CODIGO_EXP) AS REFEITO_USU,
+             (SELECT MAX(F.MOTIVO) KEEP (DENSE_RANK LAST ORDER BY F.REF_IN_CODIGO)
+                FROM MEGA.CCS_TB_FRT_REFAZ F, MEGA.CCS_TB_FRT_REFAZ_ITEM X WHERE X.REF_IN_CODIGO = F.REF_IN_CODIGO AND X.ROM_IN_CODIGO_EXP = E.ROM_IN_CODIGO_EXP) AS REFEITO_MOTIVO,
+             (SELECT MAX(X.FIL_ANTES || '|' || X.MEI_ANTES || '|' || X.FIL_DEPOIS || '|' || X.MEI_DEPOIS) KEEP (DENSE_RANK LAST ORDER BY F.REF_IN_CODIGO)
+                FROM MEGA.CCS_TB_FRT_REFAZ F, MEGA.CCS_TB_FRT_REFAZ_ITEM X WHERE X.REF_IN_CODIGO = F.REF_IN_CODIGO AND X.ROM_IN_CODIGO_EXP = E.ROM_IN_CODIGO_EXP) AS REFEITO_ROTA
         FROM MEGA.CCS_TB_FRT_EFETIVACAO E, MEGA.CUS_TB_ROMANEIO_EXP R
        WHERE R.ROM_IN_CODIGO_EXP = E.ROM_IN_CODIGO_EXP AND E.DT_CANCELAMENTO IS NULL
          AND (E.TIT_STATUS = 'ADTO' OR (E.TIT_STATUS IN ('FINAL', 'APROV2_NF') AND E.APROV2_DT >= TRUNC(SYSDATE) - ${dias}))
        ORDER BY CASE WHEN E.TIT_STATUS = 'ADTO' THEN 0 ELSE 1 END, R.ROM_DT_EXPEDICAO, E.ROM_IN_CODIGO_EXP`);
     const p = param[0] || {};
     const filPad = num(p.FIL_PADRAO_PGTO) || 700;
+    // [11/11/2026] nome de quem refez o frete (GLO_GRUPO_USUARIO), numa consulta so; rotulo da filial de pagamento antes/depois
+    const usus = [...new Set(rows.map(r => num(r.REFEITO_USU)).filter(Boolean))];
+    const nomes = {};
+    if (usus.length) for (const u of await megaQuery(`SELECT GRU_IN_CODIGO AS COD, NVL(GRU_ST_NOMECOMPLETO, GRU_ST_NOME) AS NOME FROM MEGA.GLO_GRUPO_USUARIO WHERE GRU_IN_CODIGO IN (${usus.join(',')})`)) nomes[num(u.COD)] = u.NOME;
+    const rotFil = (f, m) => `${f}${num(f) === filPad ? (m === 'S' ? ' (MEI acima do limite)' : ' PRO') : ' MEI'}`;
+    const rota = ([fa, ma, fd, md]) => ({ de: rotFil(fa, ma), para: rotFil(fd, md) });
     return {
       fluxo_ligado: p.FLUXO_ADTO === 'S',
       pct_pro: num(p.ADTO_PCT_PRO), pct_mei: num(p.ADTO_PCT_MEI),
@@ -63,6 +78,11 @@ export default async function freteAprovacaoRoutes(app) {
           // [05/11/2026] MEI: o final nasce na NF; mostra so como referencia o saldo = nota (frete - vale) - adiantamento
           saldo_nf: mei ? Math.round((frete - vale - adto) * 100) / 100 : null,
           status: r.TIT_STATUS, msg: r.TIT_ST_MSG || '', aprov2_dt: r.APROV2_DT || '', aprov2_por: r.APROV2_POR || '',
+          // [11/11/2026] frete refeito no portal (MEI/PRO): quando, quem, motivo e de/para
+          refeito: r.REFEITO_DT ? {
+            dt: r.REFEITO_DT, por: nomes[num(r.REFEITO_USU)] || `usuário ${num(r.REFEITO_USU)}`, motivo: r.REFEITO_MOTIVO || '',
+            ...rota(String(r.REFEITO_ROTA || '|||').split('|')),
+          } : null,
         };
       }),
     };

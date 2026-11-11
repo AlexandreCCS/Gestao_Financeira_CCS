@@ -121,6 +121,7 @@ export default function AprovacaoFrete() {
             </div>
             <div className="p-5 space-y-2 text-sm">
               <div className="text-gray-400">{confirmar.transp} · {confirmar.transp_nome} — {confirmar.motorista || 'sem motorista'} {confirmar.placa}</div>
+              {confirmar.refeito && <Refeito r={confirmar.refeito} grande />}
               {confirmar.mei_nota ? (
                 <p className="text-gray-300">MEI com nota (filial {confirmar.fil_pag}): o título final nasce na <b>entrada da NF do MEI</b>. Esta aprovação só
                   registra; o adiantamento {confirmar.adto_aps} é vinculado na entrada da nota.</p>
@@ -169,7 +170,9 @@ function Tabela({ cargas, vazio, acao, feitos }) {
             const ap = APPROVO[c.adto_approvo];
             return (
               <tr key={c.efe} className="border-t border-ink-800 hover:bg-ink-800/40 align-top">
-                <td className="p-2"><div className="font-mono text-gray-100">{c.rom}</div><div className="text-[11px] text-gray-500">{fmtBr(c.dt_exp)} · {c.descricao}</div></td>
+                <td className="p-2"><div className="font-mono text-gray-100">{c.rom}</div><div className="text-[11px] text-gray-500">{fmtBr(c.dt_exp)} · {c.descricao}</div>
+                  {/* [11/11/2026] frete refeito no portal (Refazer MEI/PRO): a 2a aprovacao anterior foi desfeita */}
+                  {c.refeito && <Refeito r={c.refeito} />}</td>
                 <td className="p-2"><div className="text-gray-200">{c.transp_nome || c.transp}</div><div className="text-[11px] text-gray-500">{c.motorista || '—'} {c.placa}</div></td>
                 <td className="p-2 text-xs">{c.mei_nota ? <span className="px-1.5 py-0.5 rounded bg-acc-500/15 text-acc-500">MEI {c.fil_pag}</span> : <span className="px-1.5 py-0.5 rounded bg-ink-700 text-gray-300">PRO</span>}</td>
                 <td className="p-2 text-right font-mono">{fmt(c.frete)}</td>
@@ -213,4 +216,15 @@ function Kpi({ label, value, sub }) {
       {sub && <div className="text-xs text-gray-500 mt-0.5">{sub}</div>}
     </div>
   );
+}
+
+// [11/11/2026 - Alexandre Carvalho] marca do "Refazer frete (MEI/PRO)" do portal da indústria: quando, quem, de/para e o motivo
+function Refeito({ r, grande }) {
+  return (
+    <div className={`mt-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-1 ${grande ? 'text-xs' : 'text-[10px]'} text-amber-300`} title={r.motivo}>
+      <div className="font-semibold">Refeito em {fmtBrHr(r.dt)} por {r.por}</div>
+      <div className="text-amber-200/80">de {r.de} para {r.para}</div>
+      {r.motivo && <div className="text-amber-200/70 italic">“{r.motivo}”</div>}
+    </div>
+  )
 }

@@ -204,7 +204,9 @@ export default function BaixarConciliar() {
         const x = out.resultados?.[0] || { status: 'X', mensagem: 'O servidor não devolveu resultado.' };
         setRes(r => ({ ...r, [p.ref]: { fase: 'fim', simular, ...x } })); saida.push({ ...p, ...x });
       } catch (e) {
-        const x = { status: 'X', mensagem: e.message || 'Falha ao falar com o servidor.' };
+        // [12/11/2026] o texto legivel vem em e.detalhe (e.message e o codigo, ex.: 'Bad Request'); limite de lista vira frase em portugues
+        const lim = /titulos must NOT have more than (\d+) items/.exec(e.detalhe || '');
+        const x = { status: 'X', mensagem: lim ? `Mais de ${lim[1]} títulos numa só baixa. Divida a baixa ou faça pelo Mega e concilie aqui.` : (e.detalhe || e.message || 'Falha ao falar com o servidor.') };
         setRes(r => ({ ...r, [p.ref]: { fase: 'fim', simular, ...x } })); saida.push({ ...p, ...x });
       }
     }

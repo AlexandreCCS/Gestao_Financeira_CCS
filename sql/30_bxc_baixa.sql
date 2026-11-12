@@ -340,7 +340,8 @@ BEGIN
         W_N := W_N + 1;
         W_ITEM := REGEXP_SUBSTR(P_TITULOS, '[^;]+', 1, W_N);
         EXIT WHEN W_ITEM IS NULL;
-        IF W_N > 30 THEN RAISE_APPLICATION_ERROR(-20100, 'Mais de 30 titulos numa so baixa.'); END IF;
+        -- [12/11/2026 - Alexandre Carvalho] limite 30 -> 100 (SISPAG BMB com 52 titulos). W_MOVS/LOG_ST_MOVS (2000) cabem ~200 lanctos.
+        IF W_N > 100 THEN RAISE_APPLICATION_ERROR(-20100, 'Mais de 100 titulos numa so baixa.'); END IF;
         DECLARE
             I PLS_INTEGER := W_N; R R_TIT; T MEGA.FIN_MOVIMENTO%ROWTYPE; W_DOCT VARCHAR2(60); W_EXISTE NUMBER;
         BEGIN

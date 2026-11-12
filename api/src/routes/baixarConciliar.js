@@ -901,7 +901,7 @@ export default async function baixarConciliarRoutes(app) {
         ref: { type: 'string', maxLength: 40 }, tipo: { type: 'string', enum: ['P', 'R'] }, conta: { type: 'integer' }, org: { type: 'integer' }, data: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
         tpd_fin: { type: 'string', maxLength: 10 }, doc_fin: { type: 'string', maxLength: 30 }, hist: { type: 'string', maxLength: 400 }, comp_id: { type: 'integer' },
         cbas: { type: 'array', minItems: 1, maxItems: 50, items: { type: 'integer', minimum: 1 } },
-        titulos: { type: 'array', minItems: 1, maxItems: 30, items: { type: 'object', required: ['seq', 'lancto', 'valor'], properties: {
+        titulos: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['seq', 'lancto', 'valor'], properties: {   // [12/11/2026] 30 -> 100, igual a CCS_P_GFIN_BXC_X
           seq: { type: 'integer' }, lancto: { type: 'integer' }, valor: { type: 'number' }, juros: { type: 'number' }, multa: { type: 'number' }, desconto: { type: 'number' }, ped_id: { type: 'integer' } } } } } } } } } }
   }, async (req) => {
     const simular = req.body.simular === true, P = await params(), ctx = ctxDe(req, simular), liberaDireto = temModulo(req.user, MOD_ENCARGOS);

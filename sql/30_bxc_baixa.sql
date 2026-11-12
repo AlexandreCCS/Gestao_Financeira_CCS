@@ -416,6 +416,12 @@ BEGIN
     W_ACAOM := PCK_MEGA.PROXIMASEQUENCIATAB(59);
     W_FIN := PCK_MEGA.PROXIMASEQUENCIATAB(C_MOV_TAB);
     W_HIST := SUBSTR(NVL(P_HIST, CASE WHEN W_RECEBER THEN 'RECEBIMENTO' ELSE 'PAGAMENTO' END || ' PELO EXTRATO (GESTOR FINANCEIRO)'), 1, 500);
+    -- [12/11/2026 - Alexandre Carvalho] numero do documento SO COM DIGITOS: os TPDs do Mega sao numerados e 'EXT<cba>' (com MOV_CH_SONUMEROS='S')
+    -- quebrava a numeracao da baixa manual ("Erro na Numeracao do Documento"). A referencia original vai para o complemento do historico.
+    IF NOT REGEXP_LIKE(NVL(W_DOC, 'x'), '^[0-9]*[1-9][0-9]*$') THEN
+        W_HIST := SUBSTR(W_HIST || ' - ' || NVL(W_DOC, 'EXT' || REGEXP_SUBSTR(P_CBAS, '[0-9]+')), 1, 500);
+        W_DOC := CASE WHEN REGEXP_LIKE(REGEXP_REPLACE(W_DOC, '[^0-9]', ''), '[1-9]') THEN REGEXP_REPLACE(W_DOC, '[^0-9]', '') ELSE REGEXP_SUBSTR(P_CBAS, '[0-9]+') END;
+    END IF;
     SELECT SUBSTR(MAX(A.AGN_ST_NOME), 1, 100) INTO W_NOME FROM MEGA.GLO_AGENTES A
      WHERE A.AGN_TAB_IN_CODIGO = TITS(1).T.AGN_TAB_IN_CODIGO AND A.AGN_PAD_IN_CODIGO = TITS(1).T.AGN_PAD_IN_CODIGO AND A.AGN_IN_CODIGO = TITS(1).T.AGN_IN_CODIGO;
     IF TITS.COUNT > 1 THEN W_NOME := SUBSTR('DIVERSOS - ' || W_NOME, 1, 100); END IF;

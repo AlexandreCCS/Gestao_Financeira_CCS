@@ -88,6 +88,11 @@ BEGIN
     W_NUM := P_CBA;
     W_DOC := SUBSTR(NVL(TRIM(B.CBA_ST_DOCUMENTO), TO_CHAR(P_CBA)), 1, 20);
     IF W_DOC IS NULL OR REGEXP_LIKE(W_DOC, '^0*$') THEN W_DOC := 'EXT' || P_CBA; END IF;
+    -- [12/11/2026 - Alexandre Carvalho] numero do documento SO COM DIGITOS: os TPDs do Mega sao numerados e 'EXT<cba>' (com MOV_CH_SONUMEROS='S')
+    -- quebrava a numeracao da baixa manual ("Erro na Numeracao do Documento"). A referencia original vai para o complemento do historico.
+    IF NOT REGEXP_LIKE(NVL(W_DOC, 'x'), '^[0-9]*[1-9][0-9]*$') THEN
+        W_DOC := CASE WHEN REGEXP_LIKE(REGEXP_REPLACE(W_DOC, '[^0-9]', ''), '[1-9]') THEN REGEXP_REPLACE(W_DOC, '[^0-9]', '') ELSE TO_CHAR(P_CBA) END;
+    END IF;
     W_OBS := SUBSTR(NVL(P_HIST, NVL(D.DEP_ST_HISTORICO, 'TARIFA BANCARIA') || ' - ' || NVL(B.CBA_ST_HISTORICO, '') || ' ' || TO_CHAR(W_DATA, 'DD/MM/YYYY') || ' (GESTOR FINANCEIRO EXTRATO ' || P_CBA || ')'), 1, 500);
     SELECT NVL(MAX(F.FPA_IN_CONTADOR), 0) + 1 INTO W_CONT FROM MEGA.FIN_FATURAPAGAR F
      WHERE F.ORG_TAB_IN_CODIGO = C_ORG_TAB AND F.ORG_PAD_IN_CODIGO = C_ORG_PAD AND F.ORG_IN_CODIGO = P_ORG AND F.ORG_TAU_ST_CODIGO = C_ORG_TAU

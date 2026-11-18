@@ -205,4 +205,77 @@ export default async function conciliacaoCartaoRoutes(app) {
     return { arquivos: rows.map(r => ({ id: num(r.ID), nome: r.NOME, tipo: r.TIPO, filial: num(r.FIL), estab: r.ESTAB || '', estab_nome: r.ESTAB_NOME || '', status: r.ST, mensagem: r.MSG || '',
       lidas: num(r.LIDAS), novas: num(r.NOVAS), ja: num(r.JA), erros: num(r.ERROS), bruto: num(r.BRUTO), liquido: num(r.LIQ), usuario: r.USU || '', em: r.EM, periodo: { ini: r.DI, fim: r.DF } })) };
   });
+
+  // ------------------------------------------------------------------------------------------------ efetivar na FIN_CONCILIACAO (conta REDE)
+  // [18/11/2026 - Alexandre Carvalho] "botao efetivar que lance na fin_conciliacao na conta 27619 o que importamos": so o relatorio de recebimentos
+  // (P credito liquido, D/A/C debito), por filial, linhas com data anterior a hoje e ainda sem CBA. SQL: sql/41_cbc_efetiva.sql (CCS_P_GFIN_CBC_EFETIVA).
+  const CRIT = fil => `L.FIL_IN_CODIGO = ${fil} AND L.LIN_CH_SITUACAO = 'I' AND L.CBA_IN_SEQUENCIA IS NULL AND L.LIN_CH_ABA IN ('P','D','A','C')
+       AND A.ARQ_IN_CODIGO = L.ARQ_IN_CODIGO AND A.ARQ_CH_TIPO = 'R' AND A.ARQ_CH_STATUS = 'I'`;
+  const VALOR = `CASE WHEN L.LIN_CH_ABA = 'P' THEN NVL(L.LIN_RE_LIQUIDO, NVL(L.LIN_RE_BRUTO,0) - NVL(L.LIN_RE_MDR,0)) WHEN L.LIN_CH_ABA = 'D' THEN NVL(L.LIN_RE_BRUTO,0) ELSE NVL(L.LIN_RE_LIQUIDO, NVL(L.LIN_RE_BRUTO,0)) END`;
+  async function contaRede() {
+    const p = await megaQuery(`SELECT PARAM_ST_CHAVE CH, PARAM_RE_VALOR VL FROM MEGA.CCS_TB_GFIN_PARAM WHERE PARAM_ST_CHAVE IN ('CBC_CONTA','CBC_BANCO')`);
+    const conta = num(p.find(x => x.CH === 'CBC_CONTA')?.VL), banco = num(p.find(x => x.CH === 'CBC_BANCO')?.VL);
+    if (!conta) throw falha(500, 'Parametro CBC_CONTA (conta financeira da Rede) nao cadastrado.');
+    const n = (await megaQuery(`SELECT SUBSTR(AGN_ST_NOME,1,60) NOME FROM MEGA.GLO_AGENTES WHERE AGN_TAB_IN_CODIGO = 53 AND AGN_IN_CODIGO = ${conta}`))[0];
+    return { conta, banco, nome: (n?.NOME || '').trim() };
+  }
+  // o que seria lancado agora nesta filial (so leitura) + o que ainda espera (data de hoje)
+  app.get('/cbc/efetivar/pendentes', opera, async (req) => {
+    const fil = num(req.query.filial);
+    if (!fil) throw falha(400, 'Informe a filial.');
+    const c = await contaRede();
+    const porAba = await megaQuery(`SELECT L.LIN_CH_ABA ABA, CASE WHEN L.LIN_DT_DATA < TRUNC(SYSDATE) THEN 'P' ELSE 'H' END Q, COUNT(*) N, SUM(${VALOR}) V,
+        TO_CHAR(MIN(L.LIN_DT_DATA),'YYYY-MM-DD') DI, TO_CHAR(MAX(L.LIN_DT_DATA),'YYYY-MM-DD') DF
+        FROM MEGA.CCS_TB_GFIN_CBC_LINHA L, MEGA.CCS_TB_GFIN_CBC_ARQUIVO A WHERE ${CRIT(fil)} GROUP BY L.LIN_CH_ABA, CASE WHEN L.LIN_DT_DATA < TRUNC(SYSDATE) THEN 'P' ELSE 'H' END`);
+    const linhas = await megaQuery(`SELECT * FROM (SELECT L.ARQ_IN_CODIGO ARQ, L.LIN_IN_ORDEM ORD, L.LIN_CH_ABA ABA, TO_CHAR(L.LIN_DT_DATA,'YYYY-MM-DD') DT, L.LIN_ST_STATUS ST, L.LIN_ST_MODALIDADE MOD, L.LIN_ST_BANDEIRA BAND,
+        L.LIN_IN_PARCELAS NP, L.LIN_IN_PARCELA PARC, L.LIN_ST_NSU NSU, L.LIN_ST_DESCRICAO DESCR, ${VALOR} V, CASE WHEN L.LIN_DT_DATA < TRUNC(SYSDATE) THEN 'P' ELSE 'H' END Q
+        FROM MEGA.CCS_TB_GFIN_CBC_LINHA L, MEGA.CCS_TB_GFIN_CBC_ARQUIVO A WHERE ${CRIT(fil)} ORDER BY L.LIN_DT_DATA, L.ARQ_IN_CODIGO, L.LIN_IN_ORDEM) WHERE ROWNUM <= 1500`);
+    const ja = (await megaQuery(`SELECT COUNT(*) N, NVL(SUM(CBA_RE_VALOR),0) V FROM MEGA.FIN_CONCILIACAO WHERE AGN_TAB_IN_CODIGO = 53 AND AGN_IN_CODIGO = ${c.conta} AND AGN_TAU_ST_CODIGO = 'N' AND FIL_IN_CODIGO = ${fil}`))[0];
+    const soma = (q, nat) => r2(porAba.filter(x => x.Q === q && (nat === 'C' ? x.ABA === 'P' : x.ABA !== 'P')).reduce((s, x) => s + num(x.V), 0));
+    const qt = q => porAba.filter(x => x.Q === q).reduce((s, x) => s + num(x.N), 0);
+    const datas = porAba.filter(x => x.Q === 'P').flatMap(x => [x.DI, x.DF]).filter(Boolean).sort();
+    return { conta: c, filial: fil, prontas: { linhas: qt('P'), creditos: soma('P', 'C'), debitos: soma('P', 'D'), periodo: { ini: datas[0] || null, fim: datas[datas.length - 1] || null },
+        por_aba: Object.fromEntries(porAba.filter(x => x.Q === 'P').map(x => [ABAS[x.ABA] || x.ABA, { linhas: num(x.N), valor: r2(x.V) }])) },
+      aguardando_hoje: { linhas: qt('H'), creditos: soma('H', 'C'), debitos: soma('H', 'D') },
+      ja_na_conta: { linhas: num(ja?.N), valor: r2(ja?.V) },
+      linhas: linhas.map(l => ({ arq: num(l.ARQ), ordem: num(l.ORD), aba: l.ABA, data: l.DT, status: l.ST || '', modalidade: l.MOD || '', bandeira: l.BAND || '', parcelas: l.NP ? num(l.NP) : null, parcela: l.PARC ? num(l.PARC) : null,
+        nsu: l.NSU || '', descricao: l.DESCR || '', natureza: l.ABA === 'P' ? 'C' : 'D', valor: r2(l.V), hoje: l.Q === 'H' })) };
+  });
+  async function lerEfetivacao(id) {
+    const e = (await megaQuery(`SELECT E.*, TO_CHAR(E.EFE_DT_INCLUSAO,'YYYY-MM-DD HH24:MI') EM, TO_CHAR(E.EFE_DT_PROCESSADO,'YYYY-MM-DD HH24:MI') PROC, TO_CHAR(E.EFE_DT_INI,'YYYY-MM-DD') DI, TO_CHAR(E.EFE_DT_FIM,'YYYY-MM-DD') DF
+        FROM MEGA.CCS_TB_GFIN_CBC_EFETIVA E WHERE E.EFE_IN_CODIGO = ${num(id)}`))[0];
+    if (!e) throw falha(404, 'Efetivacao nao encontrada.');
+    return { id: num(e.EFE_IN_CODIGO), status: e.EFE_CH_STATUS, mensagem: e.EFE_ST_MENSAGEM || '', filial: num(e.FIL_IN_CODIGO), conta: num(e.CTA_AGN_IN_CODIGO), periodo: { ini: e.DI, fim: e.DF },
+      linhas: num(e.EFE_IN_QT_LINHAS), puladas: num(e.EFE_IN_QT_PULADAS), creditos: num(e.EFE_RE_CREDITOS), debitos: num(e.EFE_RE_DEBITOS), usuario: e.USU_ST_LOGIN || '', em: e.EM, processado_em: e.PROC };
+  }
+  // simular = 'valida tudo e desfaz'; sem simular = grava (tudo ou nada). Uma efetivacao por chamada.
+  app.post('/cbc/efetivar', { ...opera, schema: { body: { type: 'object', required: ['filial'], properties: { filial: { type: 'integer', minimum: 1 }, simular: { type: 'boolean' } } } } }, async (req) => {
+    const fil = num(req.body.filial), simular = req.body.simular === true;
+    const fils = await filiaisValidas();
+    if (!fils.some(f => f.fil === fil)) throw falha(400, `Filial ${fil} invalida.`);
+    const c = await contaRede();
+    // nada pronto = responde antes de abrir uma efetivacao (senao o historico enche de "recusada: nada a efetivar")
+    const n = num((await megaQuery(`SELECT COUNT(*) N FROM MEGA.CCS_TB_GFIN_CBC_LINHA L, MEGA.CCS_TB_GFIN_CBC_ARQUIVO A WHERE ${CRIT(fil)} AND L.LIN_DT_DATA < TRUNC(SYSDATE)`))[0]?.N);
+    if (!n) throw falha(400, 'Nada a efetivar nesta filial: nenhuma linha importada do relatorio de recebimentos com data anterior a hoje e ainda sem lancamento.');
+    const id = num((await megaQuery(`SELECT MEGA.CCS_SEQ_GFIN_CBC_EFETIVA.NEXTVAL ID FROM DUAL`))[0].ID);
+    await megaExec(`BEGIN INSERT INTO MEGA.CCS_TB_GFIN_CBC_EFETIVA (EFE_IN_CODIGO, FIL_IN_CODIGO, CTA_AGN_IN_CODIGO, EFE_CH_STATUS, USU_IN_CODIGO, USU_ST_LOGIN)
+      VALUES (${id}, ${fil}, ${c.conta}, 'P', ${num(req.user.sub)}, '${txt(login(req), 60)}'); COMMIT; END;`);
+    try { await megaExec(`BEGIN MEGA.CCS_P_GFIN_CBC_EFETIVA(${id}, '${simular ? 'S' : 'N'}'); END;`); }
+    catch (e) {
+      const r = await lerEfetivacao(id).catch(() => null);
+      if (r && r.status !== 'P') return r;
+      throw falha(502, `Falha de comunicacao com o Mega (${String(e.message || e).slice(0, 160)}). Veja o historico de efetivacoes antes de tentar de novo.`);
+    }
+    const r = await lerEfetivacao(id);
+    if (simular && r.status === 'P') { await megaExec(`BEGIN DELETE FROM MEGA.CCS_TB_GFIN_CBC_EFETIVA WHERE EFE_IN_CODIGO = ${id} AND EFE_CH_STATUS = 'P'; COMMIT; END;`).catch(() => {}); }
+    req.log.info({ gfin: 'cbc_efetivar', id, fil, simular, usu: req.user.sub, status: r.status }, 'efetivacao Rede na FIN_CONCILIACAO');
+    return r;
+  });
+  app.get('/cbc/efetivacoes', opera, async (req) => {
+    const fil = num(req.query.filial);
+    const rows = await megaQuery(`SELECT * FROM (SELECT E.EFE_IN_CODIGO ID, E.FIL_IN_CODIGO FIL, E.CTA_AGN_IN_CODIGO CTA, E.EFE_CH_STATUS ST, E.EFE_ST_MENSAGEM MSG, E.EFE_IN_QT_LINHAS N, E.EFE_RE_CREDITOS C, E.EFE_RE_DEBITOS D,
+        E.USU_ST_LOGIN USU, TO_CHAR(E.EFE_DT_PROCESSADO,'YYYY-MM-DD HH24:MI') EM, TO_CHAR(E.EFE_DT_INI,'YYYY-MM-DD') DI, TO_CHAR(E.EFE_DT_FIM,'YYYY-MM-DD') DF
+        FROM MEGA.CCS_TB_GFIN_CBC_EFETIVA E WHERE E.EFE_CH_STATUS IN ('E','X') ${fil ? `AND E.FIL_IN_CODIGO = ${fil}` : ''} ORDER BY E.EFE_IN_CODIGO DESC) WHERE ROWNUM <= 80`);
+    return { efetivacoes: rows.map(r => ({ id: num(r.ID), filial: num(r.FIL), conta: num(r.CTA), status: r.ST, mensagem: r.MSG || '', linhas: num(r.N), creditos: num(r.C), debitos: num(r.D), usuario: r.USU || '', em: r.EM, periodo: { ini: r.DI, fim: r.DF } })) };
+  });
 }

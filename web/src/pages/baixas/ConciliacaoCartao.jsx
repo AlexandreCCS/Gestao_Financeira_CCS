@@ -94,9 +94,14 @@ export default function ConciliacaoCartao() {
   async function importar(estab) {
     const id = arq.prep[estab]?.id;
     setArq(a => ({ ...a, imp: { ...a.imp, [estab]: { rodando: true } } }));
-    try { const r = await api.cbcImportar(id); setArq(a => ({ ...a, imp: { ...a.imp, [estab]: r } })); }
+    try {
+      const r = await api.cbcImportar(id); setArq(a => ({ ...a, imp: { ...a.imp, [estab]: r } }));
+      if (r.status === 'I' && r.tipo === 'R') { setFilialEfetivar(String(r.filial)); setTickEfetivar(t => t + 1); }   // recebimentos importados: já aponta a seção 2 para a filial
+    }
     catch (e) { setArq(a => ({ ...a, imp: { ...a.imp, [estab]: { status: 'X', mensagem: e.detalhe || e.message } } })); }
   }
+  const [filialEfetivar, setFilialEfetivar] = useState('');
+  const [tickEfetivar, setTickEfetivar] = useState(0);
 
   const T = arq?.ex.totais;
   return (
@@ -147,9 +152,12 @@ export default function ConciliacaoCartao() {
           )}
         </section>
 
-        {/* ------------------------------------------------ 2. conferência (próxima etapa) */}
+        {/* ------------------------------------------------ 2. efetivar na conta REDE (FIN_CONCILIACAO) */}
+        <Efetivar filiais={filiais} filialInicial={filialEfetivar} tick={tickEfetivar} />
+
+        {/* ------------------------------------------------ 3. conferência (próxima etapa) */}
         <section aria-labelledby="cbc-conf" className="space-y-4">
-          <h2 id="cbc-conf" className="text-lg font-semibold">2 · Conferência com o caixa e o MEGA</h2>
+          <h2 id="cbc-conf" className="text-lg font-semibold">3 · Conferência com o caixa e o MEGA</h2>
           <div className={`${card} p-8 text-center ${muted}`}>Próxima etapa: cruzar as vendas da Rede com os cartões lançados no caixa das lojas e os recebimentos com a baixa automática do financeiro, por filial.</div>
         </section>
       </div>
@@ -275,6 +283,126 @@ function BlocoFilial({ e, tipo, filiais, fil, setFil, prep, imp, onValidar, onIm
           {imp && !imp.rodando && <Aviso tipo={imp.status === 'I' ? 'ok' : 'err'}>{imp.mensagem}</Aviso>}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------------------------------------ 2. Efetivar (FIN_CONCILIACAO, conta REDE)
+// [18/11/2026 - Alexandre Carvalho] Só o relatório de recebimentos entra: parcela paga = crédito pelo líquido; depósito, ajuste e cancelamento = débito.
+// Linhas do dia da emissão ficam "aguardando" (a Rede ainda pode mudar o dia corrente). Validar = roda tudo e desfaz; Efetivar = grava, tudo ou nada.
+function Efetivar({ filiais, filialInicial, tick }) {
+  const [fil, setFil] = useState(filialInicial || '');
+  const [dados, setDados] = useState(null); const [erro, setErro] = useState(''); const [carregando, setCarregando] = useState(false);
+  const [verLinhas, setVerLinhas] = useState(false);
+  const [val, setVal] = useState(null); const [efe, setEfe] = useState(null);
+  const [verHist, setVerHist] = useState(false);
+  useEffect(() => { if (filialInicial) setFil(filialInicial); }, [filialInicial, tick]);
+  const carregar = async (f = fil) => {
+    if (!f) { setDados(null); return; }
+    setCarregando(true); setErro(''); setVal(null); setEfe(null);
+    try { setDados(await api.cbcPendentes(f)); } catch (e) { setDados(null); setErro(e.detalhe || e.message); } finally { setCarregando(false); }
+  };
+  useEffect(() => { carregar(fil); }, [fil, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const P = dados?.prontas;
+  const podeValidar = !!fil && P?.linhas > 0 && !val?.rodando && !efe?.rodando && efe?.status !== 'E';
+  const podeEfetivar = val?.status === 'P' && /Nada foi gravado/.test(val.mensagem || '') && !efe?.rodando && efe?.status !== 'E';
+  async function validar() { setVal({ rodando: true }); try { setVal(await api.cbcEfetivar({ filial: Number(fil), simular: true })); } catch (e) { setVal({ status: 'X', mensagem: e.detalhe || e.message }); } }
+  async function efetivar() { setEfe({ rodando: true }); try { const r = await api.cbcEfetivar({ filial: Number(fil), simular: false }); setEfe(r); if (r.status === 'E') { const d = await api.cbcPendentes(fil).catch(() => null); if (d) setDados(d); } } catch (e) { setEfe({ status: 'X', mensagem: e.detalhe || e.message }); } }
+  return (
+    <section aria-labelledby="cbc-efe" className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <h2 id="cbc-efe" className="text-lg font-semibold">2 · Efetivar na conta {dados?.conta ? `${dados.conta.conta} · ${dados.conta.nome}` : 'REDE'} (FIN_CONCILIACAO)</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="sr-only" htmlFor="cbc-fil">Filial</label>
+          <select id="cbc-fil" className={`${campo} w-full sm:w-auto sm:max-w-[440px]`} value={fil} onChange={e => setFil(e.target.value)}>
+            <option value="">Escolha a filial…</option>
+            {filiais.map(f => <option key={f.fil} value={f.fil}>{f.fil} · {f.nome}</option>)}
+          </select>
+          <button className={btnSec} disabled={!fil || carregando} onClick={() => carregar()}>{carregando ? <Loader2 size={14} className="animate-spin" /> : <History size={14} />} Recarregar</button>
+          <button className={btnSec} onClick={() => setVerHist(v => !v)} aria-expanded={verHist}>Efetivações</button>
+        </div>
+      </div>
+      {verHist && <HistoricoEfetivacoes filial={fil} onFechar={() => setVerHist(false)} />}
+      {erro && <Aviso tipo="err">{erro}</Aviso>}
+      {!fil && <div className={`${card} p-8 text-center ${muted}`}>Escolha a filial, ou importe um relatório de recebimentos acima, para ver o que está pronto para lançar na conta REDE.</div>}
+      {fil && carregando && !dados && <div className={`${card} p-8 text-center ${muted}`}><Loader2 className="inline animate-spin mr-2" size={16} />Conferindo as linhas importadas…</div>}
+      {dados && (
+        <div className={`${card} p-5 space-y-5`}>
+          <div className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-3">
+            <Numero rotulo="Prontas para lançar" valor={fmtN(P.linhas)} sub={P.periodo.ini ? `${fmtBr(P.periodo.ini)} a ${fmtBr(P.periodo.fim)}` : 'nada pendente'} cor={P.linhas ? 'var(--cb-ok)' : undefined} />
+            <Numero rotulo="Créditos (parcelas pagas)" valor={fmt(P.creditos)} sub={`${fmtN(P.por_aba?.pagamento?.linhas || 0)} parcela(s)`} cor="var(--cb-ok)" />
+            <Numero rotulo="Débitos (depósitos, ajustes, cancel.)" valor={fmt(P.debitos)} sub={`${fmtN(P.por_aba?.deposito?.linhas || 0)} depósito(s) · ${fmtN((P.por_aba?.ajuste?.linhas || 0) + (P.por_aba?.cancelamento?.linhas || 0))} outro(s)`} cor="var(--cb-err)" />
+            <Numero rotulo="Saldo que fica na Rede" valor={fmt(P.creditos - P.debitos)} sub="créditos − débitos" />
+            <Numero rotulo="Aguardando (data de hoje)" valor={fmtN(dados.aguardando_hoje.linhas)} sub={`${fmt(dados.aguardando_hoje.creditos)} créd. · ${fmt(dados.aguardando_hoje.debitos)} déb.`} cor={dados.aguardando_hoje.linhas ? 'var(--cb-warn)' : undefined} />
+            <Numero rotulo="Já na conta REDE (esta filial)" valor={fmtN(dados.ja_na_conta.linhas)} sub={fmt(dados.ja_na_conta.valor)} />
+          </div>
+          {dados.aguardando_hoje.linhas > 0 && <Aviso tipo="info">{fmtN(dados.aguardando_hoje.linhas)} linha(s) com a data de hoje ficam aguardando: a Rede ainda altera o dia corrente. Elas entram na próxima efetivação, a partir de amanhã.</Aviso>}
+          <div>
+            <button className={`text-sm ${muted} inline-flex items-center gap-1 hover:text-[var(--cb-text)]`} onClick={() => setVerLinhas(v => !v)} aria-expanded={verLinhas}>
+              {verLinhas ? <ChevronDown size={15} /> : <ChevronRight size={15} />} Ver as {fmtN(dados.linhas.length)} linhas
+            </button>
+            {verLinhas && (
+              <div className="mt-3 overflow-x-auto rounded-xl border border-[var(--cb-line)]">
+                <table className="w-full text-sm min-w-[860px]">
+                  <thead className={`text-xs ${muted} bg-[var(--cb-soft)]`}><tr>
+                    <th className="text-left px-3 py-2">Quando</th><th className="text-left px-3 py-2">Data</th><th className="text-left px-3 py-2">Aba</th><th className="text-left px-3 py-2">Status</th>
+                    <th className="text-left px-3 py-2">Bandeira · modalidade</th><th className="text-left px-3 py-2">NSU</th><th className="text-right px-3 py-2">Valor na conta REDE</th>
+                  </tr></thead>
+                  <tbody>{dados.linhas.map(l => (
+                    <tr key={`${l.arq}-${l.ordem}`} className="border-t border-[var(--cb-line)]">
+                      <td className="px-3 py-2"><Chip cor={l.hoje ? 'var(--cb-warn)' : 'var(--cb-ok)'}>{l.hoje ? 'aguarda' : 'pronta'}</Chip></td>
+                      <td className="px-3 py-2 tabular-nums">{fmtBr(l.data)}</td>
+                      <td className="px-3 py-2 text-xs">{ABA[l.aba] || l.aba}</td>
+                      <td className="px-3 py-2 text-xs">{l.status || '—'}</td>
+                      <td className="px-3 py-2 text-xs">{l.bandeira || '—'} · {l.modalidade || '—'}{l.parcelas > 1 ? ` ${l.parcela}/${l.parcelas}` : ''}{l.descricao ? ` · ${l.descricao}` : ''}</td>
+                      <td className={`px-3 py-2 font-mono text-xs ${muted}`}>{l.nsu || '—'}</td>
+                      <td className="px-3 py-2 text-right tabular-nums" style={{ color: l.natureza === 'C' ? 'var(--cb-ok)' : 'var(--cb-err)' }}>{l.natureza === 'C' ? '+' : '−'} {fmt(l.valor)}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3 pt-1 border-t border-[var(--cb-line)]">
+            <div className="pt-4 flex flex-wrap items-center gap-3">
+              <button className={btnSec} disabled={!podeValidar} onClick={validar}>{val?.rodando ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Validar</button>
+              <button className={btnPrim} disabled={!podeEfetivar} onClick={() => { if (window.confirm(`Lançar ${fmtN(P.linhas)} linha(s) na FIN_CONCILIACAO da conta ${dados.conta.conta} (filial ${fil})? Créditos ${fmt(P.creditos)}, débitos ${fmt(P.debitos)}. A gravação é tudo ou nada.`)) efetivar(); }}>
+                {efe?.rodando ? <Loader2 size={15} className="animate-spin" /> : <CreditCard size={15} />} Efetivar {podeEfetivar ? `${fmtN(P.linhas)} linha(s)` : ''}
+              </button>
+              {!P.linhas && <span className={`text-sm ${muted}`}>Nada pronto para lançar nesta filial.</span>}
+            </div>
+            <div className="w-full space-y-2">
+              {val && !val.rodando && <Aviso tipo={val.status === 'X' ? 'err' : 'ok'}>{val.mensagem}</Aviso>}
+              {efe && !efe.rodando && <Aviso tipo={efe.status === 'E' ? 'ok' : 'err'}>{efe.mensagem}{efe.status === 'E' ? ' As linhas já aparecem na Conciliação Bancária do Mega, conta REDE, com situação pendente.' : ''}</Aviso>}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function HistoricoEfetivacoes({ filial, onFechar }) {
+  const [lista, setLista] = useState(null); const [erro, setErro] = useState('');
+  useEffect(() => { setLista(null); api.cbcEfetivacoes(filial || '').then(r => setLista(r.efetivacoes)).catch(e => setErro(e.detalhe || e.message)); }, [filial]);
+  return (
+    <div className={`${card} p-5 space-y-3`}>
+      <div className="flex items-center justify-between"><h3 className="font-semibold">Efetivações na conta REDE{filial ? ` · filial ${filial}` : ''}</h3><button className={btnSec} onClick={onFechar} aria-label="Fechar"><X size={14} /></button></div>
+      {erro && <Aviso tipo="err">{erro}</Aviso>}
+      {!lista && !erro && <div className={muted}><Loader2 className="inline animate-spin mr-2" size={14} />Carregando…</div>}
+      {lista && lista.length === 0 && <div className={`text-sm ${muted}`}>Nenhuma efetivação ainda.</div>}
+      {lista && lista.length > 0 && (
+        <div className="overflow-x-auto"><table className="w-full text-sm min-w-[760px]">
+          <thead className={`text-xs ${muted}`}><tr><th className="text-left py-2">Quando</th><th className="text-left">Filial</th><th className="text-left">Período</th><th className="text-right">Linhas</th><th className="text-right">Créditos</th><th className="text-right">Débitos</th><th className="text-left pl-4">Situação</th></tr></thead>
+          <tbody>{lista.map(a => (
+            <tr key={a.id} className="border-t border-[var(--cb-line)]">
+              <td className="py-2 tabular-nums">{fmtBr(a.em)} {String(a.em || '').slice(11)}<span className={`block text-xs ${muted}`}>{a.usuario}</span></td>
+              <td>{a.filial}<span className={`block text-xs ${muted}`}>conta {a.conta}</span></td>
+              <td className="tabular-nums text-xs">{fmtBr(a.periodo.ini)} a {fmtBr(a.periodo.fim)}</td><td className="text-right">{fmtN(a.linhas)}</td><td className="text-right tabular-nums">{fmt(a.creditos)}</td><td className="text-right tabular-nums">{fmt(a.debitos)}</td>
+              <td className="pl-4 text-xs">{a.status === 'E' ? <Chip cor="var(--cb-ok)">efetivada</Chip> : <Chip cor="var(--cb-err)">recusada</Chip>}<span className={`block ${muted}`}>{a.mensagem}</span></td>
+            </tr>))}</tbody>
+        </table></div>
+      )}
     </div>
   );
 }

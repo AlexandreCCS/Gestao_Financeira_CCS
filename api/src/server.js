@@ -34,6 +34,8 @@ import freteAprovacaoRoutes from './routes/freteAprovacao.js';
 import baixarConciliarRoutes from './routes/baixarConciliar.js';
 // [26/10/2026 - Alexandre Carvalho] Conciliacao bancaria: importacao do extrato + conferencia em niveis (Quality)
 import conciliacaoBancariaRoutes from './routes/conciliacaoBancaria.js';
+// [18/11/2026 - Alexandre Carvalho] Conciliacao bancaria - Cartao: importacao dos arquivos da Rede por filial
+import conciliacaoCartaoRoutes from './routes/conciliacaoCartao.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -88,6 +90,7 @@ await app.register(baixasExtratoRoutes);
 await app.register(freteAprovacaoRoutes);
 await app.register(baixarConciliarRoutes);
 await app.register(conciliacaoBancariaRoutes);
+await app.register(conciliacaoCartaoRoutes);
 
 const port = parseInt(process.env.PORT || '3000', 10);
 app.listen({ host: '0.0.0.0', port })

@@ -228,6 +228,13 @@ export const api = {
   cbConferencia: (p) => req(`/cb/conferencia?${new URLSearchParams(p)}`),
   cbCandidatos: (p) => req(`/cb/candidatos?${new URLSearchParams(p)}`),
   cbConciliar: (body) => req('/cb/conciliar', { method: 'POST', body: JSON.stringify(body) }),
+  // [18/11/2026 - Alexandre Carvalho] Conciliacao bancaria - Cartao (arquivos da Rede, por filial)
+  cbcFiliais: () => req('/cbc/filiais'),
+  cbcAnalisar: (body) => req('/cbc/analisar', { method: 'POST', body: JSON.stringify(body) }),
+  cbcPreparar: (body) => req('/cbc/preparar', { method: 'POST', body: JSON.stringify(body) }),
+  cbcImportar: (id) => req(`/cbc/arquivos/${id}/importar`, { method: 'POST' }),
+  cbcArquivos: (filial) => req(`/cbc/arquivos${filial ? `?filial=${filial}` : ''}`),
+  cbcArquivo: (id) => req(`/cbc/arquivos/${id}`),
   bxcPendentes: (params) => req(`/bxc/pendentes?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
   bxcTitulos: (params) => req(`/bxc/titulos?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
   bxcExecutar: (body) => req('/bxc/executar', { method: 'POST', body: JSON.stringify(body) }),

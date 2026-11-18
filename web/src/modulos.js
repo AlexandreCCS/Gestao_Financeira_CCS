@@ -58,6 +58,7 @@ export const MODULOS = {
     rota:  '/baixas-conciliacao/conciliacao',   // [26/10/2026] entrada do menu = Conciliacao bancaria
     submenus: [
       { rota: '/baixas-conciliacao/conciliacao', label: 'Conciliação bancária' },
+      { rota: '/baixas-conciliacao/cartao',  label: 'Conciliação bancária · Cartão' },   // [18/11/2026] arquivos da Rede por filial
       { rota: '/baixas-conciliacao/baixar',  label: 'Baixar e conciliar' },
       { rota: '/baixas-conciliacao/extrato', label: 'Extrato do banco × Mega' },
       { rota: '/baixas-conciliacao/config',  label: 'Configurar' },

@@ -9,6 +9,7 @@
 // Nada grava em tabela nativa do Mega; a conferencia com o caixa/financeiro e a proxima etapa.
 import crypto from 'node:crypto';
 import { megaQuery, megaExec } from '../soap/mega.js';
+import { conferirCredito } from './cbcCredito.js';   // [19/11/2026] conferencia do credito (Rede x Mega), so leitura
 
 const MOD_OPERA = 'BAIXAS_CONCILIACAO';
 const num = v => Number(v || 0);
@@ -271,6 +272,8 @@ export default async function conciliacaoCartaoRoutes(app) {
     req.log.info({ gfin: 'cbc_efetivar', id, fil, simular, usu: req.user.sub, status: r.status }, 'efetivacao Rede na FIN_CONCILIACAO');
     return r;
   });
+  // [19/11/2026 - ALEXANDRE CARVALHO] CONFERENCIA DO CARTAO DE CREDITO por filial (Rede x baixa automatica do Mega), so leitura. Ver cbcCredito.js.
+  app.get('/cbc/conferencia/credito', opera, async (req) => conferirCredito(megaQuery, req.query.filial));
   app.get('/cbc/efetivacoes', opera, async (req) => {
     const fil = num(req.query.filial);
     const rows = await megaQuery(`SELECT * FROM (SELECT E.EFE_IN_CODIGO ID, E.FIL_IN_CODIGO FIL, E.CTA_AGN_IN_CODIGO CTA, E.EFE_CH_STATUS ST, E.EFE_ST_MENSAGEM MSG, E.EFE_IN_QT_LINHAS N, E.EFE_RE_CREDITOS C, E.EFE_RE_DEBITOS D,

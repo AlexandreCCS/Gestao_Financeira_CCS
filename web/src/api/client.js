@@ -238,6 +238,7 @@ export const api = {
   cbcPendentes: (filial) => req(`/cbc/efetivar/pendentes?filial=${filial}`),                                   // [18/11/2026] Efetivar na conta REDE
   cbcEfetivar: (body) => req('/cbc/efetivar', { method: 'POST', body: JSON.stringify(body) }),
   cbcEfetivacoes: (filial) => req(`/cbc/efetivacoes${filial ? `?filial=${filial}` : ''}`),
+  cbcConfCredito: (filial) => req(`/cbc/conferencia/credito?filial=${filial}`),                                // [19/11/2026] conferencia do credito
   bxcPendentes: (params) => req(`/bxc/pendentes?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
   bxcTitulos: (params) => req(`/bxc/titulos?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
   bxcExecutar: (body) => req('/bxc/executar', { method: 'POST', body: JSON.stringify(body) }),

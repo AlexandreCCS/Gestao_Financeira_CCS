@@ -158,9 +158,102 @@ export default function ConciliacaoCartao() {
         {/* ------------------------------------------------ 3. conferência (próxima etapa) */}
         <section aria-labelledby="cbc-conf" className="space-y-4">
           <h2 id="cbc-conf" className="text-lg font-semibold">3 · Conferência com o caixa e o MEGA</h2>
-          <div className={`${card} p-8 text-center ${muted}`}>Próxima etapa: cruzar as vendas da Rede com os cartões lançados no caixa das lojas e os recebimentos com a baixa automática do financeiro, por filial.</div>
+          <ConferenciaCredito filiais={filiais} filialInicial={filialEfetivar} tick={tickEfetivar} />
         </section>
       </div>
+    </div>
+  );
+}
+
+// [19/11/2026 - Alexandre Carvalho] 3 · Conferência do CARTÃO DE CRÉDITO por filial: cada parcela da Rede (paga ou futura) × a parcela baixada
+// pela baixa automática do Mega (data da venda + nº da parcela + valor; 2ª passada sem a parcela; 3ª por soma de dois). Só leitura (api cbcCredito.js).
+const SITC = {
+  CONCILIADA: ['conciliada', 'var(--cb-ok)'], AGRUPADA: ['conciliada por soma', 'var(--cb-ok)'], DIF_CENTAVO: ['diferença de centavo', 'var(--cb-info)'],
+  DIF_DATA: ['diferença de data', 'var(--cb-warn)'], DIF_PARCELA: ['parcela diferente', 'var(--cb-warn)'], SO_REDE: ['só na Rede', 'var(--cb-err)'],
+  SO_MEGA: ['só no Mega', 'var(--cb-err)'], FUTURA: ['futura (prevista)', 'var(--cb-muted)'], FUTURA_SO_REDE: ['futura sem parcela no Mega', 'var(--cb-warn)'],
+};
+function ConferenciaCredito({ filiais, filialInicial, tick }) {
+  const [fil, setFil] = useState(filialInicial || '');
+  const [dados, setDados] = useState(null); const [erro, setErro] = useState(''); const [carregando, setCarregando] = useState(false);
+  const [filtro, setFiltro] = useState('pendencias');
+  useEffect(() => { if (filialInicial) setFil(filialInicial); }, [filialInicial, tick]);
+  const carregar = async (f = fil) => {
+    if (!f) { setDados(null); return; }
+    setCarregando(true); setErro('');
+    try { setDados(await api.cbcConfCredito(f)); } catch (e) { setDados(null); setErro(e.detalhe || e.message); } finally { setCarregando(false); }
+  };
+  useEffect(() => { carregar(fil); }, [fil, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const R = dados?.resumo || {};
+  const n = k => R[k]?.parcelas || 0, v = k => R[k]?.valor || 0;
+  const ok = n('CONCILIADA') + n('AGRUPADA'), pend = n('DIF_DATA') + n('DIF_PARCELA') + n('SO_REDE') + n('SO_MEGA') + n('FUTURA_SO_REDE');
+  const linhas = (dados?.linhas || []).filter(l => filtro === 'todas' ? true : filtro === 'pendencias' ? !['CONCILIADA', 'AGRUPADA', 'FUTURA', 'DIF_CENTAVO'].includes(l.situacao) : l.situacao === filtro);
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className={`text-sm ${muted}`}>Cartão de <b>crédito</b>: cada parcela da Rede × a parcela baixada pela baixa automática do Mega.</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="sr-only" htmlFor="cbc-fil-conf">Filial</label>
+          <select id="cbc-fil-conf" className={`${campo} w-full sm:w-auto sm:max-w-[440px]`} value={fil} onChange={e => setFil(e.target.value)}>
+            <option value="">Escolha a filial…</option>
+            {filiais.map(f => <option key={f.fil} value={f.fil}>{f.fil} · {f.nome}</option>)}
+          </select>
+          <button className={btnSec} disabled={!fil || carregando} onClick={() => carregar()}>{carregando ? <Loader2 size={14} className="animate-spin" /> : <History size={14} />} Conferir</button>
+        </div>
+      </div>
+      {erro && <Aviso tipo="err">{erro}</Aviso>}
+      {!fil && <div className={`${card} p-8 text-center ${muted}`}>Escolha a filial para conferir as parcelas de crédito da Rede com o Mega.</div>}
+      {fil && carregando && !dados && <div className={`${card} p-8 text-center ${muted}`}><Loader2 className="inline animate-spin mr-2" size={16} />Conferindo as parcelas…</div>}
+      {dados?.aviso && <Aviso tipo="info">{dados.aviso}</Aviso>}
+      {dados && !dados.aviso && (
+        <div className={`${card} p-5 space-y-5`}>
+          <div className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-3">
+            <Numero rotulo="Parcelas pagas pela Rede" valor={fmtN(dados.totais.rede_pagas.parcelas)} sub={`${fmt(dados.totais.rede_pagas.bruto)} · ${fmtBr(dados.periodo?.ini)} a ${fmtBr(dados.periodo?.fim)}`} />
+            <Numero rotulo="Conciliadas" valor={fmtN(ok)} sub={`${fmt(v('CONCILIADA') + v('AGRUPADA'))}${n('AGRUPADA') ? ` · ${fmtN(n('AGRUPADA'))} por soma` : ''}`} cor="var(--cb-ok)" />
+            <Numero rotulo="Diferença de centavo" valor={fmtN(n('DIF_CENTAVO'))} sub="arredondamento da parcela" cor={n('DIF_CENTAVO') ? 'var(--cb-info)' : undefined} />
+            <Numero rotulo="Pendências" valor={fmtN(pend)} sub={`só Rede ${fmtN(n('SO_REDE') + n('FUTURA_SO_REDE'))} · só Mega ${fmtN(n('SO_MEGA'))} · data/parcela ${fmtN(n('DIF_DATA') + n('DIF_PARCELA'))}`} cor={pend ? 'var(--cb-err)' : 'var(--cb-ok)'} />
+            <Numero rotulo="Futuras (a receber)" valor={fmtN(dados.totais.rede_futuras.parcelas)} sub={fmt(dados.totais.rede_futuras.bruto)} />
+            <Numero rotulo="Taxa Rede × tarifa 956" valor={fmt(dados.totais.taxa_casadas.rede)} sub={`Mega 956: ${fmt(dados.totais.taxa_casadas.mega_956)} (parcelas casadas)`} />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {[['pendencias', `Pendências (${pend})`], ['todas', `Todas (${dados.linhas.length})`], ...Object.keys(SITC).filter(k => n(k)).map(k => [k, `${SITC[k][0]} (${n(k)})`])].map(([k, t]) => (
+              <button key={k} className={`${btnSec} ${filtro === k ? 'bg-[var(--cb-soft)] font-semibold' : ''}`} onClick={() => setFiltro(k)}>{t}</button>
+            ))}
+          </div>
+          <div className="overflow-x-auto rounded-xl border border-[var(--cb-line)]">
+            <table className="w-full text-sm min-w-[1100px]">
+              <thead className={`text-xs ${muted} bg-[var(--cb-soft)]`}><tr>
+                <th className="text-left px-3 py-2">Situação</th>
+                <th className="text-left px-3 py-2">Rede: pagamento</th><th className="text-left px-3 py-2">venda · parcela</th><th className="text-left px-3 py-2">bandeira · NSU</th>
+                <th className="text-right px-3 py-2">bruto</th><th className="text-right px-3 py-2">taxa</th>
+                <th className="text-left px-3 py-2">Mega: doc · parcela</th><th className="text-left px-3 py-2">venda · baixa</th><th className="text-right px-3 py-2">valor</th><th className="text-right px-3 py-2">tarifa 956</th>
+                <th className="text-left px-3 py-2">Observação</th>
+              </tr></thead>
+              <tbody>{linhas.map((l, i) => {
+                const r = l.rede, m = l.mega, [rot, cor] = SITC[l.situacao] || [l.situacao, 'var(--cb-muted)'];
+                const obs = l.dica || (l.dif ? [l.dif.valor ? `dif. ${fmt(l.dif.valor)}` : '', l.dif.dias ? `${l.dif.dias > 0 ? '+' : ''}${l.dif.dias} dia(s)` : '', m && !m.tarifa && r?.mdr ? 'sem tarifa 956' : ''].filter(Boolean).join(' · ') : '');
+                return (
+                  <tr key={i} className="border-t border-[var(--cb-line)] align-top">
+                    <td className="px-3 py-2"><Chip cor={cor}>{rot}</Chip></td>
+                    <td className="px-3 py-2 tabular-nums">{r ? <>{fmtBr(r.pagto)}{r.aba === 'F' ? <span className={`text-xs ${muted}`}> (prevista)</span> : null}</> : '—'}</td>
+                    <td className="px-3 py-2 tabular-nums text-xs">{r ? `${fmtBr(r.venda)} · ${r.parcela}/${r.parcelas}` : '—'}</td>
+                    <td className="px-3 py-2 text-xs">{r ? <>{r.bandeira}<span className={`font-mono ${muted}`}> {r.nsu}</span></> : '—'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{r ? fmt(r.bruto) : '—'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-xs">{r ? fmt(r.mdr) : '—'}</td>
+                    <td className="px-3 py-2 text-xs">{m ? `${m.doc} · ${m.parcela}` : '—'}<div className={muted}>{m?.forma || ''}</div></td>
+                    <td className="px-3 py-2 tabular-nums text-xs">{m ? `${fmtBr(m.venda)} · ${fmtBr(m.baixa)}` : '—'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{m ? fmt(m.valor) : '—'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-xs">{m ? fmt(m.tarifa) : '—'}</td>
+                    <td className="px-3 py-2 text-xs" style={{ color: l.dica ? 'var(--cb-info)' : undefined }}>{obs || ''}</td>
+                  </tr>
+                );
+              })}
+              {!linhas.length && <tr><td colSpan={11} className={`px-3 py-6 text-center ${muted}`}>Nada nesta situação.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className={`text-xs ${muted}`}>Casamento: data da venda (±1 dia) + nº da parcela + valor (±R$ 0,02); depois sem a parcela; depois por soma de dois (uma maquininha para dois pedidos, ou dois cartões para um pedido). O caixa não grava NSU.</div>
+        </div>
+      )}
     </div>
   );
 }

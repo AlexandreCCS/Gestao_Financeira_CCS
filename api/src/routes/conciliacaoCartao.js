@@ -12,6 +12,7 @@ import { megaQuery, megaExec } from '../soap/mega.js';
 import { conferirCredito } from './cbcCredito.js';   // [19/11/2026] conferencia do credito (Rede x Mega), so leitura
 
 const MOD_OPERA = 'BAIXAS_CONCILIACAO';
+const EFETIVAR_LIGADO = false;   // [20/11/2026] POST /cbc/efetivar desligado (ver comentario na rota)
 const num = v => Number(v || 0);
 const r2 = v => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
 const ehData = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
@@ -251,6 +252,9 @@ export default async function conciliacaoCartaoRoutes(app) {
   }
   // simular = 'valida tudo e desfaz'; sem simular = grava (tudo ou nada). Uma efetivacao por chamada.
   app.post('/cbc/efetivar', { ...opera, schema: { body: { type: 'object', required: ['filial'], properties: { filial: { type: 'integer', minimum: 1 }, simular: { type: 'boolean' } } } } }, async (req) => {
+    // [20/11/2026 - ALEXANDRE CARVALHO] DESLIGADO: a baixa do cartao cai no Itau da loja, a 27619 nunca tem par na conciliacao do Mega.
+    // A perna do Mega e feita no extrato do Itau. As 112 linhas da efetivacao 9 foram apagadas (backup CCS_TB_BKP_CBC_FINCONC_20112026).
+    if (!EFETIVAR_LIGADO) throw falha(410, 'Efetivar na conta REDE esta desligado desde 20/11/2026: a conciliacao do cartao e feita no extrato do Itau da loja.');
     const fil = num(req.body.filial), simular = req.body.simular === true;
     const fils = await filiaisValidas();
     if (!fils.some(f => f.fil === fil)) throw falha(400, `Filial ${fil} invalida.`);

@@ -26,6 +26,7 @@ const muted = 'text-[var(--cb-muted)]';
 const btnPrim = 'inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium bg-[var(--cb-prim)] text-white hover:opacity-90 disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cb-prim)] focus-visible:ring-offset-2';
 const btnSec = 'inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm border border-[var(--cb-line)] text-[var(--cb-text)] hover:bg-[var(--cb-soft)] disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cb-prim)]';
 const campo = 'bg-[var(--cb-card2)] border border-[var(--cb-line)] rounded-lg px-2.5 py-1.5 text-sm text-[var(--cb-text)] outline-none focus:border-[var(--cb-prim)]';
+const EFETIVAR_VISIVEL = false;   // [20/11/2026] seção "Efetivar na 27619" escondida (ver comentário no JSX)
 const ABA = { V: 'venda', P: 'pagamento', F: 'futuro', D: 'depósito', A: 'ajuste', C: 'cancelamento' };
 const SIT = { nova: ['nova', 'var(--cb-ok)'], ja: ['já importada', 'var(--cb-muted)'], erro: ['erro', 'var(--cb-err)'], importada: ['importada', 'var(--cb-ok)'] };
 
@@ -152,12 +153,14 @@ export default function ConciliacaoCartao() {
           )}
         </section>
 
-        {/* ------------------------------------------------ 2. efetivar na conta REDE (FIN_CONCILIACAO) */}
-        <Efetivar filiais={filiais} filialInicial={filialEfetivar} tick={tickEfetivar} />
+        {/* ------------------------------------------------ 2. efetivar na conta REDE (FIN_CONCILIACAO)
+            [20/11/2026 - Alexandre Carvalho] ESCONDIDA: a baixa do cartão cai no Itaú da loja, então a 27619 nunca tem par na conciliação
+            do Mega; a perna do Mega é feita no extrato do Itaú. Componente mantido para poder voltar (EFETIVAR_VISIVEL). */}
+        {EFETIVAR_VISIVEL && <Efetivar filiais={filiais} filialInicial={filialEfetivar} tick={tickEfetivar} />}
 
-        {/* ------------------------------------------------ 3. conferência (próxima etapa) */}
+        {/* ------------------------------------------------ 2. conferência */}
         <section aria-labelledby="cbc-conf" className="space-y-4">
-          <h2 id="cbc-conf" className="text-lg font-semibold">3 · Conferência com o caixa e o MEGA</h2>
+          <h2 id="cbc-conf" className="text-lg font-semibold">2 · Conferência com o caixa e o MEGA</h2>
           <ConferenciaCredito filiais={filiais} filialInicial={filialEfetivar} tick={tickEfetivar} />
         </section>
       </div>

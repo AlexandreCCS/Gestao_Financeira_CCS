@@ -593,7 +593,7 @@ export async function motor(agn, filtro = {}) {
         itens.push({ ...it, situacao: 'conciliar', tipo: 'C', nivel: 2, confianca: conf, selecionado: conf === 'media', loja: true, movs: achado,
           motivo: `Conta de loja: ${como} (titulos ja baixados pela baixa automatica)` });
       } else {
-        itens.push({ ...it, situacao: 'decidir', tipo: 'R', confianca: 'baixa', loja: true, movs_pool: pool.slice(0, 60),
+        itens.push({ ...it, situacao: 'decidir', tipo: 'R', confianca: 'baixa', loja: true, movs_pool: pool.slice(0, 400),   // [23/11] 60 cortava o dia cheio da 21725 (a tela filtra)
           motivo: rede ? 'Deposito da Rede em conta de loja: concilie pela Conciliacao de Cartao ou marque aqui os lancamentos do Mega que somam o valor do banco'
             : pool.length ? 'Conta de loja: marque os lancamentos do Mega que somam o valor do banco (titulos ja baixados pela baixa automatica)' : 'Conta de loja: nenhum lancamento pendente no Mega na janela; lance pelo Mega ou registre como adiantamento' });
       }

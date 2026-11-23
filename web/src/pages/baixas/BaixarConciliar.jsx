@@ -121,6 +121,7 @@ export default function BaixarConciliar() {
   const [secoes, setSecoes]   = useState({ chdev: true, decidir: true, real: true, lote: true, conciliar: true, info: false, feitas: true });
   const [feitas, setFeitas]   = useState([]);
   const [modal, setModal]     = useState(null);     // { tipo: 'encargos'|'pedido'|'ignorar'|'desfazer', ... }
+  const [filtroPool, setFiltroPool] = useState({});   // [23/11] conta de loja: filtro da lista de lancamentos do Mega
   const [escolha, setEscolha] = useState({});       // id -> Set(lancto) na seção Decidir
   const [manual, setManual]   = useState({});       // [28/10/2026] id -> títulos escolhidos no painel de busca (o item vira "pronto")
   const [lanc, setLanc]       = useState({});       // [28/10/2026] id -> { tipo: ADCLI|ADFOR|TRANSF, agn, nome, classe, ccusto, cba2, conta_nome } (flag marcada)
@@ -431,15 +432,18 @@ export default function BaixarConciliar() {
                 <div className="space-y-1">
                   <div className="text-[11px] uppercase tracking-wider text-gray-500">Conciliar com lançamentos do Mega (conta de loja: os títulos já foram baixados)</div>
                   {(item.movs_pool || []).length === 0 && <div className="text-xs text-gray-500">Nenhum lançamento pendente na conta perto desta data. Lance pelo Mega ou use as opções de lançamento acima.</div>}
+                  {(item.movs_pool || []).length > 0 && <input className="input w-full py-1 text-xs" placeholder={`Filtrar ${fmtN(item.movs_pool.length)} lançamento(s): cliente, documento, tipo ou valor (ex.: 996,00) e Enter`} defaultValue={filtroPool[item.id] || ''}
+                    onKeyDown={e => { if (e.key === 'Enter') { const v = e.currentTarget.value; setFiltroPool(f => ({ ...f, [item.id]: v })); } }} onBlur={e => { const v = e.currentTarget.value; if (v !== (filtroPool[item.id] || '')) setFiltroPool(f => ({ ...f, [item.id]: v })); }} />}
                   <div className="max-h-72 overflow-y-auto pr-1 space-y-0.5">
-                  {(item.movs_pool || []).map(m => {
-                    const sel = escolha[item.id] || new Set();
+                  {(() => { const sel = escolha[item.id] || new Set(); const fq = String(filtroPool[item.id] || '').trim().toUpperCase(); const fv = fq.replace(/\./g, '').replace(',', '.');
+                    const lista = (item.movs_pool || []).filter(m => sel.has(m.lancto) || !fq || `${m.contraparte} ${m.hist} ${m.doc} ${m.tpd}`.toUpperCase().includes(fq) || (Number.isFinite(Number(fv)) && fv !== '' && String(Number(m.vl).toFixed(2)).startsWith(String(Number(fv)))));
+                    return <>{lista.slice(0, 120).map(m => {
                     return <label key={m.lancto} className="flex items-center gap-2 text-xs cursor-pointer">
                       <input type="checkbox" className="accent-prim-500" checked={sel.has(m.lancto)} onChange={() => setEscolha(e => ({ ...e, [item.id]: toggle(sel, m.lancto) }))} />
                       <span className="font-mono text-gray-500 w-20">{fmtBr(m.data)}</span><span className="text-gray-400 w-16">{m.tpd}</span>
                       <span className="text-gray-200 truncate flex-1" title={`${m.hist || ''} ${m.doc ? '· ' + m.doc : ''}`}>{m.contraparte || m.hist || m.doc}</span>
                       <span className="font-mono text-gray-300">{fmt(m.vl)}</span>
-                    </label>; })}
+                    </label>; })}{lista.length > 120 && <div className="text-[11px] text-gray-500">mostrando 120 de {fmtN(lista.length)}: use o filtro</div>}</>; })()}
                   </div>
                   {(() => { const sel = escolha[item.id] || new Set(); const esc = (item.movs_pool || []).filter(m => sel.has(m.lancto)); const soma = r2(esc.reduce((s, m) => s + Number(m.vl || 0), 0)); const dif = r2(Number(item.valor_banco) - soma);
                     return sel.size > 0 && <div className="flex items-center gap-3 pt-1">

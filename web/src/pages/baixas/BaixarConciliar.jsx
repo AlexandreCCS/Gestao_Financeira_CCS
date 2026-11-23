@@ -163,7 +163,8 @@ export default function BaixarConciliar() {
   const q = busca.trim().toLowerCase();
   // [28/10/2026] item de conciliacao nivel 3 (possivel lancamento) tambem pode ir para a busca: D = pagar, C = receber
   const tipoTit = i => ['P', 'R'].includes(i.tipo) ? i.tipo : (i.linhas?.[0]?.natureza === 'C' ? 'R' : 'P');
-  const buscavel = i => ['P', 'R'].includes(i.tipo) || (i.situacao === 'conciliar' && i.nivel === 3);
+  // [23/11/2026] conta de loja: a entrada nunca baixa titulo (a baixa automatica do varejo ja baixou), entao sem "Buscar no contas a receber"
+  const buscavel = i => !i.loja && (['P', 'R'].includes(i.tipo) || (i.situacao === 'conciliar' && i.nivel === 3));
   const itens = useMemo(() => (dados?.itens || []).map(i => lanc[i.id] ? { ...i, tipo: 'L', situacao: 'pronto', confianca: 'manual', titulos: [], candidatos: [], movs: [], motivo: LANC[lanc[i.id].tipo] }
     : manual[i.id]?.length ? { ...i, tipo: tipoTit(i), situacao: 'pronto', confianca: 'manual', titulos: manual[i.id], candidatos: [], motivo: 'Títulos escolhidos na busca' } : i).filter(i => !q || JSON.stringify([i.linhas, i.titulos?.map(t => [t.agn_nome, t.doc])]).toLowerCase().includes(q)), [dados, q, manual, lanc]);
   const por = s => itens.filter(i => i.situacao === s);
@@ -236,6 +237,8 @@ export default function BaixarConciliar() {
     pedirConfirmacao([{ ref: item.id, cba: item.linhas[0]?.cba, cheque: ch.seq }], api.bxcChdev, 'Tratar a devolução do cheque?',
       `${fmt(item.valor_banco)} · cheque ${d.banco}/${d.numero} de ${ch.nome}, alínea ${d.alinea}. Lança a ação 971 já conciliada com esta linha${d.titulos.length ? ` e reabre ${d.titulos.join(', ')}` : ''}. A nova baixa dessas parcelas é feita como hoje.`); };
   const lancarReal = item => pedirConfirmacao([{ ref: item.id, cba: item.linhas[0]?.cba, dep_id: item.depara?.id, hist: item.linhas[0]?.historico }], api.bxcReal, 'Lançar no Mega?', `${fmt(item.valor_banco)} · ${item.linhas[0]?.historico} → ${item.depara?.descricao || 'de-para'}. Nasce o lançamento avulso já conciliado.`);
+  // [23/11/2026] conta de loja: a usuaria marca os lancamentos do Mega que somam a linha (como a conciliacao manual do Mega)
+  const conciliarEscolhidos = (item, movs) => pedirConfirmacao([{ ref: item.id, conta, movs: movs.map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: (item.linhas || []).map(l => l.cba) }], api.bxcConciliar, 'Conciliar no Mega?', `${fmtN(movs.length)} lançamento(s) do Mega × ${fmtN(item.linhas?.length || 0)} linha(s) do extrato · ${fmt(item.valor_banco)}. Não baixa nada: só concilia.`);
   const conciliarItem = item => pedirConfirmacao([{ ref: item.id, conta, movs: (item.movs || []).map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: (item.linhas || []).map(l => l.cba) }], api.bxcConciliar, 'Conciliar no Mega?', `${fmtN(item.movs?.length || 0)} lançamento(s) × ${fmtN(item.linhas?.length || 0)} linha(s) do extrato · ${fmt(item.valor_banco)}.`);
   function decidirBaixar(item) {
     const sel = escolha[item.id] || new Set();
@@ -378,6 +381,7 @@ export default function BaixarConciliar() {
               : (item.titulos || []).length ? item.titulos.map(t => <Titulo key={t.lancto} item={item} t={t} compacto />)
               : item.depara ? <div className="text-sm text-gray-300">{item.depara.descricao}{item.depara.classe ? <span className="text-gray-500 text-xs"> · classe {item.depara.classe}</span> : <span className="text-amber-300 text-xs"> · de-para sem classe: configure</span>}</div>
               : item.movs?.length ? <div className="text-sm text-gray-300">{fmtN(item.movs.length)} lançamento(s) no Mega somam {fmt(item.movs.reduce((s, m) => s + Number(m.vl ?? m.valor ?? 0), 0))}</div>
+              : item.loja && item.situacao === 'decidir' ? <div className="text-sm text-gray-300">{item.movs_pool?.length ? `${fmtN(item.movs_pool.length)} lançamento(s) pendente(s) na conta: abra e marque os que somam o valor` : 'nenhum lançamento pendente no Mega'}</div>
               : item.candidatos_mov?.length ? <div className="text-sm text-gray-300">possível lançamento no Mega: {item.candidatos_mov.slice(0, 2).map(m => `${m.lancto} de ${fmtBr(m.data)} · ${m.tpd} ${m.doc}${m.hist ? ` · ${m.hist.trim()}` : ''} · ${fmt(m.vl)}`).join(' | ')}</div>
               : <div className="text-sm text-gray-500">{item.candidatos?.length ? `${fmtN(item.candidatos.length)} candidato(s)` : 'sem título correspondente'}</div>}
           </div>
@@ -423,7 +427,28 @@ export default function BaixarConciliar() {
                 <div className="text-[11px] uppercase tracking-wider text-gray-500">Lançamentos no Mega</div>
                 <div className="text-xs text-gray-400 space-y-0.5">{item.movs.map(m => <div key={m.lancto} className="flex gap-3"><span className="font-mono text-gray-500 w-20">{fmtBr(m.data)}</span><span className="flex-1 truncate text-gray-300">{m.hist || m.tpd} {m.doc ? `· ${m.doc}` : ''}</span><span className="font-mono">{fmt(m.vl ?? m.valor)}</span></div>)}</div>
               </>}
-              {item.situacao === 'decidir' && (
+              {item.situacao === 'decidir' && item.loja && (
+                <div className="space-y-1">
+                  <div className="text-[11px] uppercase tracking-wider text-gray-500">Conciliar com lançamentos do Mega (conta de loja: os títulos já foram baixados)</div>
+                  {(item.movs_pool || []).length === 0 && <div className="text-xs text-gray-500">Nenhum lançamento pendente na conta perto desta data. Lance pelo Mega ou use as opções de lançamento acima.</div>}
+                  <div className="max-h-72 overflow-y-auto pr-1 space-y-0.5">
+                  {(item.movs_pool || []).map(m => {
+                    const sel = escolha[item.id] || new Set();
+                    return <label key={m.lancto} className="flex items-center gap-2 text-xs cursor-pointer">
+                      <input type="checkbox" className="accent-prim-500" checked={sel.has(m.lancto)} onChange={() => setEscolha(e => ({ ...e, [item.id]: toggle(sel, m.lancto) }))} />
+                      <span className="font-mono text-gray-500 w-20">{fmtBr(m.data)}</span><span className="text-gray-400 w-16">{m.tpd}</span>
+                      <span className="text-gray-200 truncate flex-1" title={`${m.hist || ''} ${m.doc ? '· ' + m.doc : ''}`}>{m.contraparte || m.hist || m.doc}</span>
+                      <span className="font-mono text-gray-300">{fmt(m.vl)}</span>
+                    </label>; })}
+                  </div>
+                  {(() => { const sel = escolha[item.id] || new Set(); const esc = (item.movs_pool || []).filter(m => sel.has(m.lancto)); const soma = r2(esc.reduce((s, m) => s + Number(m.vl || 0), 0)); const dif = r2(Number(item.valor_banco) - soma);
+                    return sel.size > 0 && <div className="flex items-center gap-3 pt-1">
+                      <span className={`text-xs ${Math.abs(dif) < 0.005 ? 'text-emerald-300' : 'text-rose-300'}`}>marcado {fmt(soma)} {Math.abs(dif) < 0.005 ? '· fecha com o banco' : dif > 0 ? '· ainda falta ' + fmt(dif) : '· passou ' + fmt(-dif)}</span>
+                      <button className="btn-prim text-xs py-1.5" disabled={rodando || Math.abs(dif) >= 0.005} onClick={() => conciliarEscolhidos(item, esc)}><Link2 size={13} /> Conciliar</button>
+                    </div>; })()}
+                </div>
+              )}
+              {item.situacao === 'decidir' && !item.loja && (
                 <div className="space-y-1">
                   <div className="text-[11px] uppercase tracking-wider text-gray-500">Escolha o título (ou títulos)</div>
                   {(item.candidatos || []).length === 0 && <div className="text-xs text-gray-500">Nenhum título em aberto parecido. Use “Buscar no contas a {item.tipo === 'P' ? 'pagar' : 'receber'}”, lance pelo Mega ou registre como adiantamento.</div>}

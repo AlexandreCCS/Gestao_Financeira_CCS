@@ -174,13 +174,13 @@ function subconjunto(itens, alvo, maxQt, orcamento = 150000) {
 // ---------------------------------------------------------------------------------------------------- consultas do motor
 async function contaInfo(agn) {
   const r = await megaQuery(`
-    SELECT K.AGN_IN_CODIGO AGN, K.FIL_IN_CODIGO FIL, K.CTA_CH_ATIVA ATIVA, K.CTA_CH_ROBO ROBO, K.CTA_RE_TETO_ROBO TETO, K.CTA_IN_AGN_BANCO AGN_BANCO,
+    SELECT K.AGN_IN_CODIGO AGN, K.FIL_IN_CODIGO FIL, K.CTA_CH_ATIVA ATIVA, K.CTA_CH_ROBO ROBO, K.CTA_RE_TETO_ROBO TETO, K.CTA_IN_AGN_BANCO AGN_BANCO, NVL(K.CTA_CH_LOJA,'N') LOJA,
            (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.AGN_IN_CODIGO) NOME,
            (SELECT MAX(C.BAN_IN_NUMERO) FROM MEGA.GLO_CONTASFIN C WHERE C.AGN_TAB_IN_CODIGO = 53 AND C.AGN_IN_CODIGO = K.AGN_IN_CODIGO AND C.AGN_TAU_ST_CODIGO = 'N') BANCO
       FROM MEGA.CCS_TB_GFIN_BXC_CONTA K WHERE K.AGN_IN_CODIGO = ${num(agn)}`);
   if (!r[0]) return null;
   const k = r[0];
-  return { agn_id: num(k.AGN), nome: k.NOME || '', banco: k.BANCO ? num(k.BANCO) : null, fil_id: num(k.FIL), ativa: k.ATIVA === 'S', robo: k.ROBO === 'S', teto_robo: k.TETO ? num(k.TETO) : null, agn_banco: k.AGN_BANCO ? num(k.AGN_BANCO) : null };
+  return { agn_id: num(k.AGN), nome: k.NOME || '', banco: k.BANCO ? num(k.BANCO) : null, fil_id: num(k.FIL), ativa: k.ATIVA === 'S', robo: k.ROBO === 'S', teto_robo: k.TETO ? num(k.TETO) : null, agn_banco: k.AGN_BANCO ? num(k.AGN_BANCO) : null, loja: k.LOJA === 'S' };
 }
 
 export async function linhasPendentes(agn, ini, fim, filtro) {
@@ -224,6 +224,32 @@ export async function movsPendentes(agn, ini, fim) {
        AND NVL(M.MOV_CH_SITUACAO,'A') <> 'C' AND NVL(M.MOV_BO_PREVISAO,'N') = 'N' AND M.MOV_DT_DATADOCTO BETWEEN ${dt(ini)} AND ${dt(fim)}`);
   return rows.map(r => ({ org: num(r.ORG), seq: num(r.SEQ), lancto: num(r.LANC), data: r.DT, nat: r.NAT, vl: r2(r.VL), tpd: r.TPD || '', doc: r.DOC || '', hist: r.HIST || '', acao: num(r.ACAO),
     contraparte: (r.CP || '').trim(), cp_agn: r.CPA ? num(r.CPA) : null, usado: false }));
+}
+
+// [23/11/2026] CONTA DE LOJA: o adiantamento (704) lancado pela tela de adiantamento do Mega nao tem FIN_REFERENCIAFIN com o cliente
+// (contraparte vazia); o cliente esta no outro movimento da MESMA acao (ACAOM). So para a soma por cliente das lojas (passo 4b do motor).
+// tipo do lancamento compativel com a linha do banco da loja (medido em 21725: REDE = CARCRED/CARDEB; PIX = PIX + adiantamento; deposito em
+// dinheiro nunca e PIX nem cartao). Sem regra para a linha = qualquer tipo.
+const CARTAO = new Set(['CARCRED', 'CARDEB']);
+function compativelLoja(l, m) {
+  const h = String(l.hist || '').toUpperCase();
+  if (/^REDE\b/.test(h)) return CARTAO.has(m.tpd);
+  if (/\bPIX\b/.test(h)) return !CARTAO.has(m.tpd);
+  if (/\bDEP\b.*\bDIN\b|\bDINHEIRO\b/.test(h)) return !CARTAO.has(m.tpd) && m.tpd !== 'PIX';
+  return true;
+}
+async function clientePorOperacao(movs) {
+  for (let i = 0; i < movs.length; i += 300) {
+    const lote = movs.slice(i, i + 300);
+    const rows = await megaQuery(`
+      SELECT M.MOV_IN_NUMLANCTO L, MAX(O.AGN_IN_CODIGO) A, MAX(SUBSTR(AG.AGN_ST_NOME,1,60)) N
+        FROM MEGA.FIN_MOVIMENTO M, MEGA.FIN_MOVIMENTO O, MEGA.GLO_AGENTES AG
+       WHERE M.MOV_TAB_IN_CODIGO = 352 AND M.MOV_IN_NUMLANCTO IN (${lote.map(m => num(m.lancto)).join(',')})
+         AND O.ORG_IN_CODIGO = M.ORG_IN_CODIGO AND O.MOV_TAB_IN_CODIGO = 352 AND O.ACAOM_IN_SEQUENCIA = M.ACAOM_IN_SEQUENCIA AND O.MOV_IN_NUMLANCTO <> M.MOV_IN_NUMLANCTO
+         AND O.AGN_TAU_ST_CODIGO <> 'N' AND AG.AGN_TAB_IN_CODIGO = O.AGN_TAB_IN_CODIGO AND AG.AGN_PAD_IN_CODIGO = O.AGN_PAD_IN_CODIGO AND AG.AGN_IN_CODIGO = O.AGN_IN_CODIGO
+       GROUP BY M.MOV_IN_NUMLANCTO HAVING COUNT(DISTINCT O.AGN_IN_CODIGO) = 1`);
+    for (const r of rows) { const m = lote.find(x => x.lancto === num(r.L)); if (m) { m.cp_agn = num(r.A); m.contraparte = (r.N || '').trim(); } }
+  }
 }
 
 // [29/10/2026] COBRANCA DO DIA (Alexandre: conciliar sozinho o que o retorno ja baixou; o retorno segue no Mega, processado pela JOELMA).
@@ -449,6 +475,7 @@ export async function motor(agn, filtro = {}) {
     chequesDevolvidos(linhas).catch(() => new Map()),
   ]);
   const regrasRec = linhas.some(l => l.nat === 'C') ? (await regrasRecDesp().catch(() => [])).filter(r => r.ativo) : [];
+  if (conta.loja) await clientePorOperacao(movs.filter(m => !m.cp_agn && m.nat === 'D')).catch(() => {});   // [23/11] adiantamento 704 da tela do Mega
   // [28/10/2026] rivais de fora do periodo filtrado tambem disputam o lancamento (tela so em 23/10 nao pode dar a 23/10 o lancamento da linha de 21/10)
   const naTela = new Set(linhas.map(l => l.cba));
   const rivaisPool = [...linhas, ...vizinhas.filter(v => !naTela.has(v.cba))];
@@ -532,6 +559,46 @@ export async function motor(agn, filtro = {}) {
       itens.push({ ...it, situacao: 'decidir', tipo: 'C', confianca: 'baixa', movs: pool.slice(0, 40), motivo: pool.length ? 'Liquidacao de cobranca sem combinacao exata de baixas do retorno: confira o retorno do banco' : 'Liquidacao de cobranca sem baixas de retorno no Mega: o retorno do banco nao entrou' });
       continue;
     }
+    // 4b) [23/11/2026] CONTA DE LOJA (CTA_CH_LOJA = 'S', sql/42): a baixa automatica do varejo ja baixou os titulos, entao a ENTRADA so
+    //     concilia com os lancamentos que ja estao no Mega (N x 1), nunca baixa titulo. Ex.: PIX 9.500 = baixa 996,00 + baixa 8.498,30 + adiant. 5,70.
+    //     (a) lancamentos do MESMO cliente (contraparte) que somam o valor: conciliar marcado, confianca media (o robo so usa 'alta');
+    //     (b) senao combinacao UNICA de ate 4 lancamentos do mesmo dia: conciliar desmarcado, confianca baixa (a usuaria confere);
+    //     (c) senao Decidir com os lancamentos pendentes da conta para ela marcar (soma tem que fechar). Sem candidatos de titulo.
+    if (conta.loja && l.nat === 'C') {
+      const pool = movs.filter(m => !m.usado && m.nat === 'D' && Math.abs(dias(m.data, l.data)) <= P.janela)
+        .sort((a, b) => Math.abs(dias(a.data, l.data)) - Math.abs(dias(b.data, l.data)) || b.vl - a.vl);
+      // a soma automatica so com tipo compativel; a lista manual (c) mostra todos. Deposito da REDE: sem soma automatica (parcelas de cartao do
+      // cliente generico fecham por coincidencia); o caminho certo e a Conciliacao de Cartao (deposito montado pelo arquivo da Rede).
+      const rede = /^REDE\b/i.test(l.hist || '');
+      const poolAuto = rede ? [] : pool.filter(m => compativelLoja(l, m));
+      let achado = null, conf = null, como = '';
+      const porCli = new Map();
+      for (const m of poolAuto) if (m.cp_agn) { if (!porCli.has(m.cp_agn)) porCli.set(m.cp_agn, []); porCli.get(m.cp_agn).push(m); }
+      const fechamCli = [];
+      for (const g of porCli.values()) {
+        if (g.length < 2 || g.length > 40) continue;
+        const ord = [...g].sort((a, b) => b.vl - a.vl);
+        const c = combinacoes(ord, l.vl, 10, 2);
+        if (c.length === 1 && c[0]) fechamCli.push(c[0]);
+        if (fechamCli.length > 1) break;
+      }
+      if (fechamCli.length === 1) { achado = fechamCli[0]; conf = 'media'; como = `${achado.length} lancamentos de ${(achado[0].contraparte || 'mesmo cliente').slice(0, 50)} somam o valor do banco`; }
+      if (!achado) {
+        const dia = poolAuto.filter(m => m.data === l.data).sort((a, b) => b.vl - a.vl).slice(0, 80);
+        const c = dia.length >= 2 ? combinacoes(dia, l.vl, 4, 2) : [];
+        if (c.length === 1 && c[0] && c[0].length >= 2) { achado = c[0]; conf = 'baixa'; como = `${achado.length} lancamentos do mesmo dia somam o valor do banco (combinacao unica, confira)`; }
+      }
+      if (achado) {
+        achado.forEach(m => (m.usado = true)); l.casada = true;
+        itens.push({ ...it, situacao: 'conciliar', tipo: 'C', nivel: 2, confianca: conf, selecionado: conf === 'media', loja: true, movs: achado,
+          motivo: `Conta de loja: ${como} (titulos ja baixados pela baixa automatica)` });
+      } else {
+        itens.push({ ...it, situacao: 'decidir', tipo: 'R', confianca: 'baixa', loja: true, movs_pool: pool.slice(0, 60),
+          motivo: rede ? 'Deposito da Rede em conta de loja: concilie pela Conciliacao de Cartao ou marque aqui os lancamentos do Mega que somam o valor do banco'
+            : pool.length ? 'Conta de loja: marque os lancamentos do Mega que somam o valor do banco (titulos ja baixados pela baixa automatica)' : 'Conta de loja: nenhum lancamento pendente no Mega na janela; lance pelo Mega ou registre como adiantamento' });
+      }
+      continue;
+    }
     // 5) titulos em aberto
     const tipo = l.nat === 'D' ? 'P' : 'R';
     const cands = (tipo === 'P' ? candP : candR).filter(t => !t.usado);
@@ -587,7 +654,7 @@ export async function motor(agn, filtro = {}) {
   //    O passo por agente acima so olha agentes com ate 40 titulos na janela (a TALUMI tem 100+). Aqui: so linhas 'decidir' SEM candidato
   //    (nao tira titulo de quem casou), titulos do mesmo agente que vencem ate 1 dia da data do banco, ate 3 titulos e combinacao UNICA no
   //    agente e entre agentes (varias guias pequenas da SEFAZ fecham qualquer valor por coincidencia: ai fica para a busca manual). Media, nunca robo.
-  for (const it of itens.filter(i => i.situacao === 'decidir' && ['P', 'R'].includes(i.tipo) && !i.candidatos.length && !i.movs.length).sort((a, b) => b.valor_banco - a.valor_banco)) {
+  for (const it of itens.filter(i => i.situacao === 'decidir' && ['P', 'R'].includes(i.tipo) && !i.loja && !i.candidatos.length && !i.movs.length).sort((a, b) => b.valor_banco - a.valor_banco)) {   // [23/11] loja nunca baixa titulo
     const pool = (it.tipo === 'P' ? candP : candR).filter(t => !t.usado && Math.abs(dias(t.venc, it.data)) <= 1);
     const achados = [];
     for (const g of porAgente(pool)) {
@@ -849,10 +916,10 @@ export default async function baixarConciliarRoutes(app) {
              (SELECT MAX(C.BAN_IN_NUMERO) FROM MEGA.GLO_CONTASFIN C WHERE C.AGN_TAB_IN_CODIGO = 53 AND C.AGN_IN_CODIGO = K.AGN_IN_CODIGO AND C.AGN_TAU_ST_CODIGO = 'N') BANCO,
              (SELECT COUNT(*) FROM MEGA.FIN_CONCILIACAO B WHERE B.AGN_IN_CODIGO = K.AGN_IN_CODIGO AND NVL(B.CBA_CH_STATUS,'N') <> 'S' AND B.CON_IN_SEQUENCIAL IS NULL AND B.CBA_DT_DATA >= TRUNC(SYSDATE) - 90
                  AND NOT EXISTS (SELECT 1 FROM MEGA.CCS_TB_GFIN_BXC_IGNORA I WHERE I.CBA_IN_SEQUENCIA = B.CBA_IN_SEQUENCIA)) PENDENTES,
-             (SELECT TO_CHAR(MAX(B.CBA_DT_DATA),'YYYY-MM-DD') FROM MEGA.FIN_CONCILIACAO B WHERE B.AGN_IN_CODIGO = K.AGN_IN_CODIGO) ULTIMA
+             (SELECT TO_CHAR(MAX(B.CBA_DT_DATA),'YYYY-MM-DD') FROM MEGA.FIN_CONCILIACAO B WHERE B.AGN_IN_CODIGO = K.AGN_IN_CODIGO) ULTIMA, NVL(K.CTA_CH_LOJA,'N') LOJA
         FROM MEGA.CCS_TB_GFIN_BXC_CONTA K ORDER BY K.CTA_CH_ATIVA DESC, K.FIL_IN_CODIGO, K.AGN_IN_CODIGO`);
     return { contas: rows.map(r => ({ agn_id: num(r.AGN), nome: r.NOME || '', banco: r.BANCO ? num(r.BANCO) : null, fil_id: num(r.FIL), ativa: r.ATIVA === 'S', robo: r.ROBO === 'S', teto_robo: r.TETO ? num(r.TETO) : null,
-      agn_banco: r.AGN_BANCO ? num(r.AGN_BANCO) : null, pendentes: num(r.PENDENTES), ultima_linha: r.ULTIMA || '' })) };
+      agn_banco: r.AGN_BANCO ? num(r.AGN_BANCO) : null, pendentes: num(r.PENDENTES), ultima_linha: r.ULTIMA || '', loja: r.LOJA === 'S' })) };
   });
 
   // -------- o motor
@@ -1110,14 +1177,14 @@ export default async function baixarConciliarRoutes(app) {
     // [03/11/2026] uma linha so: com a coluna CTA_CH_AUTO_CHD o gateway SOAP passou a devolver "indice fora dos limites da matriz"
     // (pegadinha do gateway: quebra de linha + ORDER BY com 2 colunas; ver TMS_CCS.md)
     const contas = (await megaQuery(`SELECT K.*, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.AGN_IN_CODIGO) NOME, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.CTA_IN_AGN_BANCO) BANCO_NOME FROM MEGA.CCS_TB_GFIN_BXC_CONTA K ORDER BY K.FIL_IN_CODIGO, K.AGN_IN_CODIGO`))
-      .map(k => ({ agn_id: num(k.AGN_IN_CODIGO), nome: k.NOME || '', fil_id: num(k.FIL_IN_CODIGO), ativa: k.CTA_CH_ATIVA === 'S', robo: k.CTA_CH_ROBO === 'S', auto_cob: k.CTA_CH_AUTO_COB === 'S', auto_chd: k.CTA_CH_AUTO_CHD === 'S', teto_robo: k.CTA_RE_TETO_ROBO ? num(k.CTA_RE_TETO_ROBO) : null, agn_banco: k.CTA_IN_AGN_BANCO ? num(k.CTA_IN_AGN_BANCO) : null, banco_nome: k.BANCO_NOME || '', obs: k.CTA_ST_OBS || '' }));
+      .map(k => ({ agn_id: num(k.AGN_IN_CODIGO), nome: k.NOME || '', fil_id: num(k.FIL_IN_CODIGO), ativa: k.CTA_CH_ATIVA === 'S', robo: k.CTA_CH_ROBO === 'S', auto_cob: k.CTA_CH_AUTO_COB === 'S', auto_chd: k.CTA_CH_AUTO_CHD === 'S', loja: k.CTA_CH_LOJA === 'S', teto_robo: k.CTA_RE_TETO_ROBO ? num(k.CTA_RE_TETO_ROBO) : null, agn_banco: k.CTA_IN_AGN_BANCO ? num(k.CTA_IN_AGN_BANCO) : null, banco_nome: k.BANCO_NOME || '', obs: k.CTA_ST_OBS || '' }));
     const usuRobo = rows.find(r => r.K === 'BXC_USU_ROBO');
     const robo = usuRobo && num(usuRobo.V) > 0 ? (await megaQuery(`SELECT GRU_ST_NOME N FROM MEGA.GLO_GRUPO_USUARIO WHERE GRU_IN_CODIGO = ${num(usuRobo.V)}`))[0]?.N : null;
     return { params: Object.fromEntries(rows.map(r => [r.K, num(r.V)])), detalhes: rows.map(r => ({ chave: r.K, valor: num(r.V), descricao: r.D || '', alterado_em: r.EM || '', alterado_por: r.U || '' })), contas, usuario_robo_nome: robo || '' };
   });
   app.put('/bxc/config', { ...admin, schema: { body: { type: 'object', properties: {
     params: { type: 'object', additionalProperties: { type: 'number' } },
-    contas: { type: 'array', maxItems: 100, items: { type: 'object', required: ['agn_id'], properties: { agn_id: { type: 'integer' }, fil_id: { type: 'integer' }, ativa: { type: 'boolean' }, robo: { type: 'boolean' }, auto_cob: { type: 'boolean' }, auto_chd: { type: 'boolean' }, teto_robo: { anyOf: [{ type: 'number' }, { type: 'null' }] }, agn_banco: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, obs: { type: 'string', maxLength: 200 } } } } } } }
+    contas: { type: 'array', maxItems: 100, items: { type: 'object', required: ['agn_id'], properties: { agn_id: { type: 'integer' }, fil_id: { type: 'integer' }, ativa: { type: 'boolean' }, robo: { type: 'boolean' }, auto_cob: { type: 'boolean' }, auto_chd: { type: 'boolean' }, loja: { type: 'boolean' }, teto_robo: { anyOf: [{ type: 'number' }, { type: 'null' }] }, agn_banco: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, obs: { type: 'string', maxLength: 200 } } } } } } }
   }, async (req) => {
     const ctx = ctxDe(req), ps = req.body.params || {}, cs = req.body.contas || [];
     for (const [k, v] of Object.entries(ps)) {
@@ -1126,7 +1193,7 @@ export default async function baixarConciliarRoutes(app) {
     }
     for (const c of cs) {
       const existe = (await megaQuery(`SELECT COUNT(*) N FROM MEGA.CCS_TB_GFIN_BXC_CONTA WHERE AGN_IN_CODIGO = ${num(c.agn_id)}`))[0];
-      const sets = `${c.fil_id ? `FIL_IN_CODIGO = ${num(c.fil_id)},` : ''} CTA_CH_ATIVA = '${c.ativa === false ? 'N' : 'S'}', CTA_CH_ROBO = '${c.robo ? 'S' : 'N'}', ${c.auto_cob == null ? '' : `CTA_CH_AUTO_COB = '${c.auto_cob ? 'S' : 'N'}',`} ${c.auto_chd == null ? '' : `CTA_CH_AUTO_CHD = '${c.auto_chd ? 'S' : 'N'}',`} CTA_RE_TETO_ROBO = ${c.teto_robo == null ? 'NULL' : Number(c.teto_robo)}, CTA_IN_AGN_BANCO = ${c.agn_banco == null ? 'NULL' : num(c.agn_banco)}, CTA_ST_OBS = '${ascii(c.obs, 200)}', CTA_DT_ALTERACAO = SYSDATE, CTA_IN_USU = ${ctx.usu}, CTA_ST_USU = '${ascii(ctx.login, 60)}'`;
+      const sets = `${c.fil_id ? `FIL_IN_CODIGO = ${num(c.fil_id)},` : ''} CTA_CH_ATIVA = '${c.ativa === false ? 'N' : 'S'}', CTA_CH_ROBO = '${c.robo ? 'S' : 'N'}', ${c.auto_cob == null ? '' : `CTA_CH_AUTO_COB = '${c.auto_cob ? 'S' : 'N'}',`} ${c.auto_chd == null ? '' : `CTA_CH_AUTO_CHD = '${c.auto_chd ? 'S' : 'N'}',`} ${c.loja == null ? '' : `CTA_CH_LOJA = '${c.loja ? 'S' : 'N'}',`} CTA_RE_TETO_ROBO = ${c.teto_robo == null ? 'NULL' : Number(c.teto_robo)}, CTA_IN_AGN_BANCO = ${c.agn_banco == null ? 'NULL' : num(c.agn_banco)}, CTA_ST_OBS = '${ascii(c.obs, 200)}', CTA_DT_ALTERACAO = SYSDATE, CTA_IN_USU = ${ctx.usu}, CTA_ST_USU = '${ascii(ctx.login, 60)}'`;
       if (num(existe?.N)) await megaExec(`BEGIN UPDATE MEGA.CCS_TB_GFIN_BXC_CONTA SET ${sets} WHERE AGN_IN_CODIGO = ${num(c.agn_id)}; COMMIT; END;`);
       else if (c.fil_id) await megaExec(`BEGIN INSERT INTO MEGA.CCS_TB_GFIN_BXC_CONTA (AGN_IN_CODIGO, FIL_IN_CODIGO) VALUES (${num(c.agn_id)}, ${num(c.fil_id)}); UPDATE MEGA.CCS_TB_GFIN_BXC_CONTA SET ${sets} WHERE AGN_IN_CODIGO = ${num(c.agn_id)}; COMMIT; END;`);
     }

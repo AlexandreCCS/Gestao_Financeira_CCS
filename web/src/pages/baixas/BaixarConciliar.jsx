@@ -240,6 +240,11 @@ export default function BaixarConciliar() {
   const lancarReal = item => pedirConfirmacao([{ ref: item.id, cba: item.linhas[0]?.cba, dep_id: item.depara?.id, hist: item.linhas[0]?.historico }], api.bxcReal, 'Lançar no Mega?', `${fmt(item.valor_banco)} · ${item.linhas[0]?.historico} → ${item.depara?.descricao || 'de-para'}. Nasce o lançamento avulso já conciliado.`);
   // [23/11/2026] conta de loja: a usuaria marca os lancamentos do Mega que somam a linha (como a conciliacao manual do Mega)
   const conciliarEscolhidos = (item, movs) => pedirConfirmacao([{ ref: item.id, conta, movs: movs.map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: (item.linhas || []).map(l => l.cba) }], api.bxcConciliar, 'Conciliar no Mega?', `${fmtN(movs.length)} lançamento(s) do Mega × ${fmtN(item.linhas?.length || 0)} linha(s) do extrato · ${fmt(item.valor_banco)}. Não baixa nada: só concilia.`);
+  // [23/11/2026] deposito em dinheiro do dia (loja): as linhas DEP DIN marcadas (padrao: todas) viram uma 712 da conta do dinheiro, ja conciliada
+  const linhasDepdin = item => { const des = escolha[item.id] || new Set(); return (item.linhas || []).filter(l => !des.has(l.cba)); };
+  const lancarDepdin = item => { const ls = linhasDepdin(item), soma = r2(ls.reduce((s, l) => s + Number(l.valor || 0), 0)), c = item.depdin?.conta;
+    pedirConfirmacao([{ ref: item.id, cbas: ls.map(l => l.cba) }], api.bxcDepdin, 'Lançar o depósito em dinheiro?',
+      `${fmt(soma)} · ${fmtN(ls.length)} depósito(s) de ${fmtBr(item.data)}. Nasce a transferência (712) da conta ${c?.agn || ''} ${c?.nome || ''} para esta conta, já conciliada com essas linhas. Complemento: ${c?.compl || ''} - DEP DIN ${fmtBr(item.data)}.`); };
   const conciliarItem = item => pedirConfirmacao([{ ref: item.id, conta, movs: (item.movs || []).map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: (item.linhas || []).map(l => l.cba) }], api.bxcConciliar, 'Conciliar no Mega?', `${fmtN(item.movs?.length || 0)} lançamento(s) × ${fmtN(item.linhas?.length || 0)} linha(s) do extrato · ${fmt(item.valor_banco)}.`);
   function decidirBaixar(item) {
     const sel = escolha[item.id] || new Set();
@@ -371,6 +376,7 @@ export default function BaixarConciliar() {
               {(manual[item.id] || lanc[item.id]) && <button className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white disabled:opacity-50" disabled={rodando} onClick={() => desfazerEscolha(item)}><Undo2 size={12} /> Desfazer escolha</button>}
             </div>}
             {!aberto && !feito && <OpcoesLanc item={item} />}
+            {!feito && item.depdin && !item.depdin.existentes?.length && item.depdin.conta && <div className="mt-1.5"><button className="btn-prim text-xs py-1.5" disabled={rodando || !linhasDepdin(item).length} onClick={() => lancarDepdin(item)}><FilePlus2 size={13} /> Lançar depósito em dinheiro ({fmtN(linhasDepdin(item).length)} · {fmt(linhasDepdin(item).reduce((s, l) => s + Number(l.valor || 0), 0))})</button></div>}
             {!feito && item.chdev?.cheque && <div className="mt-1.5"><button className="btn-prim text-xs py-1.5" disabled={rodando} onClick={() => tratarChdev(item)}><Undo2 size={13} /> Tratar devolução</button></div>}
           </div>
           <div className="text-right shrink-0">
@@ -382,6 +388,7 @@ export default function BaixarConciliar() {
               : (item.titulos || []).length ? item.titulos.map(t => <Titulo key={t.lancto} item={item} t={t} compacto />)
               : item.depara ? <div className="text-sm text-gray-300">{item.depara.descricao}{item.depara.classe ? <span className="text-gray-500 text-xs"> · classe {item.depara.classe}</span> : <span className="text-amber-300 text-xs"> · de-para sem classe: configure</span>}</div>
               : item.movs?.length ? <div className="text-sm text-gray-300">{fmtN(item.movs.length)} lançamento(s) no Mega somam {fmt(item.movs.reduce((s, m) => s + Number(m.vl ?? m.valor ?? 0), 0))}</div>
+              : item.depdin ? <div className="text-sm text-gray-300">{item.depdin.existentes?.length ? `transferência do dia no Mega com outro valor: ${item.depdin.existentes.map(m => fmt(m.vl)).join(', ')}` : `${fmtN(item.depdin.qt)} depósito(s) em dinheiro · transferência de ${item.depdin.conta?.agn || '—'} ${item.depdin.conta?.nome || ''}`}</div>
               : item.loja && item.situacao === 'decidir' ? <div className="text-sm text-gray-300">{item.movs_pool?.length ? `${fmtN(item.movs_pool.length)} lançamento(s) pendente(s) na conta: abra e marque os que somam o valor` : 'nenhum lançamento pendente no Mega'}</div>
               : item.candidatos_mov?.length ? <div className="text-sm text-gray-300">possível lançamento no Mega: {item.candidatos_mov.slice(0, 2).map(m => `${m.lancto} de ${fmtBr(m.data)} · ${m.tpd} ${m.doc}${m.hist ? ` · ${m.hist.trim()}` : ''} · ${fmt(m.vl)}`).join(' | ')}</div>
               : <div className="text-sm text-gray-500">{item.candidatos?.length ? `${fmtN(item.candidatos.length)} candidato(s)` : 'sem título correspondente'}</div>}
@@ -428,7 +435,21 @@ export default function BaixarConciliar() {
                 <div className="text-[11px] uppercase tracking-wider text-gray-500">Lançamentos no Mega</div>
                 <div className="text-xs text-gray-400 space-y-0.5">{item.movs.map(m => <div key={m.lancto} className="flex gap-3"><span className="font-mono text-gray-500 w-20">{fmtBr(m.data)}</span><span className="flex-1 truncate text-gray-300">{m.hist || m.tpd} {m.doc ? `· ${m.doc}` : ''}</span><span className="font-mono">{fmt(m.vl ?? m.valor)}</span></div>)}</div>
               </>}
-              {item.situacao === 'decidir' && item.loja && (
+              {item.situacao === 'decidir' && item.depdin && (
+                <div className="space-y-1">
+                  <div className="text-[11px] uppercase tracking-wider text-gray-500">Depósitos em dinheiro do dia (desmarque o que não for dinheiro da loja)</div>
+                  <div className="max-h-72 overflow-y-auto pr-1 space-y-0.5">
+                  {(item.linhas || []).map(l => { const des = escolha[item.id] || new Set();
+                    return <label key={l.cba} className="flex items-center gap-2 text-xs cursor-pointer">
+                      <input type="checkbox" className="accent-prim-500" checked={!des.has(l.cba)} onChange={() => setEscolha(e => ({ ...e, [item.id]: toggle(des, l.cba) }))} />
+                      <span className="text-gray-300 truncate flex-1">{l.historico}</span><span className="font-mono text-gray-300">{fmt(l.valor)}</span>
+                    </label>; })}
+                  </div>
+                  {item.depdin.existentes?.length > 0 && <div className="text-xs text-amber-300">Já existe transferência neste dia com outro valor ({item.depdin.existentes.map(m => `${m.doc || m.lancto}: ${fmt(m.vl)}`).join(', ')}). Confira no Mega: se ela é deste depósito, ajuste lá e concilie; o Gestor não lança outra.</div>}
+                  {!item.depdin.conta && <div className="text-xs text-amber-300">Conta do dinheiro desta loja não configurada (Configuração › contas).</div>}
+                </div>
+              )}
+              {item.situacao === 'decidir' && item.loja && !item.depdin && (
                 <div className="space-y-1">
                   <div className="text-[11px] uppercase tracking-wider text-gray-500">Conciliar com lançamentos do Mega (conta de loja: os títulos já foram baixados)</div>
                   {(item.movs_pool || []).length === 0 && <div className="text-xs text-gray-500">Nenhum lançamento pendente na conta perto desta data. Lance pelo Mega ou use as opções de lançamento acima.</div>}

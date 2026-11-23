@@ -174,13 +174,15 @@ function subconjunto(itens, alvo, maxQt, orcamento = 150000) {
 // ---------------------------------------------------------------------------------------------------- consultas do motor
 async function contaInfo(agn) {
   const r = await megaQuery(`
-    SELECT K.AGN_IN_CODIGO AGN, K.FIL_IN_CODIGO FIL, K.CTA_CH_ATIVA ATIVA, K.CTA_CH_ROBO ROBO, K.CTA_RE_TETO_ROBO TETO, K.CTA_IN_AGN_BANCO AGN_BANCO, NVL(K.CTA_CH_LOJA,'N') LOJA,
+    SELECT K.AGN_IN_CODIGO AGN, K.FIL_IN_CODIGO FIL, K.CTA_CH_ATIVA ATIVA, K.CTA_CH_ROBO ROBO, K.CTA_RE_TETO_ROBO TETO, K.CTA_IN_AGN_BANCO AGN_BANCO, NVL(K.CTA_CH_LOJA,'N') LOJA, K.CTA_IN_AGN_DINHEIRO DIN, K.CTA_ST_COMPL_DINHEIRO DINCOMPL,
+           (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.CTA_IN_AGN_DINHEIRO) DINNOME,
            (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.AGN_IN_CODIGO) NOME,
            (SELECT MAX(C.BAN_IN_NUMERO) FROM MEGA.GLO_CONTASFIN C WHERE C.AGN_TAB_IN_CODIGO = 53 AND C.AGN_IN_CODIGO = K.AGN_IN_CODIGO AND C.AGN_TAU_ST_CODIGO = 'N') BANCO
       FROM MEGA.CCS_TB_GFIN_BXC_CONTA K WHERE K.AGN_IN_CODIGO = ${num(agn)}`);
   if (!r[0]) return null;
   const k = r[0];
-  return { agn_id: num(k.AGN), nome: k.NOME || '', banco: k.BANCO ? num(k.BANCO) : null, fil_id: num(k.FIL), ativa: k.ATIVA === 'S', robo: k.ROBO === 'S', teto_robo: k.TETO ? num(k.TETO) : null, agn_banco: k.AGN_BANCO ? num(k.AGN_BANCO) : null, loja: k.LOJA === 'S' };
+  return { agn_id: num(k.AGN), nome: k.NOME || '', banco: k.BANCO ? num(k.BANCO) : null, fil_id: num(k.FIL), ativa: k.ATIVA === 'S', robo: k.ROBO === 'S', teto_robo: k.TETO ? num(k.TETO) : null, agn_banco: k.AGN_BANCO ? num(k.AGN_BANCO) : null, loja: k.LOJA === 'S',
+    dinheiro: k.DIN ? { agn: num(k.DIN), nome: (k.DINNOME || '').trim(), compl: k.DINCOMPL || '' } : null };
 }
 
 export async function linhasPendentes(agn, ini, fim, filtro) {
@@ -492,6 +494,32 @@ export async function motor(agn, filtro = {}) {
       motivo: `Cobranca de ${g.dia}: ${g.linhas.length} linha(s) do extrato${g.qrs ? ` (${g.qrs} PIX QRS)` : ''} = soma das ${g.movs.length} baixa(s) do retorno do mesmo dia` });
   }
 
+  // 0c) [23/11/2026] DEPOSITO EM DINHEIRO DO DIA (so conta de loja): todas as linhas "DEP DIN ..." do dia = UMA transferencia 712 da conta do
+  //     dinheiro (CTA_IN_AGN_DINHEIRO, 24566) para o banco. Ja lancada (TRANSFC pendente no mesmo dia com a soma) -> lote para conciliar, marcado;
+  //     712 do dia com outro valor -> divergente (nao lanca outra); nada -> Decidir com "Lancar deposito em dinheiro" (CCS_P_GFIN_BXC_DEPDIN, sql/43).
+  if (conta.loja) {
+    const depDin = l => l.nat === 'C' && /^DEP\s+DIN/i.test(l.hist || '');
+    for (const dia of [...new Set(linhas.filter(l => !l.casada && depDin(l)).map(l => l.data))].sort()) {
+      const ls = linhas.filter(l => !l.casada && depDin(l) && l.data === dia);
+      const soma = r2(cents(ls) / 100);
+      const t712 = movs.filter(m => !m.usado && m.nat === 'D' && m.acao === 712 && m.data === dia);
+      const igual = t712.find(m => Math.abs(m.vl - soma) < 0.005);
+      const itd = { ...base(ls[0]), linhas: ls.map(l => base(l).linhas[0]), valor_banco: soma, loja: true };
+      ls.forEach(l => (l.casada = true));
+      if (igual) {
+        igual.usado = true;
+        itens.push({ ...itd, situacao: 'lote', tipo: 'C', nivel: 2, confianca: 'media', selecionado: true, movs: [igual],
+          motivo: `Deposito em dinheiro de ${dia}: ${ls.length} deposito(s) = transferencia ${igual.doc || igual.lancto} ja lancada no Mega` });
+      } else {
+        itens.push({ ...itd, situacao: 'decidir', tipo: 'R', confianca: 'baixa', movs: [], candidatos: [],
+          depdin: { qt: ls.length, soma, conta: conta.dinheiro, existentes: t712.map(m => ({ lancto: m.lancto, doc: m.doc, vl: m.vl, hist: m.hist })) },
+          motivo: t712.length ? `Deposito em dinheiro de ${dia}: ${ls.length} deposito(s) somam ${soma.toFixed(2)}, mas a transferencia do dia no Mega tem outro valor (${t712.map(m => m.vl.toFixed(2)).join(', ')}): confira antes de lancar`
+            : !conta.dinheiro ? `Deposito em dinheiro de ${dia}: configure a conta do dinheiro desta loja (Configuracao)`
+            : `Deposito em dinheiro de ${dia}: ${ls.length} deposito(s) somam ${soma.toFixed(2)} e nao ha transferencia no Mega: lance o deposito` });
+      }
+    }
+  }
+
   for (const l of [...linhas].sort((a, b) => b.vl - a.vl)) {
     if (l.casada) continue;
     const it = base(l);
@@ -779,6 +807,15 @@ async function executarLanc(item, ctx) {
     await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_LANC('${token}', ${num(item.org)}, ${num(item.cba)}, '${item.tipo}', ${n(item.agn)}, ${n(item.cba2)}, ${n(item.classe)}, ${n(item.ccusto)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', ${item.hist ? `'${ascii(item.hist, 400)}'` : 'NULL'}, '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}', ${n(item.fil)}, ${n(item.fil2)}); END;`);   // [03/11/2026] filiais escolhidas (vazio = padrao)
     return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado deste lancamento.' };
   } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'o lancamento'); }
+}
+
+// [23/11/2026] deposito em dinheiro do dia das lojas (sql/43): 712 da conta do dinheiro + concilia as N linhas, numa transacao
+async function executarDepdin(item, ctx) {
+  const token = crypto.randomUUID();
+  try {
+    await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_DEPDIN('${token}', ${num(item.org)}, '${item.cbas.map(Number).join(',')}', ${ctx.usu}, '${ascii(ctx.login, 60)}', '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}'); END;`);
+    return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado deste deposito.' };
+  } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'o deposito e a conciliacao'); }
 }
 
 // organizacao e conta das linhas informadas (nunca confiar so no corpo)
@@ -1105,6 +1142,23 @@ export default async function baixarConciliarRoutes(app) {
     return { simular: ctx.simular, resultados };
   });
 
+  // [23/11/2026] deposito em dinheiro do dia (conta de loja): as linhas DEP DIN escolhidas viram uma 712 da conta do dinheiro, ja conciliada
+  app.post('/bxc/depdin', {
+    ...opera, schema: { body: { type: 'object', required: ['itens'], properties: { simular: { type: 'boolean' },
+      itens: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', required: ['cbas'], properties: { ref: { type: 'string', maxLength: 40 },
+        cbas: { type: 'array', minItems: 1, maxItems: 150, items: { type: 'integer', minimum: 1 } } } } } } } }
+  }, async (req) => {
+    const ctx = ctxDe(req, req.body.simular === true), resultados = [];
+    for (const it of req.body.itens) {
+      let r;
+      try { const li = await orgDasLinhas(it.cbas); r = await executarDepdin({ org: li.org, cbas: it.cbas }, ctx); }
+      catch (e) { r = { status: 'X', mensagem: String(e.message || e).slice(0, 300) }; }
+      req.log.info({ gfin: 'bxc_depdin', usu: ctx.usu, ref: it.ref, linhas: it.cbas.length, status: r.status, msg: r.mensagem }, 'deposito em dinheiro');
+      resultados.push({ ref: it.ref || '', ...r });
+    }
+    return { simular: ctx.simular, resultados };
+  });
+
   // -------- estorno e trilha
   app.post('/bxc/estornar', { ...opera, schema: { body: { type: 'object', required: ['log_id'], properties: { log_id: { type: 'integer', minimum: 1 } } } } }, async (req, reply) => {
     const id = num(req.body.log_id), ctx = ctxDe(req, false);
@@ -1177,14 +1231,14 @@ export default async function baixarConciliarRoutes(app) {
     // [03/11/2026] uma linha so: com a coluna CTA_CH_AUTO_CHD o gateway SOAP passou a devolver "indice fora dos limites da matriz"
     // (pegadinha do gateway: quebra de linha + ORDER BY com 2 colunas; ver TMS_CCS.md)
     const contas = (await megaQuery(`SELECT K.*, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,60) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.AGN_IN_CODIGO) NOME, (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.CTA_IN_AGN_BANCO) BANCO_NOME FROM MEGA.CCS_TB_GFIN_BXC_CONTA K ORDER BY K.FIL_IN_CODIGO, K.AGN_IN_CODIGO`))
-      .map(k => ({ agn_id: num(k.AGN_IN_CODIGO), nome: k.NOME || '', fil_id: num(k.FIL_IN_CODIGO), ativa: k.CTA_CH_ATIVA === 'S', robo: k.CTA_CH_ROBO === 'S', auto_cob: k.CTA_CH_AUTO_COB === 'S', auto_chd: k.CTA_CH_AUTO_CHD === 'S', loja: k.CTA_CH_LOJA === 'S', teto_robo: k.CTA_RE_TETO_ROBO ? num(k.CTA_RE_TETO_ROBO) : null, agn_banco: k.CTA_IN_AGN_BANCO ? num(k.CTA_IN_AGN_BANCO) : null, banco_nome: k.BANCO_NOME || '', obs: k.CTA_ST_OBS || '' }));
+      .map(k => ({ agn_id: num(k.AGN_IN_CODIGO), nome: k.NOME || '', fil_id: num(k.FIL_IN_CODIGO), ativa: k.CTA_CH_ATIVA === 'S', robo: k.CTA_CH_ROBO === 'S', auto_cob: k.CTA_CH_AUTO_COB === 'S', auto_chd: k.CTA_CH_AUTO_CHD === 'S', loja: k.CTA_CH_LOJA === 'S', agn_dinheiro: k.CTA_IN_AGN_DINHEIRO ? num(k.CTA_IN_AGN_DINHEIRO) : null, compl_dinheiro: k.CTA_ST_COMPL_DINHEIRO || '', teto_robo: k.CTA_RE_TETO_ROBO ? num(k.CTA_RE_TETO_ROBO) : null, agn_banco: k.CTA_IN_AGN_BANCO ? num(k.CTA_IN_AGN_BANCO) : null, banco_nome: k.BANCO_NOME || '', obs: k.CTA_ST_OBS || '' }));
     const usuRobo = rows.find(r => r.K === 'BXC_USU_ROBO');
     const robo = usuRobo && num(usuRobo.V) > 0 ? (await megaQuery(`SELECT GRU_ST_NOME N FROM MEGA.GLO_GRUPO_USUARIO WHERE GRU_IN_CODIGO = ${num(usuRobo.V)}`))[0]?.N : null;
     return { params: Object.fromEntries(rows.map(r => [r.K, num(r.V)])), detalhes: rows.map(r => ({ chave: r.K, valor: num(r.V), descricao: r.D || '', alterado_em: r.EM || '', alterado_por: r.U || '' })), contas, usuario_robo_nome: robo || '' };
   });
   app.put('/bxc/config', { ...admin, schema: { body: { type: 'object', properties: {
     params: { type: 'object', additionalProperties: { type: 'number' } },
-    contas: { type: 'array', maxItems: 100, items: { type: 'object', required: ['agn_id'], properties: { agn_id: { type: 'integer' }, fil_id: { type: 'integer' }, ativa: { type: 'boolean' }, robo: { type: 'boolean' }, auto_cob: { type: 'boolean' }, auto_chd: { type: 'boolean' }, loja: { type: 'boolean' }, teto_robo: { anyOf: [{ type: 'number' }, { type: 'null' }] }, agn_banco: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, obs: { type: 'string', maxLength: 200 } } } } } } }
+    contas: { type: 'array', maxItems: 100, items: { type: 'object', required: ['agn_id'], properties: { agn_id: { type: 'integer' }, fil_id: { type: 'integer' }, ativa: { type: 'boolean' }, robo: { type: 'boolean' }, auto_cob: { type: 'boolean' }, auto_chd: { type: 'boolean' }, loja: { type: 'boolean' }, agn_dinheiro: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, compl_dinheiro: { type: 'string', maxLength: 120 }, teto_robo: { anyOf: [{ type: 'number' }, { type: 'null' }] }, agn_banco: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, obs: { type: 'string', maxLength: 200 } } } } } } }
   }, async (req) => {
     const ctx = ctxDe(req), ps = req.body.params || {}, cs = req.body.contas || [];
     for (const [k, v] of Object.entries(ps)) {
@@ -1193,7 +1247,7 @@ export default async function baixarConciliarRoutes(app) {
     }
     for (const c of cs) {
       const existe = (await megaQuery(`SELECT COUNT(*) N FROM MEGA.CCS_TB_GFIN_BXC_CONTA WHERE AGN_IN_CODIGO = ${num(c.agn_id)}`))[0];
-      const sets = `${c.fil_id ? `FIL_IN_CODIGO = ${num(c.fil_id)},` : ''} CTA_CH_ATIVA = '${c.ativa === false ? 'N' : 'S'}', CTA_CH_ROBO = '${c.robo ? 'S' : 'N'}', ${c.auto_cob == null ? '' : `CTA_CH_AUTO_COB = '${c.auto_cob ? 'S' : 'N'}',`} ${c.auto_chd == null ? '' : `CTA_CH_AUTO_CHD = '${c.auto_chd ? 'S' : 'N'}',`} ${c.loja == null ? '' : `CTA_CH_LOJA = '${c.loja ? 'S' : 'N'}',`} CTA_RE_TETO_ROBO = ${c.teto_robo == null ? 'NULL' : Number(c.teto_robo)}, CTA_IN_AGN_BANCO = ${c.agn_banco == null ? 'NULL' : num(c.agn_banco)}, CTA_ST_OBS = '${ascii(c.obs, 200)}', CTA_DT_ALTERACAO = SYSDATE, CTA_IN_USU = ${ctx.usu}, CTA_ST_USU = '${ascii(ctx.login, 60)}'`;
+      const sets = `${c.fil_id ? `FIL_IN_CODIGO = ${num(c.fil_id)},` : ''} CTA_CH_ATIVA = '${c.ativa === false ? 'N' : 'S'}', CTA_CH_ROBO = '${c.robo ? 'S' : 'N'}', ${c.auto_cob == null ? '' : `CTA_CH_AUTO_COB = '${c.auto_cob ? 'S' : 'N'}',`} ${c.auto_chd == null ? '' : `CTA_CH_AUTO_CHD = '${c.auto_chd ? 'S' : 'N'}',`} ${c.loja == null ? '' : `CTA_CH_LOJA = '${c.loja ? 'S' : 'N'}',`} ${c.agn_dinheiro === undefined ? '' : `CTA_IN_AGN_DINHEIRO = ${c.agn_dinheiro == null || c.agn_dinheiro === '' ? 'NULL' : num(c.agn_dinheiro)},`} ${c.compl_dinheiro == null ? '' : `CTA_ST_COMPL_DINHEIRO = '${ascii(c.compl_dinheiro, 120)}',`} CTA_RE_TETO_ROBO = ${c.teto_robo == null ? 'NULL' : Number(c.teto_robo)}, CTA_IN_AGN_BANCO = ${c.agn_banco == null ? 'NULL' : num(c.agn_banco)}, CTA_ST_OBS = '${ascii(c.obs, 200)}', CTA_DT_ALTERACAO = SYSDATE, CTA_IN_USU = ${ctx.usu}, CTA_ST_USU = '${ascii(ctx.login, 60)}'`;
       if (num(existe?.N)) await megaExec(`BEGIN UPDATE MEGA.CCS_TB_GFIN_BXC_CONTA SET ${sets} WHERE AGN_IN_CODIGO = ${num(c.agn_id)}; COMMIT; END;`);
       else if (c.fil_id) await megaExec(`BEGIN INSERT INTO MEGA.CCS_TB_GFIN_BXC_CONTA (AGN_IN_CODIGO, FIL_IN_CODIGO) VALUES (${num(c.agn_id)}, ${num(c.fil_id)}); UPDATE MEGA.CCS_TB_GFIN_BXC_CONTA SET ${sets} WHERE AGN_IN_CODIGO = ${num(c.agn_id)}; COMMIT; END;`);
     }

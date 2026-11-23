@@ -247,6 +247,7 @@ export const api = {
   bxcConciliar: (body) => req('/bxc/conciliar', { method: 'POST', body: JSON.stringify(body) }),
   bxcReal: (body) => req('/bxc/real', { method: 'POST', body: JSON.stringify(body) }),
   bxcLancar: (body) => req('/bxc/lancar', { method: 'POST', body: JSON.stringify(body) }),
+  bxcDepdin: (body) => req('/bxc/depdin', { method: 'POST', body: JSON.stringify(body) }),   // [23/11/2026] deposito em dinheiro do dia (loja)
   bxcContasOrg: (org) => req(`/bxc/contas-org?org=${encodeURIComponent(org || '')}`),   // [03/11/2026]
   bxcRecRegras: () => req('/bxc/recdesp-regras'),   // [03/11/2026] regras da recuperacao de despesas (711)
   bxcRecRegraSalvar: (body) => req('/bxc/recdesp-regras', { method: 'POST', body: JSON.stringify(body) }),

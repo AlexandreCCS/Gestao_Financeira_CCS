@@ -7,6 +7,7 @@
         a) parcelas do cadastro de cheques (org 20/30)                                                        -> JA EXISTIA (sql/38);
         b) titulos baixados no deposito: estorna a baixa do Gestor do deposito (libera a linha DEP CHEQUE)     -> NOVO;
      6) 978 "Cheque Depositado" com a data do deposito, conciliada com a linha DEP CHEQUE                    -> NOVO.
+   Parcela do cadastro de cheques com COMISSAO JA PAGA (ORA-20922 do CUS_T_ESTORNA_COMISSAO_MOV): pula so ela e avisa (opcao 2, 26/11).
    Baixa do deposito JA CONTABILIZADA (ou feita fora do Gestor): nao estorna; faz o resto e avisa "estornar pelo Mega" (decisao (a)).
    Pegada da 978 (teste manual 26/11, ORG 10 / ACAOM 98806069): CHR nat D na conta (MVFIN 0, rateio 9/2) + CREDITO AVISTA no agente
    1000 tau C (MVFIN 0, classe 1/840 RECEITA DE CHEQUES DEPOSITADOS A COMPENSAR, CC 1/195, projeto 9/2) = pegada do 711 do REAL_X.
@@ -38,7 +39,8 @@ ALTER TABLE MEGA.CCS_TB_GFIN_BXC_CHDEV ADD (
     CHD_IN_LOG_DEP     NUMBER,
     CHD_CH_DEP_EST     CHAR(1),
     CHD_IN_LOG_978     NUMBER,
-    CHD_ST_DEP_MSG     VARCHAR2(500)
+    CHD_ST_DEP_MSG     VARCHAR2(500),
+    CHD_ST_PULADAS     VARCHAR2(1000)
 )
 /
 CREATE OR REPLACE PROCEDURE MEGA.CCS_P_GFIN_BXC_CHDEV_X (
@@ -60,7 +62,7 @@ CREATE OR REPLACE PROCEDURE MEGA.CCS_P_GFIN_BXC_CHDEV_X (
     W_DESDE DATE; W_JANELA NUMBER; W_REABRE NUMBER; W_MARCA NUMBER; W_WHATS NUMBER; W_LISTA NUMBER; W_CHDEP NUMBER;
     W_N NUMBER; W_NREAB NUMBER := 0; W_VREAB NUMBER := 0; W_ACAOMS VARCHAR2(2000); W_TITS VARCHAR2(2000); W_ZAP NUMBER; W_MSG VARCHAR2(4000); W_SALDO NUMBER;
     /* [26/11/2026] deposito */
-    W_DEP_CBA NUMBER; W_DEP_LOG NUMBER; W_DEP_EST CHAR(1); W_LOG978 NUMBER; W_DEPMSG VARCHAR2(500); W_DEPTITS VARCHAR2(1000);
+    W_PUL VARCHAR2(1000); W_DEP_CBA NUMBER; W_DEP_LOG NUMBER; W_DEP_EST CHAR(1); W_LOG978 NUMBER; W_DEPMSG VARCHAR2(500); W_DEPTITS VARCHAR2(1000);
     E_OCUPADO EXCEPTION; PRAGMA EXCEPTION_INIT(E_OCUPADO, -54);
     FUNCTION PAR(P_K VARCHAR2, P_DEF NUMBER) RETURN NUMBER IS V NUMBER;
     BEGIN SELECT MAX(PARAM_RE_VALOR) INTO V FROM MEGA.CCS_TB_GFIN_PARAM WHERE PARAM_ST_CHAVE = P_K; RETURN NVL(V, P_DEF); END;
@@ -122,6 +124,9 @@ BEGIN
             DECLARE
                 BX MEGA.FIN_MOVIMENTO%ROWTYPE; TT MEGA.FIN_MOVIMENTO%ROWTYPE; W_LISTA_MOV VARCHAR2(400);
             BEGIN
+                /* [26/11/2026] comissao da baixa ja fechada/paga (trigger CUS_T_ESTORNA_COMISSAO_MOV, ORA-20922): pula SO esta parcela, avisa e segue
+                   (decisao do Alexandre, opcao 2). Qualquer outro erro continua derrubando a operacao inteira. */
+                SAVEPOINT SP_CHDEV_PARC;
                 BEGIN
                     SELECT M.* INTO BX FROM MEGA.FIN_MOVIMENTO M
                      WHERE M.ORG_TAB_IN_CODIGO = C_ORG_TAB AND M.ORG_PAD_IN_CODIGO = C_ORG_PAD AND M.ORG_IN_CODIGO = O.ORG_IN_CODIGO AND M.ORG_TAU_ST_CODIGO = C_ORG_TAU
@@ -188,6 +193,12 @@ BEGIN
                 W_NREAB := W_NREAB + 1; W_VREAB := W_VREAB + BX.MOV_RE_VALOR;
                 W_ACAOMS := SUBSTR(W_ACAOMS || CASE WHEN W_ACAOMS IS NOT NULL THEN ',' END || BX.ORG_IN_CODIGO || ':' || BX.ACAOM_IN_SEQUENCIA, 1, 2000);
                 W_TITS := SUBSTR(W_TITS || CASE WHEN W_TITS IS NOT NULL THEN ', ' END || TT.MOV_ST_DOCUMENTO || '-' || TT.MOV_ST_PARCELA || ' (saldo ' || VAL(W_SALDO) || ')', 1, 2000);
+            EXCEPTION WHEN OTHERS THEN
+                IF SQLCODE = -20922 THEN
+                    ROLLBACK TO SP_CHDEV_PARC;
+                    W_PUL := SUBSTR(W_PUL || CASE WHEN W_PUL IS NOT NULL THEN ', ' END || NVL(TT.MOV_ST_DOCUMENTO || '-' || TT.MOV_ST_PARCELA, 'lanc ' || O.MOV_IN_NUMLANCTO)
+                             || ' org ' || O.ORG_IN_CODIGO || ' (' || NVL(REGEXP_SUBSTR(SQLERRM, 'COMISSAO N\. [0-9]+ DO REPRESENTANTE [0-9]+'), 'comissao ja paga') || ')', 1, 1000);
+                ELSE RAISE; END IF;
             END;
         END LOOP;
     END IF;
@@ -282,6 +293,7 @@ BEGIN
               || 'Cheque: banco ' || W_BAN || ' n. ' || W_NUM || ' - R$ ' || VAL(CH.CHEQR_RE_VALOR) || CHR(10)
               || 'Alinea: ' || W_ALI || CHR(10) || 'Devolvido em ' || TO_CHAR(B.CBA_DT_DATA, 'DD/MM/YYYY') || ' na conta ' || B.AGN_IN_CODIGO || CHR(10)
               || 'Parcelas reabertas: ' || NVL(W_TITS, 'nenhuma') || CHR(10)
+              || CASE WHEN W_PUL IS NOT NULL THEN 'NAO reabertas (comissao ja paga, tratar pelo Mega): ' || W_PUL || CHR(10) END
               || CASE WHEN W_DEPMSG IS NOT NULL THEN 'Deposito: ' || W_DEPMSG || CHR(10) END || '(Gestor Financeiro - Baixar e conciliar)';
         INSERT INTO MEGA.CCS_TB_ZAP_MSG_ATIVO (ZMSG_IN_CODIGO, ZLINHA_IN_CODIGO, ZMSG_IN_TAREFA, ZLISTA_IN_CODIGO, ZMSG_ST_MENSAGEM, ZMSG_BO_ENVIADO, ZMSG_DT_MENSAGEM)
         VALUES (0, 1, 9997, W_LISTA, SUBSTR(W_MSG, 1, 4000), 'N', SYSDATE)
@@ -290,14 +302,15 @@ BEGIN
 
     INSERT INTO MEGA.CCS_TB_GFIN_BXC_CHDEV (LOG_IN_CODIGO, CBA_IN_SEQUENCIA, CUS_IN_SEQUENCIA, CHD_ST_BANCO, CHD_ST_NUMERO, CHD_ST_ALINEA, CHD_RE_VALOR, AGN_IN_CODIGO,
         CHQ_CH_STATUS_ANT, CHQ_ST_STATUS_ANT, CHD_CH_MARCOU, CHD_IN_QT_REAB, CHD_RE_VALOR_REAB, CHD_ST_ACAOMS, CHD_ST_TITULOS, ZMSG_IN_CODIGO,
-        CHD_IN_CBA_DEP, CHD_IN_LOG_DEP, CHD_CH_DEP_EST, CHD_IN_LOG_978, CHD_ST_DEP_MSG)
+        CHD_IN_CBA_DEP, CHD_IN_LOG_DEP, CHD_CH_DEP_EST, CHD_IN_LOG_978, CHD_ST_DEP_MSG, CHD_ST_PULADAS)
     VALUES (P_LOG, P_CBA, P_CUS, W_BAN, W_NUM, W_ALI, CH.CHEQR_RE_VALOR, CH.AGN_IN_CODIGO,
         CH.CHEQR_CH_STATUS, CH.CHEQR_ST_STATUS, CASE WHEN W_MARCA = 1 THEN 'S' ELSE 'N' END, W_NREAB, W_VREAB, W_ACAOMS, W_TITS, W_ZAP,
-        W_DEP_CBA, W_DEP_LOG, W_DEP_EST, W_LOG978, W_DEPMSG);
+        W_DEP_CBA, W_DEP_LOG, W_DEP_EST, W_LOG978, W_DEPMSG, W_PUL);
     UPDATE MEGA.CCS_TB_GFIN_BXC_LOG
        SET LOG_IN_QT_TITULOS = W_NREAB, LOG_RE_VALOR_TITULOS = W_VREAB,
            LOG_ST_MENSAGEM = SUBSTR('Cheque devolvido ' || W_BAN || '/' || W_NUM || ' alinea ' || W_ALI || ' de ' || W_NOME || ': 971 lancada e conciliada; '
              || CASE WHEN W_NREAB > 0 THEN W_NREAB || ' parcela(s) reaberta(s): ' || W_TITS ELSE 'nenhuma parcela a reabrir' END
+             || CASE WHEN W_PUL IS NOT NULL THEN '; NAO reaberta(s) - comissao ja paga, trate pelo Mega: ' || W_PUL END
              || CASE WHEN W_DEPMSG IS NOT NULL THEN '; ' || W_DEPMSG END
              || CASE WHEN W_MARCA = 1 THEN '; cheque marcado D' END || CASE WHEN W_ZAP IS NOT NULL THEN '; aviso no WhatsApp' END, 1, 1500)
      WHERE LOG_IN_CODIGO = P_LOG;

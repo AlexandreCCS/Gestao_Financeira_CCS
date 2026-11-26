@@ -19,6 +19,7 @@ import inadimplenciaRoutes from './routes/inadimplencia.js';
 import creditoRoutes       from './routes/credito.js';
 // [10/07/2026 - Alexandre Carvalho] modulo Liberacao de Data de Baixa
 import liberacaoBaixaRoutes from './routes/liberacaoBaixa.js';
+import calculadoraJurosRoutes from './routes/calculadoraJuros.js';   // [26/11/2026] Baixas/Conciliacao > Calculadora de juros e multa
 // [06/08/2026 - Alexandre Carvalho] Liberacao de Agentes (flag de bloqueio por atraso)
 import liberacaoAgentesRoutes from './routes/liberacaoAgentes.js';
 // [09/10/2026 - Alexandre Carvalho] liberacao de troca de forma de recebimento
@@ -84,6 +85,7 @@ await app.register(adminRoutes);
 await app.register(inadimplenciaRoutes);
 await app.register(creditoRoutes);
 await app.register(liberacaoBaixaRoutes);
+await app.register(calculadoraJurosRoutes);
 await app.register(liberacaoAgentesRoutes);
 await app.register(liberacaoFormaRecRoutes);
 await app.register(baixasExtratoRoutes);

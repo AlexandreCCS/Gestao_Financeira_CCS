@@ -170,6 +170,8 @@ export const api = {
 
   // [10/07/2026 - Alexandre Carvalho] liberacao de data de baixa
   liberacaoBaixaTitulos: () => req('/liberacao-baixa/titulos'),
+  // [26/11/2026] Calculadora de juros e multa: parcelas em aberto do documento, com cliente e encargos do titulo
+  calcJurosTitulos: (doc) => req(`/calculadora-juros/titulos?doc=${encodeURIComponent(doc)}`),
   liberacaoBaixaLiberar: (dados) =>
     req('/liberacao-baixa/liberar', { method: 'POST', body: JSON.stringify(dados) }),
   liberacaoBaixaRevogar: (id) =>

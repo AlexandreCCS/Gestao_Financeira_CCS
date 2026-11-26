@@ -61,6 +61,7 @@ export const MODULOS = {
       { rota: '/baixas-conciliacao/cartao',  label: 'Conciliação bancária · Cartão' },   // [18/11/2026] arquivos da Rede por filial
       { rota: '/baixas-conciliacao/baixar',  label: 'Baixar e conciliar' },
       { rota: '/baixas-conciliacao/extrato', label: 'Extrato do banco × Mega' },
+      { rota: '/baixas-conciliacao/calculadora', label: 'Calculadora de juros e multa' },   // [26/11/2026] baixa parcial no Mega
       { rota: '/baixas-conciliacao/config',  label: 'Configurar' },
     ],
   },

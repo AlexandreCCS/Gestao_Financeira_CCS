@@ -284,7 +284,8 @@ BEGIN
     IF D.DEP_ST_HIST_LIKE IS NOT NULL AND UPPER(NVL(B.CBA_ST_HISTORICO, ' ')) NOT LIKE '%' || UPPER(D.DEP_ST_HIST_LIKE) || '%' THEN RAISE_APPLICATION_ERROR(-20100, 'Historico da linha nao bate com o de-para.'); END IF;
     IF D.CLA_IN_REDUZIDO IS NULL THEN RAISE_APPLICATION_ERROR(-20100, 'De-para sem classe financeira: configure antes de lancar.'); END IF;
     /* [03/11/2026] 971 "Estorno Devolucao de Cheque recebido" = saida com a mesma pegada do 710 (sql/38; pegada ORG 10 / ACAOM 96036553) */
-    IF D.ACAO_IN_CODIGO NOT IN (710, 711, 971) THEN RAISE_APPLICATION_ERROR(-20100, 'Acao do de-para precisa ser 710 (saida), 711 (entrada) ou 971 (cheque devolvido).'); END IF;
+    /* [26/11/2026] 978 "Cheque Depositado" = entrada com a pegada do 711 (sql/44; pegada ORG 10 / ACAOM 98806069, agente 1000 tau C) */
+    IF D.ACAO_IN_CODIGO NOT IN (710, 711, 971, 978) THEN RAISE_APPLICATION_ERROR(-20100, 'Acao do de-para precisa ser 710 (saida), 711 (entrada), 971 (cheque devolvido) ou 978 (cheque depositado).'); END IF;
     W_AGN := NVL(D.AGN_IN_CODIGO, K.CTA_IN_AGN_BANCO);
     IF W_AGN IS NULL THEN RAISE_APPLICATION_ERROR(-20100, 'Sem agente contraparte (banco) para a conta ' || B.AGN_IN_CODIGO || '.'); END IF;
     W_SAIDA := (D.ACAO_IN_CODIGO IN (710, 971));

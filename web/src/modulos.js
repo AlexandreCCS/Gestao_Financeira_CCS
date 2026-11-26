@@ -61,8 +61,17 @@ export const MODULOS = {
       { rota: '/baixas-conciliacao/cartao',  label: 'Conciliação bancária · Cartão' },   // [18/11/2026] arquivos da Rede por filial
       { rota: '/baixas-conciliacao/baixar',  label: 'Baixar e conciliar' },
       { rota: '/baixas-conciliacao/extrato', label: 'Extrato do banco × Mega' },
-      { rota: '/baixas-conciliacao/calculadora', label: 'Calculadora de juros e multa' },   // [26/11/2026] baixa parcial no Mega
       { rota: '/baixas-conciliacao/config',  label: 'Configurar' },
+    ],
+  },
+  // [26/11/2026 - Alexandre Carvalho] Calculadora de juros e multa (baixa parcial no Mega): permissao PROPRIA (sql/45, modulo
+  // CALC_JUROS), renderizada no mesmo dropdown "Baixas/Conciliação" (merge por label em modulosDoUsuario). Pedido: "cria uma
+  // permissao especifica para calculadora". Quem tem so este modulo ve o dropdown apenas com a calculadora.
+  CALC_JUROS: {
+    label: 'Baixas/Conciliação',
+    rota:  '/baixas-conciliacao/calculadora',
+    submenus: [
+      { rota: '/baixas-conciliacao/calculadora', label: 'Calculadora de juros e multa' },
     ],
   },
   // [25/10/2026 - Alexandre Carvalho] Liberacao de Encargos: permissao PROPRIA (sql/29, modulo LIBERA_ENCARGOS; Odette a

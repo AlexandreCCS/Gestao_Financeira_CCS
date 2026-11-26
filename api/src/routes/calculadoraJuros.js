@@ -7,7 +7,8 @@
 // do Mega; multa 60,6176 -> 60,62. A conta (dias, proporcao, valor da baixa) fica no front. Somente leitura.
 import { megaQuery } from '../soap/mega.js';
 
-const MOD = 'BAIXAS_CONCILIACAO';
+// [26/11/2026 - Alexandre Carvalho] permissao PROPRIA da calculadora (modulo CALC_JUROS, sql/45), separada da BAIXAS_CONCILIACAO.
+const MOD = 'CALC_JUROS';
 const temModulo = (u, cod) => u?.perm === 'A' || (u?.modulos || []).some(m => m.codigo === cod);
 const num = v => Number(v || 0);
 
@@ -15,7 +16,7 @@ export default async function calculadoraJurosRoutes(app) {
   const guard = { preHandler: [app.authenticate] };
 
   app.get('/calculadora-juros/titulos', guard, async (req, reply) => {
-    if (!temModulo(req.user, MOD)) return reply.code(403).send({ error: 'sem_modulo', message: 'Seu usuario nao tem o modulo Baixas/Conciliacao.' });
+    if (!temModulo(req.user, MOD)) return reply.code(403).send({ error: 'sem_modulo', message: 'Seu usuario nao tem o modulo Calculadora de juros e multa.' });
     const doc = String(req.query?.doc || '').trim().toUpperCase();
     if (!/^[0-9A-Z\-\/\.]{1,30}$/.test(doc)) return reply.code(400).send({ error: 'doc_invalido', message: 'Informe o numero do titulo.' });
     const rows = await megaQuery(`

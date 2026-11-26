@@ -104,7 +104,8 @@ createRoot(document.getElementById('root')).render(
       <Route path="/baixas-conciliacao/conciliacao" element={<Protect modulo="BAIXAS_CONCILIACAO"><ConciliacaoBancaria /></Protect>} />
       <Route path="/baixas-conciliacao/cartao" element={<Protect modulo="BAIXAS_CONCILIACAO"><ConciliacaoCartao /></Protect>} />
       <Route path="/baixas-conciliacao/baixar" element={<Protect modulo="BAIXAS_CONCILIACAO"><BaixarConciliar /></Protect>} />
-      <Route path="/baixas-conciliacao/calculadora" element={<Protect modulo="BAIXAS_CONCILIACAO"><CalculadoraJuros /></Protect>} />
+      {/* [26/11/2026 - Alexandre Carvalho] Calculadora: permissao propria CALC_JUROS (sql/45), separada da BAIXAS_CONCILIACAO */}
+      <Route path="/baixas-conciliacao/calculadora" element={<Protect modulo="CALC_JUROS"><CalculadoraJuros /></Protect>} />
       <Route path="/baixas-conciliacao/config" element={<Protect modulo="BAIXAS_CONCILIACAO" adminOnly><ConfigBaixarConciliar /></Protect>} />
       <Route path="/liberacao-encargos" element={<Protect modulo="LIBERA_ENCARGOS"><LiberacaoEncargos /></Protect>} />
       {/* [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*) */}

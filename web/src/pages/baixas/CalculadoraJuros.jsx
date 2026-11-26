@@ -11,6 +11,7 @@
 // Regra da baixa parcial (print de 26/11): juros PROPORCIONAIS ao valor baixado e multa CHEIA. Com k = juros/saldo:
 //   Valor da Baixa = (pago - multa) / (1 + k)      juros = pago - multa - baixa (fecha no centavo)
 // Juros e multa podem ser ajustados a mao (botao Ajustar) se o Mega mostrar outro valor. Tela so de calculo: nao grava nada.
+// [26/11/2026] Chave "Multa": desligada, a multa sai do calculo (total para quitar, Valor da Baixa e Quitar tudo ficam sem multa).
 import React, { useMemo, useRef, useState } from 'react';
 import { Calculator, Copy, Check, Search, Loader2, User, CalendarDays, AlertTriangle, Pencil, RotateCcw, ArrowRight, Info } from 'lucide-react';
 import { api } from '../../api/client';
@@ -76,6 +77,7 @@ export default function CalculadoraJuros() {
   const [dataPag, setDataPag] = useState('');
   const [pago, setPago]       = useState('');
   const [ajuste, setAjuste]   = useState(null);      // { juros, multa } digitados a mao
+  const [comMulta, setComMulta] = useState(true);    // [26/11/2026] multa opcional: a usuaria pode tirar a multa do calculo
   const pagoRef = useRef(null);
 
   async function buscar(e) {
@@ -90,14 +92,14 @@ export default function CalculadoraJuros() {
     } catch (e2) { setBusca(null); setErro(e2.message || 'Não consegui buscar o título.'); }
   }
   function escolher(t) {
-    setSel(t); setDataPag(t.hoje); setPago(''); setAjuste(null);
+    setSel(t); setDataPag(t.hoje); setPago(''); setAjuste(null); setComMulta(true);
     setTimeout(() => pagoRef.current?.focus(), 50);
   }
   function limpar() { setDoc(''); setBusca(null); setSel(null); setPago(''); setAjuste(null); setErro(''); }
 
   const enc = useMemo(() => encargos(sel, dataPag), [sel, dataPag]);
   const jurosCheio = ajuste ? num(ajuste.juros) : enc?.juros;
-  const multaCheia = ajuste ? num(ajuste.multa) : enc?.multa;
+  const multaCheia = !comMulta ? 0 : (ajuste ? num(ajuste.multa) : enc?.multa);
   const totalCheio = sel && enc ? r2(sel.saldo + (jurosCheio || 0) + (multaCheia || 0)) : 0;
 
   const calc = useMemo(() => {
@@ -204,8 +206,16 @@ export default function CalculadoraJuros() {
                 <tbody className="[&_td]:py-1.5">
                   <tr><td className="text-gray-400">Juros</td><td className="text-right text-xs text-gray-500">{pct(sel.percJuros)} a.m. · {fmt(enc.moraDia)}/dia × {enc.dias} dias{sel.saldo !== sel.valor ? ' × saldo' : ''}</td>
                     <td className="text-right w-36">{ajuste ? <input className="input !py-1 text-right font-mono" value={ajuste.juros} onChange={e => setAjuste({ ...ajuste, juros: e.target.value })} /> : <span className="font-mono text-gray-100">{fmt(enc.juros)}</span>}</td></tr>
-                  <tr><td className="text-gray-400">Multa</td><td className="text-right text-xs text-gray-500">{pct(sel.percMulta)}{enc.temMulta ? '' : ' · não se aplica'}</td>
-                    <td className="text-right">{ajuste ? <input className="input !py-1 text-right font-mono" value={ajuste.multa} onChange={e => setAjuste({ ...ajuste, multa: e.target.value })} /> : <span className="font-mono text-gray-100">{fmt(enc.multa)}</span>}</td></tr>
+                  <tr><td className="text-gray-400">
+                      <label className="inline-flex items-center gap-2 cursor-pointer select-none" title="Desligue para calcular sem a multa">
+                        <button type="button" role="switch" aria-checked={comMulta} onClick={() => setComMulta(v => !v)}
+                                className={`relative w-9 h-5 rounded-full transition ${comMulta ? 'bg-prim-600' : 'bg-ink-700'}`}>
+                          <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${comMulta ? 'left-[18px]' : 'left-0.5'}`} />
+                        </button>
+                        <span className={comMulta ? '' : 'line-through text-gray-500'}>Multa</span>
+                      </label></td>
+                    <td className="text-right text-xs text-gray-500">{comMulta ? <>{pct(sel.percMulta)}{enc.temMulta ? '' : ' · não se aplica'}</> : 'fora do cálculo'}</td>
+                    <td className="text-right">{!comMulta ? <span className="font-mono text-gray-500 line-through">{fmt(ajuste ? num(ajuste.multa) : enc.multa)}</span> : ajuste ? <input className="input !py-1 text-right font-mono" value={ajuste.multa} onChange={e => setAjuste({ ...ajuste, multa: e.target.value })} /> : <span className="font-mono text-gray-100">{fmt(enc.multa)}</span>}</td></tr>
                   <tr className="border-t border-ink-700"><td className="text-gray-200 font-semibold">Total para quitar</td><td /><td className="text-right font-mono font-semibold text-gray-100">{fmt(totalCheio)}</td></tr>
                 </tbody>
               </table>
@@ -235,7 +245,7 @@ export default function CalculadoraJuros() {
                   <table className="w-full text-sm">
                     <tbody className="[&_td]:py-1.5">
                       <tr><td className="text-gray-400">Juros sobre o valor baixado</td><td className="text-right text-xs text-gray-500">{pct(calc.k * 100, 4)}</td><td className="text-right font-mono text-gray-100 w-32">{fmt(calc.juros)}</td><td className="w-28 text-right"><Copiar valor={calc.juros} /></td></tr>
-                      <tr><td className="text-gray-400">Multa (cheia)</td><td /><td className="text-right font-mono text-gray-100">{fmt(calc.multa)}</td><td /></tr>
+                      <tr><td className="text-gray-400">{comMulta ? 'Multa (cheia)' : 'Multa (fora do cálculo)'}</td><td /><td className="text-right font-mono text-gray-100">{fmt(calc.multa)}</td><td /></tr>
                       <tr className="border-t border-ink-700"><td className="text-gray-200 font-semibold">Total a receber</td><td /><td className="text-right font-mono font-semibold text-emerald-300">{fmt(calc.total)}</td><td /></tr>
                     </tbody>
                   </table>

@@ -308,6 +308,22 @@ export function nivelDoPar(l, m, unico, diasForte) {
   return { nivel: 3, ident, compat, d };
 }
 
+// [27/11/2026] dias uteis (calendario de feriados do Mega, F_PROXDIAUTIL da filial; fim de semana e feriado nao contam) entre ini e fim.
+// Conta de loja: o caixa fecha e o motorista que volta depois do expediente so entra no financeiro no dia util seguinte (ou o inverso).
+async function diasUteis(ini, fim, fil) {
+  const n = Math.max(1, dias(fim, ini) + 1);
+  const rows = await megaQuery(`SELECT TO_CHAR(D,'YYYY-MM-DD') D FROM (SELECT DATE '${ini}' + LEVEL - 1 D FROM DUAL CONNECT BY LEVEL <= ${n})
+    WHERE MEGA.F_PROXDIAUTIL(D, 1, ${Number(fil) || 200}) = D`);
+  return new Set(rows.map(r => r.D));
+}
+// diferenca em dias uteis: quantos dias uteis ha em (menor, maior]. Mega sex x banco seg = 1; feriado no meio nao conta.
+export const difUteis = (a, b, uteis) => {
+  const [x, y] = a <= b ? [a, b] : [b, a];
+  let n = 0;
+  for (let d = addDias(x, 1); d <= y; d = addDias(d, 1)) if (uteis.has(d)) n++;
+  return n;
+};
+
 async function deparas() {
   const rows = await megaQuery(`SELECT DEP_IN_CODIGO ID, BAN_IN_NUMERO BCO, CTA_AGN_IN_CODIGO CTA, TPD_ST_CODIGO TPD, DEP_ST_HIST_LIKE HL, DEP_CH_NATUREZA NAT, ACAO_IN_CODIGO ACAO, AGN_IN_CODIGO AGN,
       TPD_FIN_ST_CODIGO TPDF, CLA_IDE_ST_CODIGO CIDE, CLA_IN_REDUZIDO CLA, CCF_IDE_ST_CODIGO KIDE, CCF_IN_REDUZIDO CCF, PRO_IDE_ST_CODIGO PIDE, PRO_IN_REDUZIDO PRO, DEP_ST_HISTORICO HIST,
@@ -478,6 +494,8 @@ export async function motor(agn, filtro = {}) {
   ]);
   const regrasRec = linhas.some(l => l.nat === 'C') ? (await regrasRecDesp().catch(() => [])).filter(r => r.ativo) : [];
   if (conta.loja) await clientePorOperacao(movs.filter(m => !m.cp_agn && m.nat === 'D')).catch(() => {});   // [23/11] adiantamento 704 da tela do Mega
+  // [27/11/2026] so loja: calendario de dias uteis da janela (falhou = regra do dia util desligada, fica como antes)
+  const uteis = conta.loja && linhas.length ? await diasUteis(addDias(ini, -P.janela - 7), addDias(fim, P.janela + 7), conta.fil_id).catch(() => null) : null;
   // [28/10/2026] rivais de fora do periodo filtrado tambem disputam o lancamento (tela so em 23/10 nao pode dar a 23/10 o lancamento da linha de 21/10)
   const naTela = new Set(linhas.map(l => l.cba));
   const rivaisPool = [...linhas, ...vizinhas.filter(v => !naTela.has(v.cba))];
@@ -559,10 +577,24 @@ export async function motor(agn, filtro = {}) {
     if (cand.length && maisPerto) {
       const rivais = linhas.filter(o => o.cba !== l.cba && !o.casada && o.nat === l.nat && Math.abs(o.vl - l.vl) < 0.005 && Math.abs(dias(o.data, cand[0].data)) <= P.janela).length;
       const unico = afim || (cand.length === 1 && rivais === 0);
-      const av0 = nivelDoPar(l, cand[0], unico, P.diasForte);
+      let av0 = nivelDoPar(l, cand[0], unico, P.diasForte);
+      // [27/11/2026] CONTA DE LOJA: lancamento do Mega a ate 1 dia util da linha (sab/dom/feriado nao contam), tipo compativel e par unico
+      // NESSE 1 dia util (um lancamento so e uma linha so do banco com o valor) = nivel 2 mesmo sem nome no historico. Industria nao entra.
+      let du = null;
+      if (uteis && av0.nivel === 3 && av0.compat && !afim && (du = difUteis(l.data, cand[0].data, uteis)) <= 1) {
+        const perto = (a, b) => difUteis(a, b, uteis) <= 1;
+        const nMov = cand.filter(m => perto(m.data, l.data)).length;
+        const nLin = rivaisPool.filter(o => !o.casada && o.nat === l.nat && Math.abs(o.vl - l.vl) < 0.005 && perto(o.data, cand[0].data)).length;
+        // historico do lancamento com data (ex.: 704 "PIX ITAU DIA 24/11/2026") diferente da data da linha = e de outro PIX (extrato daquele
+        // dia ainda nao importado): nao sobe. Medido em 26/11 na 21725: SOARES 3.000 x adiantamento do AUDOMAR (PIX de 24/11).
+        const dl = l.data.slice(8, 10) + '/' + l.data.slice(5, 7);
+        const datasHist = [...String(cand[0].hist || '').matchAll(/\b(\d{2})\/(\d{2})\b/g)].map(x => `${x[1]}/${x[2]}`);
+        const outraData = datasHist.length > 0 && !datasHist.includes(dl);
+        if (nMov === 1 && nLin === 1 && !outraData) av0 = { ...av0, nivel: 2, loja_du: true };
+      }
       // [28/10/2026] a outra ponta desta linha e a conta do outro lado da transferencia: vale como identidade
       const av = afim ? { ...av0, ident: true, nivel: av0.compat && av0.d === 0 ? 1 : 2 } : av0;
-      const porque = [av.d === 0 ? 'mesma data' : `${av.d} dia(s) de diferenca`, unico ? 'par unico' : `${cand.length} lancamento(s) e ${rivais + 1} linha(s) do banco com esse valor`,
+      const porque = [av.d === 0 ? 'mesma data' : av.loja_du ? `${av.d} dia(s) corrido(s) = ${du} dia util (loja)` : `${av.d} dia(s) de diferenca`, av.loja_du ? 'par unico no dia util' : unico ? 'par unico' : `${cand.length} lancamento(s) e ${rivais + 1} linha(s) do banco com esse valor`,
         av.compat ? 'tipo compativel' : `tipo ${l.tpd} x ${cand[0].tpd} fora do padrao`, afim ? `outra ponta na conta ${cp.conta}` : av.ident ? 'nome/documento confere' : 'sem nome no historico'].join(', ');
       if (av.nivel <= 2) {
         cand[0].usado = true; l.casada = true;

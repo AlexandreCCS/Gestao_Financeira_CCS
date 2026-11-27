@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import { megaQuery, megaExec } from '../soap/mega.js';
 import { conferirCredito } from './cbcCredito.js';   // [19/11/2026] conferencia do credito (Rede x Mega), so leitura
 import { montarDepositos } from './cbcDeposito.js';   // [20/11/2026] perna do Mega: deposito Rede no extrato Itau x baixas
-import { executarConc, executarBaixa } from './baixarConciliar.js';
+import { executarConc, executarBaixa, executarTx1 } from './baixarConciliar.js';
 
 const MOD_OPERA = 'BAIXAS_CONCILIACAO';
 const EFETIVAR_LIGADO = false;   // [20/11/2026] POST /cbc/efetivar desligado (ver comentario na rota)
@@ -302,7 +302,25 @@ export default async function conciliacaoCartaoRoutes(app) {
     return { periodo: per, filiais: out };
   });
   // [27/11/2026] acoes por deposito (usadas pelas rotas abaixo)
-  async function conciliarDeposito(d, cba, ctx) {
+  // [27/11/2026] deposito com ajuste da taxa antecipada na 1a parcela (sql/48): 977 + conciliacao numa transacao. Se o deposito tambem tem
+  // titulo a baixar, baixa antes (sem extrato, como o caminho B), remonta e concilia com o ajuste.
+  async function conciliarDeposito(d, cba, ctx, remontar) {
+    if (d.ajuste_tx1?.valor > 0) {
+      if (d.baixas?.length) {
+        if (ctx.simular) return { status: 'X', mensagem: 'Deposito com titulo a baixar e ajuste da taxa da 1a parcela: a simulacao nao cobre as duas etapas. Use Baixar e conciliar.' };
+        for (const b of d.baixas) {
+          const res = await executarBaixa({ tipo: 'R', org: b.org, conta: d.extrato.conta, data: d.data, tpd_fin: d.modalidade === 'debito' ? 'CARDEB' : 'CARCRED',
+            doc_fin: String(b.nsu || b.lancto).replace(/\D/g, '') || String(b.lancto),
+            hist: `REDE ${String(d.bandeira).toUpperCase()} ${d.modalidade === 'debito' ? 'DEBITO' : 'CREDITO'} NSU ${b.nsu} DEPOSITO ${d.data.split('-').reverse().join('/')} (CONCILIACAO DE CARTAO - BAIXA SEM EXTRATO)`,
+            titulos: [{ seq: b.seq, lancto: b.lancto, valor: b.valor, juros: 0, multa: 0, desconto: b.desconto }], cbas: [], arquivo: 'REDE', desc_acao: 956, sem_extrato: true }, ctx);
+          if (res.status !== 'B') return { ...res, mensagem: `Baixa do titulo ${b.doc}-${b.parcela} antes do ajuste: ${res.mensagem || res.status}` };
+        }
+        const d2 = remontar ? await remontar(cba) : null;
+        if (!d2 || d2.situacao !== 'PRONTO' || !d2.ajuste_tx1) return { status: 'X', mensagem: `Titulos baixados; o deposito nao ficou pronto para conciliar com o ajuste (${d2 ? d2.situacao + ': ' + d2.motivos.join('; ') : 'nao encontrado'}). Atualize a tela.` };
+        d = d2;
+      }
+      return executarTx1({ org: d.extrato.org, cba, valor: d.ajuste_tx1.valor, docs: d.ajuste_tx1.docs, movs: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })) }, ctx);
+    }
     return d.baixas?.length
       ? executarBaixa({ tipo: 'R', org: d.extrato.org, conta: d.extrato.conta, data: d.extrato.data, tpd_fin: d.modalidade === 'debito' ? 'CARDEB' : 'CARCRED', doc_fin: String(cba),
           hist: `REDE ${String(d.bandeira).toUpperCase()} ${d.modalidade === 'debito' ? 'DEBITO' : 'CREDITO'} DEPOSITO ${d.data.split('-').reverse().join('/')} (CONCILIACAO DE CARTAO - GESTOR FINANCEIRO)`,
@@ -340,8 +358,8 @@ export default async function conciliacaoCartaoRoutes(app) {
       const excl = new Set((it.excluir || []).map(String));
       const baixasSel = (d.baixas || []).filter(b => !excl.has(String(b.nsu)));
       if (d.situacao === 'PRONTO' && d.extrato && baixasSel.length === (d.baixas || []).length) {
-        const res = await conciliarDeposito(d, d.extrato.cba, ctx);
-        resultados.push({ ...base, acao: d.baixas?.length ? 'baixa_conciliacao' : 'conciliacao', valor: d.extrato.valor, movimentos: d.movs.length, baixas: d.baixas?.length || 0, ...res });
+        const res = await conciliarDeposito(d, d.extrato.cba, ctx, async cba => (await montarDepositos(megaQuery, fil, { escolhas: escolhasDe(req.body.escolhas), ...periodoDe(req.body) })).depositos.find(x => x.extrato?.cba === cba));
+        resultados.push({ ...base, acao: d.ajuste_tx1 ? 'conciliacao_ajuste_tx1' : d.baixas?.length ? 'baixa_conciliacao' : 'conciliacao', valor: d.extrato.valor, movimentos: d.movs.length, baixas: d.baixas?.length || 0, ...res });
       } else if (baixasSel.length) {
         if (!r.conta_loja) { resultados.push({ ...base, status: 'X', mensagem: 'Filial sem uma unica conta de loja ativa (Configurar > Loja).' }); continue; }
         for (const x of await baixarSemExtrato(d, baixasSel, r.conta_loja.conta, ctx)) resultados.push({ ...base, acao: 'baixa_sem_extrato', ...x });
@@ -398,12 +416,7 @@ export default async function conciliacaoCartaoRoutes(app) {
       if (d.situacao !== 'PRONTO') { resultados.push({ cba, status: 'X', mensagem: `Deposito nao esta pronto (${d.situacao}): ${d.motivos.join('; ') || 'confira'}` }); continue; }
       // [27/11/2026] com titulo a baixar: baixa (liquido no banco + taxa na acao 956) e concilia junto os ja baixados, numa transacao;
       // sem titulo a baixar: so concilia (janela alargada para a parcela baixada a mao com outra data)
-      const res = d.baixas?.length
-        ? await executarBaixa({ tipo: 'R', org: d.extrato.org, conta: d.extrato.conta, data: d.extrato.data, tpd_fin: d.modalidade === 'debito' ? 'CARDEB' : 'CARCRED', doc_fin: String(cba),
-            hist: `REDE ${String(d.bandeira).toUpperCase()} ${d.modalidade === 'debito' ? 'DEBITO' : 'CREDITO'} DEPOSITO ${d.data.split('-').reverse().join('/')} (CONCILIACAO DE CARTAO - GESTOR FINANCEIRO)`,
-            titulos: d.baixas.map(b => ({ seq: b.seq, lancto: b.lancto, valor: b.valor, juros: 0, multa: 0, desconto: b.desconto })), cbas: [cba], arquivo: 'REDE',
-            desc_acao: 956, movs_conc: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })) }, ctx)
-        : await executarConc({ org: d.mega.org, conta: d.extrato.conta, movs: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: [cba], tipo_conc: 'A', janela: d.janela_conc }, ctx);
+      const res = await conciliarDeposito(d, cba, ctx, async c => (await montarDepositos(megaQuery, fil, { escolhas: escolhasDe(req.body.escolhas) })).depositos.find(x => x.extrato?.cba === c));
       resultados.push({ cba, data: d.data, bandeira: d.bandeira, modalidade: d.modalidade, valor: d.extrato.valor, movimentos: d.movs.length, baixas: d.baixas?.length || 0, ...res });
     }
     req.log.info({ gfin: 'cbc_dep_conciliar', fil, simular, usu: req.user.sub, ok: resultados.filter(x => x.status === 'B' || x.status === 'S').length, n: resultados.length }, 'conciliacao deposito Rede');

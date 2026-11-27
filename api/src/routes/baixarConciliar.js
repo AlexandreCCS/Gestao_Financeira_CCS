@@ -784,6 +784,17 @@ export async function executarConc(item, ctx) {
     return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado desta conciliacao.' };
   } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'a conciliacao'); }
 }
+// [27/11/2026] conciliacao de cartao (sql/48): deposito da Rede com parcela 2+ de venda com taxa antecipada na 1a parcela ->
+// 977 (loja -> ponte 27619, nao contabil) do ajuste + concilia os movimentos existentes contra a linha, numa transacao
+export async function executarTx1(item, ctx) {
+  const token = crypto.randomUUID();
+  const movs = item.movs.map(m => `${num(m.seq)}:${num(m.lancto)}`).join(',');
+  const docs = item.docs.map(d => String(d).replace(/[^0-9A-Za-z]/g, '')).filter(Boolean).join(',');
+  try {
+    await megaExec(`BEGIN MEGA.CCS_P_GFIN_CBC_TX1('${token}', ${num(item.org)}, ${num(item.cba)}, ${f2(item.valor)}, '${ascii(docs, 400)}', '${movs}', ${ctx.usu}, '${ascii(ctx.login, 60)}', '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}'); END;`);
+    return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado deste ajuste.' };
+  } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'o ajuste da taxa e a conciliacao'); }
+}
 async function executarReal(item, ctx) {
   const token = crypto.randomUUID();
   try {

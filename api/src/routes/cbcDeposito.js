@@ -51,6 +51,10 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
   const ign = (await megaQuery(`SELECT IGN_IN_CODIGO ID, IGN_CH_TIPO T, IGN_ST_CHAVE CH, IGN_ST_NSU NSU, IGN_ST_MOTIVO M, USU_ST_LOGIN U, TO_CHAR(IGN_DT_INCLUSAO,'YYYY-MM-DD HH24:MI') EM
       FROM MEGA.CCS_TB_GFIN_CBC_IGNORA WHERE FIL_IN_CODIGO = ${fil} AND IGN_CH_ATIVO = 'S'`).catch(() => [])).map(x => ({ id: num(x.ID), tipo: x.T, chave: x.CH, nsu: x.NSU || '', motivo: x.M || '', usuario: x.U || '', em: x.EM || '' }));
   const ignDep = new Map(ign.filter(i => i.tipo === 'D').map(i => [i.chave, i])), ignParc = new Map(ign.filter(i => i.tipo === 'P').map(i => [`${i.chave}|${i.nsu}`, i]));
+  // [27/11/2026] taxa antecipada na 1a parcela (sql/48): vendas da lista CCS_TB_GFIN_CBC_TX1, depositos ate CBC_TX1_ATE -> ajuste 977 automatico
+  const tx1 = await megaQuery(`SELECT T.MOV_ST_DOCUMENTO DOC, T.AGN_IN_CODIGO AGN, (SELECT TO_CHAR(TO_DATE(TO_CHAR(MAX(P.PARAM_RE_VALOR)),'YYYYMMDD'),'YYYY-MM-DD') FROM MEGA.CCS_TB_GFIN_PARAM P WHERE P.PARAM_ST_CHAVE = 'CBC_TX1_ATE') ATE
+      FROM MEGA.CCS_TB_GFIN_CBC_TX1 T WHERE T.FIL_IN_CODIGO = ${fil}`).catch(() => []);
+  const tx1Ate = tx1[0]?.ATE || null, tx1Docs = new Set(tx1.map(x => String(x.DOC)));
   const datas = deps.map(d => d.data).sort();
   const ini = opc.ini || datas[0], fim = opc.fim || datas[datas.length - 1];
   // ---------------------------------------------------------------- extrato do Itau: linhas "REDE ..." do estabelecimento da filial
@@ -202,6 +206,14 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       }
       const valMov = r2(ms.reduce((s, m) => s + (m.mov ? m.mov.valor : 0), 0));
       const tarMega = r2(ms.reduce((s, m) => s + m.tarifa, 0));
+      // [27/11/2026] parcela 2+ de venda com a taxa toda na 1a parcela: o Mega baixou o bruto, a Rede pagou o liquido -> ajuste 977 da diferenca
+      const ajTx1 = r2(valMov - p.liquido);
+      if (ms.length === 1 && ms[0].mov && !ms[0].mov.conciliado && p.parcela >= 2 && tarMega === 0 && tx1Ate && g.data <= tx1Ate && tx1Docs.has(String(ms[0].doc))
+          && ajTx1 > 0.005 && ajTx1 <= r2(p.mdr + TOL_VALOR)) {
+        return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: 'AUTO',
+          mega: { docs: ms[0].doc, parcela: ms[0].parcela, valor: ms[0].valor, baixa: ms[0].baixa, tarifa: 0, movimento: valMov, lanctos: [ms[0].mov.lancto], sem_movimento: false, conciliado: false },
+          tx1: { valor: ajTx1, doc: String(ms[0].doc) }, obs: `taxa antecipada na 1a parcela: ajuste ${ajTx1.toFixed(2)} (acao 977, nao contabil) na conciliacao`, dif: 0, tarifa_faltante: 0 };
+      }
       return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: ms.length ? 'AUTO' : null,
         mega: ms.length ? { docs: ms.map(m => m.doc).join(' + '), parcela: ms[0].parcela, valor: r2(ms.reduce((s, m) => s + m.valor, 0)), baixa: ms[0].baixa, tarifa: tarMega,
           movimento: valMov, lanctos: ms.map(m => m.mov?.lancto).filter(Boolean), sem_movimento: ms.some(m => !m.mov), conciliado: ms.some(m => m.mov?.conciliado) } : null,
@@ -212,6 +224,8 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     const lista = [...movs.values()];
     const somaMov = r2(lista.reduce((s, m) => s + m.valor, 0));
     const somaBaixar = r2(baixas.reduce((s, b) => s + b.valor, 0));
+    const tx1Parc = parcelas.filter(p => p.tx1);
+    const ajusteTx1 = tx1Parc.length ? { valor: r2(tx1Parc.reduce((s, p) => s + p.tx1.valor, 0)), docs: [...new Set(tx1Parc.map(p => p.tx1.doc))], parcelas: tx1Parc.length } : null;
     const ajustesDia = ajustes.filter(a => a.data === g.data);
     const valorBanco = e ? e.valor : valorRede;
     const motivos = [];
@@ -233,7 +247,8 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     const espalho = datas.length ? dias(datas[datas.length - 1], datas[0]) : 0;
     // [27/11/2026] diferenca de data so avisa (parcela baixada a mao com outra data concilia do mesmo jeito; janela da conciliacao ate 60 dias)
     if (espalho > janela) motivos.push(`aviso: datas com ${espalho} dias de distancia (${datas[0]} a ${datas[datas.length - 1]})`);
-    const dif = r2(somaMov + somaBaixar - valorBanco);
+    if (ajusteTx1) motivos.push(`ajuste da taxa antecipada na 1a parcela: ${ajusteTx1.valor.toFixed(2)} (acao 977, NF ${ajusteTx1.docs.join(', ')})` + (baixas.length ? ' · com titulo a baixar: baixa primeiro (sem extrato) e concilia em seguida' : ''));
+    const dif = r2(somaMov + somaBaixar - (ajusteTx1 ? ajusteTx1.valor : 0) - valorBanco);
     let situacao;
     if (e && (e.status === 'S' || e.con)) situacao = 'CONCILIADO';
     else if (ignDep.get(g.chave)) situacao = 'IGNORADO';
@@ -248,7 +263,7 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       rede: { valor: valorRede, parcelas: parcelas.length, soma_parcelas: somaParc, status: g.rede.map(d => d.status).join(', ') },
       extrato: e ? { cba: e.cba, conta: e.conta, org: e.org, data: e.data, valor: e.valor, historico: e.historico, status: e.status } : null,
       mega: { movimentos: lista.length, soma: somaMov, a_baixar: somaBaixar, org: lista[0]?.org || e?.org || null, conta: lista[0]?.conta || e?.conta || null },
-      baixas, janela_conc: Math.max(janela, espalho + 1),
+      baixas, ajuste_tx1: ajusteTx1, janela_conc: Math.max(janela, espalho + 1),
       dif, tarifa_faltante: tarifaFalt, ajuste_rede: r2(somaParc - valorRede), motivos, parcelas,
       movs: lista.map(m => ({ seq: m.seq, lancto: m.lancto, valor: m.valor, data: m.data, conciliado: m.conciliado })) });
   }

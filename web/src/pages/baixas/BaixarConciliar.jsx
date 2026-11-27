@@ -435,6 +435,17 @@ export default function BaixarConciliar() {
                 <div className="text-[11px] uppercase tracking-wider text-gray-500">Lançamentos no Mega</div>
                 <div className="text-xs text-gray-400 space-y-0.5">{item.movs.map(m => <div key={m.lancto} className="flex gap-3"><span className="font-mono text-gray-500 w-20">{fmtBr(m.data)}</span><span className="flex-1 truncate text-gray-300">{m.hist || m.tpd} {m.doc ? `· ${m.doc}` : ''}</span><span className="font-mono">{fmt(m.vl ?? m.valor)}</span></div>)}</div>
               </>}
+              {/* [27/11/2026] nivel 3: o motor so sugere (candidatos_mov); aqui a pessoa escolhe com qual lancamento do Mega concilia */}
+              {!feito && !(item.movs || []).length && (item.candidatos_mov || []).length > 0 && <>
+                <div className="text-[11px] uppercase tracking-wider text-gray-500">Possíveis lançamentos no Mega: escolha com qual conciliar</div>
+                <div className="space-y-1">{item.candidatos_mov.map(m => (
+                  <div key={m.lancto} className="flex items-center gap-2 text-xs">
+                    <span className="font-mono text-gray-500 w-20">{fmtBr(m.data)}</span>
+                    <span className="flex-1 truncate text-gray-300" title={m.hist || ''}>{m.lancto} · {m.tpd} {m.doc ? `· ${m.doc}` : ''} {m.hist ? `· ${m.hist.trim()}` : ''}</span>
+                    <span className="font-mono text-gray-300">{fmt(m.vl ?? m.valor)}</span>
+                    <button className="btn-prim text-xs py-1" disabled={rodando} onClick={() => conciliarItem({ ...item, movs: [m] })}><Link2 size={12} /> Conciliar com este</button>
+                  </div>))}</div>
+              </>}
               {item.situacao === 'decidir' && item.depdin && (
                 <div className="space-y-1">
                   <div className="text-[11px] uppercase tracking-wider text-gray-500">Depósitos em dinheiro do dia (desmarque o que não for dinheiro da loja)</div>
@@ -581,7 +592,7 @@ export default function BaixarConciliar() {
       {reais.length > 0 && <Secao titulo="Lançar no Mega" qt={reais.length} icone={FilePlus2} aberta={secoes.real} onToggle={() => setSecoes(s => ({ ...s, real: !s.real }))} nota="tarifas e outros movimentos reais, sem título">
         {reais.map(i => <Card key={i.id} item={i} acao={<button className="btn-prim text-xs py-1.5" disabled={rodando || res[i.id]?.status === 'B' || !i.depara?.id || !i.depara?.classe} title={!i.depara?.id ? 'sem de-para para esta linha' : !i.depara?.classe ? 'de-para sem classe financeira: configure' : ''} onClick={() => lancarReal(i)}><FilePlus2 size={13} /> Lançar</button>} />)}</Secao>}
       {(lotes.length + conciliar.length) > 0 && <Secao titulo="Conciliar" qt={lotes.length + conciliar.length} icone={Link2} aberta={secoes.conciliar} onToggle={() => setSecoes(s => ({ ...s, conciliar: !s.conciliar }))} nota="já está no Mega, só falta ligar ao extrato (inclui lote de cobrança)">
-        {[...lotes, ...conciliar].map(i => <Card key={i.id} item={i} acao={<button className="btn-prim text-xs py-1.5" disabled={rodando || res[i.id]?.status === 'B' || !(i.movs || []).length} onClick={() => conciliarItem(i)}><Link2 size={13} /> Conciliar</button>} />)}</Secao>}
+        {[...lotes, ...conciliar].map(i => <Card key={i.id} item={i} acao={<button className="btn-prim text-xs py-1.5" disabled={rodando || res[i.id]?.status === 'B' || !((i.movs || []).length || (i.candidatos_mov || []).length)} onClick={() => (i.movs || []).length ? conciliarItem(i) : i.candidatos_mov.length === 1 ? conciliarItem({ ...i, movs: [i.candidatos_mov[0]] }) : setAbertos(a => a.has?.(i.id) ? a : toggle(a, i.id))}><Link2 size={13} /> Conciliar</button>} />)}</Secao>}
       {infos.length > 0 && <Secao titulo="Informativos" qt={infos.length} icone={Info} aberta={secoes.info} onToggle={() => setSecoes(s => ({ ...s, info: !s.info }))} nota="aplicação automática e rendimentos: não são títulos">
         {infos.map(i => <Card key={i.id} item={i} />)}</Secao>}
 

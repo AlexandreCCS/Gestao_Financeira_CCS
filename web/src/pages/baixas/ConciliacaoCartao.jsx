@@ -394,7 +394,7 @@ function BlocoFilial({ e, tipo, filiais, fil, setFil, prep, imp, onValidar, onIm
 // as parcelas pagas naquele depósito = os movimentos da baixa automática no banco (ação 706). Conciliar só o que fecha no centavo (motor do Gestor).
 // Tarifa não lançada e ajuste da Rede (aluguel) ficam SÓ SINALIZADOS (decisão 20/11): nada é lançado por aqui. Api: cbcDeposito.js.
 const SITD = {
-  PRONTO: ['pronto para conciliar', 'var(--cb-ok)'], DECIDIR: ['escolher o título', 'var(--cb-warn)'], DIFERENCA: ['diferença (sinalizada)', 'var(--cb-warn)'], PENDENTE: ['pendente', 'var(--cb-err)'],
+  PRONTO: ['pronto para conciliar', 'var(--cb-ok)'], DECIDIR: ['escolher o título', 'var(--cb-warn)'], IGNORADO: ['ignorado', 'var(--cb-muted)'], DIFERENCA: ['diferença (sinalizada)', 'var(--cb-warn)'], PENDENTE: ['pendente', 'var(--cb-err)'],
   CONCILIADO: ['já conciliado', 'var(--cb-muted)'], SEM_EXTRATO: ['aguardando extrato do Itaú', 'var(--cb-info)'], SO_EXTRATO: ['só no extrato', 'var(--cb-warn)'],
 };
 // [27/11/2026 - Alexandre Carvalho] "Buscar no contas a receber" na parcela da Rede sem titulo achado (ou com varios): mesma rota da conciliacao
@@ -455,73 +455,191 @@ function BuscaTituloCartao({ alvo, fil, onEscolher, onClose }) {
   );
 }
 
+// [27/11/2026 - Alexandre Carvalho] Secao Conciliar "igual a conciliacao normal" (decisoes do Alexandre 27/11): filiais em chips com pendentes,
+// periodo (padrao ultimos 30 dias), Tudo/Debito/Credito, busca, secoes; marcar deposito E parcela (desmarcada = continua pendente); UM botao
+// "Baixar e conciliar" (PRONTO completo = baixa + conciliacao; sem extrato ou parcela desmarcada = so baixa as marcadas); Ignorar com motivo;
+// historico (Feitas) com Desfazer. API: /cbc/depositos(/resumo|/executar), /cbc/ignorar, /cbc/historico, /bxc/estornar.
+const hojeIso = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const menosDias = (s, n) => { const d = new Date(s + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
+const SECOES = ['PRONTO', 'DECIDIR', 'PENDENTE', 'SEM_EXTRATO', 'DIFERENCA', 'SO_EXTRATO', 'CONCILIADO', 'IGNORADO'];
+const FECHADAS = new Set(['CONCILIADO', 'IGNORADO']);
+const podeSel = d => d.situacao === 'PRONTO' || (d.baixas?.length > 0 && !['CONCILIADO', 'IGNORADO'].includes(d.situacao));
+
 function DepositosItau({ filiais, filialInicial, tick }) {
   const [fil, setFil] = useState(filialInicial || '');
+  const [per, setPer] = useState({ ini: menosDias(hojeIso(), 30), fim: hojeIso() });
+  const [mod, setMod] = useState('');            // '' | debito | credito
+  const [busca, setBusca] = useState('');
+  const [resumoFil, setResumoFil] = useState([]);
   const [dados, setDados] = useState(null); const [erro, setErro] = useState(''); const [carregando, setCarregando] = useState(false);
-  const [filtro, setFiltro] = useState('abertos'); const [aberto, setAberto] = useState({}); const [sel, setSel] = useState({});
+  const [aberto, setAberto] = useState({}); const [secAberta, setSecAberta] = useState({});
+  const [sel, setSel] = useState({});            // chave -> true
+  const [excl, setExcl] = useState({});          // chave -> { nsu: true } (parcela desmarcada)
   const [val, setVal] = useState(null); const [res, setRes] = useState(null); const [rodando, setRodando] = useState(false);
-  // [27/11/2026] titulo escolhido nas parcelas DECIDIR (varios titulos em aberto com o mesmo valor): { nsu: 'seq:lancto' }
   const [escolhas, setEscolhas] = useState({});
-  const [buscar, setBuscar] = useState(null);   // [27/11/2026] parcela em busca no contas a receber
-  useEffect(() => { if (filialInicial) setFil(filialInicial); }, [filialInicial, tick]);
-  useEffect(() => { setEscolhas({}); }, [fil]);
-  const carregar = async (f = fil, esc = escolhas) => {
-    setVal(null); setRes(null); setSel({});
+  const [buscar, setBuscar] = useState(null);
+  const [ignorar, setIgnorar] = useState(null);  // { tipo, d, p }
+  const [motivo, setMotivo] = useState('');
+  const [hist, setHist] = useState(null); const [verHist, setVerHist] = useState(false); const [desfazer, setDesfazer] = useState(null);
+  useEffect(() => { if (filialInicial) setFil(String(filialInicial)); }, [filialInicial, tick]);
+  useEffect(() => { setEscolhas({}); setSel({}); setExcl({}); }, [fil]);
+  const nomeFil = f => filiais.find(x => String(x.fil) === String(f))?.nome || '';
+  const carregarResumo = async (p = per) => { try { setResumoFil((await api.cbcDepResumo(p)).filiais || []); } catch { setResumoFil([]); } };
+  const carregarHist = async (f = fil, p = per) => { if (!f) { setHist(null); return; } try { setHist((await api.cbcHistorico(f, p)).logs || []); } catch (e) { setHist([]); } };
+  const carregar = async (f = fil, esc = escolhas, p = per) => {
+    setVal(null); setRes(null);
     if (!f) { setDados(null); return; }
     setCarregando(true); setErro('');
-    try { setDados(await api.cbcDepositos(f, esc)); } catch (e) { setDados(null); setErro(e.detalhe || e.message); } finally { setCarregando(false); }
+    try { setDados(await api.cbcDepositos(f, esc, p)); } catch (e) { setDados(null); setErro(e.detalhe || e.message); } finally { setCarregando(false); }
+    if (verHist) carregarHist(f, p);
   };
-  const escolher = (nsu, id) => { const esc = { ...escolhas, [nsu]: id }; if (!id) delete esc[nsu]; setEscolhas(esc); carregar(fil, esc); };
   useEffect(() => { carregar(fil); }, [fil, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { carregarResumo(); }, [tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const atualizar = () => { carregar(fil, escolhas, per); carregarResumo(per); };
+  const escolher = (nsu, id) => { const esc = { ...escolhas, [nsu]: id }; if (!id) delete esc[nsu]; setEscolhas(esc); carregar(fil, esc); };
   const R = dados?.resumo || {};
   const n = k => R[k]?.depositos || 0, v = k => R[k]?.valor || 0;
-  const deps = (dados?.depositos || []).filter(d => filtro === 'todos' ? true : filtro === 'abertos' ? d.situacao !== 'CONCILIADO' : d.situacao === filtro);
-  const prontos = (dados?.depositos || []).filter(d => d.situacao === 'PRONTO');
-  const cbasSel = prontos.filter(d => sel[d.extrato.cba]).map(d => d.extrato.cba);
-  const totSel = prontos.filter(d => sel[d.extrato.cba]).reduce((s, d) => s + d.extrato.valor, 0);
-  const todosSel = prontos.length > 0 && cbasSel.length === prontos.length;
+  const t = busca.trim().toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const casaBusca = d => !t || JSON.stringify([d.bandeira, d.data, d.extrato?.historico, d.rede?.valor, d.extrato?.valor, d.parcelas.map(p => [p.nsu, p.bruto, p.liquido, p.obs, p.mega?.docs, p.titulo?.doc, p.titulo?.nome])]).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(t);
+  const deps = (dados?.depositos || []).filter(d => (!mod || d.modalidade === mod) && casaBusca(d));
+  const selecionados = deps.filter(d => sel[d.chave] && podeSel(d));
+  const valorSel = d => { const ex = excl[d.chave] || {}; const comp = !Object.keys(ex).some(k => ex[k]); return d.situacao === 'PRONTO' && comp ? d.extrato.valor : (d.baixas || []).filter(b => !ex[b.nsu]).reduce((s, b) => s + b.valor, 0); };
+  const totSel = selecionados.reduce((s, d) => s + valorSel(d), 0);
+  const itens = () => selecionados.map(d => ({ chave: d.chave, excluir: Object.keys(excl[d.chave] || {}).filter(k => excl[d.chave][k]) }));
   const validar = async () => {
     setRodando(true); setRes(null);
-    try { setVal(await api.cbcDepConciliar({ filial: Number(fil), cbas: cbasSel, simular: true, escolhas })); } catch (e) { setVal({ erro: e.detalhe || e.message }); } finally { setRodando(false); }
+    try { setVal(await api.cbcDepExecutar({ filial: Number(fil), itens: itens(), simular: true, escolhas, ...per })); } catch (e) { setVal({ erro: e.detalhe || e.message }); } finally { setRodando(false); }
   };
-  const valOk = val?.resultados?.length === cbasSel.length && val.resultados.every(r => r.status === 'S') && cbasSel.every(c => val.resultados.some(r => r.cba === c));
-  const conciliar = async () => {
-    const nb = prontos.filter(d => sel[d.extrato.cba]).reduce((s, d) => s + (d.baixas?.length || 0), 0);
-    if (!window.confirm(`Conciliar ${cbasSel.length} depósito(s) da Rede no extrato do Itaú (${fmt(totSel)})?${nb ? `\n\n${nb} título(s) serão BAIXADOS pelo líquido, com a taxa da Rede na ação 956.` : ''}\n\nCada depósito é gravado sozinho (tudo ou nada por depósito).`)) return;
+  const valOk = val?.resultados?.length > 0 && val.resultados.every(r => r.status === 'S') && selecionados.every(d => val.resultados.some(r => r.chave === d.chave));
+  const executar = async () => {
+    const nb = selecionados.reduce((s, d) => s + (d.baixas || []).filter(b => !(excl[d.chave] || {})[b.nsu]).length, 0);
+    if (!window.confirm(`Baixar e conciliar ${selecionados.length} depósito(s) da Rede (${fmt(totSel)})?${nb ? `\n\n${nb} título(s) serão BAIXADOS pelo líquido (taxa da Rede na ação 956 quando ainda não lançada).` : ''}\n\nDepósito sem extrato ou com parcela desmarcada: só baixa as marcadas e continua pendente para conciliar depois.`)) return;
     setRodando(true);
-    try { setRes(await api.cbcDepConciliar({ filial: Number(fil), cbas: cbasSel, simular: false, escolhas })); setVal(null); setSel({}); setDados(await api.cbcDepositos(fil, escolhas)); }
+    try { setRes(await api.cbcDepExecutar({ filial: Number(fil), itens: itens(), simular: false, escolhas, ...per })); setVal(null); setSel({}); setExcl({}); setEscolhas({}); await carregar(fil, {}); carregarResumo(); }
     catch (e) { setRes({ erro: e.detalhe || e.message }); } finally { setRodando(false); }
   };
-  // [27/11/2026] caminho B: baixar agora (sem extrato), conciliar depois. Simula, confirma, grava; depois a parcela vira "baixada a mao".
-  const baixarAgora = async d => {
-    setRodando(true); setRes(null); setVal(null);
+  const salvarIgnorar = async () => {
+    const { tipo, d, p } = ignorar;
     try {
-      const sim = await api.cbcDepBaixar({ filial: Number(fil), chave: d.chave, simular: true, escolhas });
-      const ruins = (sim.resultados || []).filter(r => r.status !== 'S');
-      if (ruins.length) { setRes({ resultados: sim.resultados.map((r, i) => ({ ...r, cba: `b${i}`, data: d.data, bandeira: d.bandeira, modalidade: d.modalidade, valor: r.valor })) }); return; }
-      const txt = d.baixas.map(b => `• ${b.doc}-${b.parcela}: ${fmt(b.valor)} no banco${b.desconto ? ` + taxa ${fmt(b.desconto)} na ação 956` : ''}`).join('\n');
-      if (!window.confirm(`Baixar agora, sem o extrato do Itaú (o depósito de ${fmtBr(d.data)} concilia depois, quando o extrato chegar)?\n\n${txt}\n\nCada título é baixado com a data do depósito na conta da loja.`)) return;
-      const r = await api.cbcDepBaixar({ filial: Number(fil), chave: d.chave, simular: false, escolhas });
-      setRes({ resultados: (r.resultados || []).map((x, i) => ({ ...x, cba: `b${i}`, data: d.data, bandeira: d.bandeira, modalidade: d.modalidade })) });
-      setEscolhas({}); setDados(await api.cbcDepositos(fil, {}));
-    } catch (e) { setRes({ erro: e.detalhe || e.message }); } finally { setRodando(false); }
+      await api.cbcIgnorar({ filial: Number(fil), tipo, chave: d.chave, nsu: p?.nsu || undefined, data: d.data, valor: p ? p.bruto : (d.extrato?.valor || d.rede?.valor || 0), motivo: motivo.trim() });
+      setIgnorar(null); setMotivo(''); carregar(); carregarResumo();
+    } catch (e) { setErro(e.detalhe || e.message); }
+  };
+  const voltar = async id => { try { await api.cbcIgnorarVoltar(id); carregar(); carregarResumo(); } catch (e) { setErro(e.detalhe || e.message); } };
+  const confirmarDesfazer = async () => {
+    const f = desfazer; setDesfazer(null); setRodando(true);
+    try { const r = await api.bxcEstornar(f.log_id); if (!r.ok) setErro(r.log?.mensagem || 'O Mega não deixou desfazer.'); await carregar(); carregarHist(); carregarResumo(); }
+    catch (e) { setErro(e.detalhe || e.message); } finally { setRodando(false); }
   };
   const resultados = res?.resultados || val?.resultados || [];
+  const linhaDep = d => {
+    const [rot, cor] = SITD[d.situacao] || [d.situacao, 'var(--cb-muted)'];
+    const k = d.chave, ab = !!aberto[k], pode = podeSel(d), ex = excl[k] || {};
+    return (
+      <React.Fragment key={k}>
+        <tr className="border-t border-[var(--cb-line)] align-top">
+          <td className="px-3 py-2">{pode && <input type="checkbox" aria-label={`Selecionar depósito ${fmtBr(d.data)} ${d.bandeira}`} checked={!!sel[k]} onChange={e => { setVal(null); setSel(s => ({ ...s, [k]: e.target.checked })); }} />}</td>
+          <td className="px-3 py-2"><Chip cor={cor}>{rot}</Chip></td>
+          <td className="px-3 py-2 tabular-nums">{fmtBr(d.data)}</td>
+          <td className="px-3 py-2">
+            {d.parcelas.length > 0
+              ? <button className="inline-flex items-center gap-1 hover:underline" aria-expanded={ab} onClick={() => setAberto(a => ({ ...a, [k]: !ab }))}>{ab ? <ChevronDown size={14} /> : <ChevronRight size={14} />}{d.bandeira} · {d.modalidade} <span className={`text-xs ${muted}`}>({d.parcelas.length} parcela{d.parcelas.length > 1 ? 's' : ''})</span></button>
+              : <>{d.bandeira} · {d.modalidade}</>}
+          </td>
+          <td className="px-3 py-2 text-right tabular-nums">{d.rede ? fmt(d.rede.valor) : '—'}</td>
+          <td className="px-3 py-2 text-right tabular-nums">{d.extrato ? fmt(d.extrato.valor) : '—'}</td>
+          <td className="px-3 py-2 text-right tabular-nums">{d.mega ? <>{fmt(d.mega.soma)} <span className={`text-xs ${muted}`}>({d.mega.movimentos})</span>{d.mega.a_baixar ? <div className="text-xs" style={{ color: 'var(--cb-info)' }}>+ {fmt(d.mega.a_baixar)} a baixar</div> : null}</> : '—'}</td>
+          <td className="px-3 py-2 text-right tabular-nums" style={{ color: d.dif ? 'var(--cb-warn)' : undefined }}>{d.dif == null ? '—' : d.dif ? fmt(d.dif) : '0,00'}</td>
+          <td className={`px-3 py-2 text-xs ${muted}`}>{d.motivos.join(' · ')}
+            <div className="mt-1 flex gap-3">
+              {d.situacao === 'IGNORADO' && d.ignorado && <button className="underline" onClick={() => voltar(d.ignorado.id)}>voltar para pendentes</button>}
+              {!['CONCILIADO', 'IGNORADO'].includes(d.situacao) && d.rede && <button className="underline" onClick={() => { setMotivo(''); setIgnorar({ tipo: 'D', d }); }}>ignorar depósito</button>}
+            </div>
+          </td>
+        </tr>
+        {ab && (
+          <tr className="bg-[var(--cb-soft)]"><td></td><td colSpan={8} className="px-3 py-2">
+            <table className="w-full text-xs">
+              <thead className={muted}><tr>
+                <th className="py-1 w-6"></th><th className="text-left py-1">Venda · parcela</th><th className="text-left py-1">NSU</th><th className="text-right py-1">Bruto</th><th className="text-right py-1">Taxa Rede</th><th className="text-right py-1">Líquido</th>
+                <th className="text-left py-1 pl-4">Mega: doc · parcela</th><th className="text-left py-1">Baixa</th><th className="text-right py-1">Tarifa 956</th><th className="text-right py-1">No banco (706)</th><th className="text-right py-1">Dif.</th><th className="text-left py-1 pl-3">Obs.</th>
+              </tr></thead>
+              <tbody>{d.parcelas.map((p, i) => (
+                <tr key={i} className="border-t border-[var(--cb-line)]" style={{ opacity: ex[p.nsu] ? 0.5 : 1 }}>
+                  <td className="py-1">{p.acao === 'BAIXAR' && pode && <input type="checkbox" aria-label={`Baixar a parcela NSU ${p.nsu}`} checked={!ex[p.nsu]} onChange={e => { setVal(null); setExcl(x => ({ ...x, [k]: { ...(x[k] || {}), [p.nsu]: !e.target.checked } })); }} />}</td>
+                  <td className="py-1 tabular-nums">{fmtBr(p.venda)} · {p.parcela}/{p.parcelas}</td><td className="py-1">{p.nsu || '—'}</td>
+                  <td className="py-1 text-right tabular-nums">{fmt(p.bruto)}</td><td className="py-1 text-right tabular-nums">{fmt(p.mdr)}</td><td className="py-1 text-right tabular-nums">{fmt(p.liquido)}</td>
+                  <td className="py-1 pl-4">
+                    {p.acao === 'BAIXAR' && <span><Chip cor="var(--cb-info)">baixar</Chip> {p.titulo.doc}-{p.titulo.parcela} · {p.titulo.nome} <span className={muted}>(saldo {fmt(p.titulo.saldo)})</span>{p.titulo.escolhido && <button className="ml-2 underline" onClick={() => escolher(p.nsu, '')}>trocar</button>}</span>}
+                    {p.acao === 'DECIDIR' && (
+                      <select className={`${campo} text-xs py-1`} aria-label={`Título da parcela NSU ${p.nsu}`} value="" onChange={e => escolher(p.nsu, e.target.value)}>
+                        <option value="">Escolha o título ({p.candidatos.length})…</option>
+                        {p.candidatos.map(c => <option key={c.id} value={c.id}>{c.doc}-{c.parcela} · {c.nome} · emissão {fmtBr(c.emissao)} · saldo {fmt(c.saldo)}</option>)}
+                      </select>
+                    )}
+                    {p.acao === 'IGNORADA' && <span><Chip cor="var(--cb-muted)">ignorada</Chip> <button className="underline" onClick={() => voltar(p.ignorado.id)}>voltar</button></span>}
+                    {!['BAIXAR', 'DECIDIR', 'IGNORADA'].includes(p.acao) && (p.mega ? <>{p.acao === 'MANUAL' && <Chip cor="var(--cb-muted)">baixada à mão</Chip>} {p.mega.docs} · {p.mega.parcela}</> : '—')}
+                    {(!p.acao || p.acao === 'DECIDIR') && d.situacao !== 'CONCILIADO' && (d.extrato || dados?.conta_loja) && (
+                      <button className="ml-2 inline-flex items-center gap-1 underline" onClick={() => setBuscar({ ...p, org: d.extrato?.org || dados?.conta_loja?.org })}>Buscar no contas a receber</button>
+                    )}
+                    {p.acao !== 'IGNORADA' && !['CONCILIADO', 'IGNORADO'].includes(d.situacao) && !p.mega && (
+                      <button className={`ml-2 underline ${muted}`} onClick={() => { setMotivo(''); setIgnorar({ tipo: 'P', d, p }); }}>ignorar</button>
+                    )}
+                  </td><td className="py-1 tabular-nums">{p.mega ? fmtBr(p.mega.baixa) : '—'}</td>
+                  <td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.tarifa) : p.acao === 'BAIXAR' ? (p.taxa_ja_lancada ? <span className={muted}>já lançada</span> : <span style={{ color: 'var(--cb-info)' }}>{fmt(p.mdr)}</span>) : '—'}</td>
+                  <td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.movimento) : p.acao === 'BAIXAR' ? <span style={{ color: 'var(--cb-info)' }}>{fmt(p.liquido)}</span> : '—'}</td>
+                  <td className="py-1 text-right tabular-nums" style={{ color: p.dif ? 'var(--cb-warn)' : undefined }}>{p.dif == null ? '—' : p.dif ? fmt(p.dif) : '0,00'}</td>
+                  <td className={`py-1 pl-3 ${muted}`}>{[ex[p.nsu] ? 'desmarcada: fica pendente' : '', p.obs, p.tarifa_faltante ? `tarifa não lançada (${fmt(p.tarifa_faltante)})` : '', p.mega?.conciliado ? 'já conciliado' : ''].filter(Boolean).join(' · ')}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </td></tr>
+        )}
+      </React.Fragment>
+    );
+  };
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className={`text-sm ${muted}`}>Cada depósito da Rede no extrato do Itaú × as parcelas pagas: parcela já baixada (automática ou à mão) só concilia; parcela sem baixa acha o título e baixa com a taxa na ação 956.</div>
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="sr-only" htmlFor="cbc-fil-dep">Filial</label>
-          <select id="cbc-fil-dep" className={`${campo} w-full sm:w-auto sm:max-w-[440px]`} value={fil} onChange={e => setFil(e.target.value)}>
-            <option value="">Escolha a filial…</option>
-            {filiais.map(f => <option key={f.fil} value={f.fil}>{f.fil} · {f.nome}</option>)}
-          </select>
-          <button className={btnSec} disabled={!fil || carregando} onClick={() => carregar()}>{carregando ? <Loader2 size={14} className="animate-spin" /> : <History size={14} />} Atualizar</button>
+      <div className={`text-sm ${muted}`}>Como na conciliação normal: escolha a filial e o período, marque o que vai baixar e conciliar. Parcela já baixada (automática ou à mão) só concilia; parcela sem baixa acha o título e baixa com a taxa na ação 956; depósito sem extrato ou com parcela desmarcada só baixa as marcadas e continua pendente.</div>
+      <div className="flex flex-wrap gap-2">
+        {(resumoFil.length ? resumoFil : filiais.map(f => ({ filial: f.fil }))).map(r => (
+          <button key={r.filial} className={`${btnSec} ${String(fil) === String(r.filial) ? 'bg-[var(--cb-prim)] text-white border-transparent' : ''}`} onClick={() => setFil(String(r.filial))}>
+            {r.filial} · {(nomeFil(r.filial) || '').slice(0, 26)} {r.pendentes != null && <span className="ml-1 rounded-full px-2 text-xs bg-[var(--cb-soft)] text-[var(--cb-text)]">{r.pendentes}</span>}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-full border border-[var(--cb-line)] overflow-hidden">
+          {[['', 'Tudo'], ['debito', 'Débito'], ['credito', 'Crédito']].map(([k, tx]) => <button key={k} className={`px-3 py-1.5 text-sm ${mod === k ? 'bg-[var(--cb-soft)] font-semibold' : ''}`} onClick={() => setMod(k)}>{tx}</button>)}
         </div>
+        <label className="sr-only" htmlFor="cbc-ini">De</label><input id="cbc-ini" type="date" className={campo} value={per.ini} onChange={e => setPer(p => ({ ...p, ini: e.target.value }))} />
+        <span className={muted}>a</span>
+        <label className="sr-only" htmlFor="cbc-fim">Até</label><input id="cbc-fim" type="date" className={campo} value={per.fim} onChange={e => setPer(p => ({ ...p, fim: e.target.value }))} />
+        <button className={btnSec} disabled={!fil || carregando} onClick={atualizar}>{carregando ? <Loader2 size={14} className="animate-spin" /> : <History size={14} />} Atualizar</button>
+        <input className={`${campo} ml-auto w-72`} placeholder="buscar cliente, documento, NSU, valor…" value={busca} onChange={e => setBusca(e.target.value)} aria-label="Buscar" />
       </div>
       {erro && <Aviso tipo="err">{erro}</Aviso>}
       {buscar && <BuscaTituloCartao alvo={buscar} fil={Number(fil)} onClose={() => setBuscar(null)} onEscolher={id => { const nsu = buscar.nsu; setBuscar(null); escolher(nsu, id); }} />}
+      {ignorar && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Ignorar">
+          <div className={`${card} w-full max-w-lg p-5 space-y-3`}>
+            <div className="font-semibold">Ignorar {ignorar.tipo === 'D' ? `o depósito de ${fmtBr(ignorar.d.data)} (${ignorar.d.bandeira} ${ignorar.d.modalidade})` : `a parcela NSU ${ignorar.p.nsu} (${fmt(ignorar.p.bruto)})`}</div>
+            <div className={`text-xs ${muted}`}>Sai dos pendentes e vai para "Ignorados" (dá para voltar). O motivo é obrigatório e fica registrado com o seu usuário.</div>
+            <textarea className={`${campo} w-full h-24`} placeholder="Motivo (ex.: tratado no Mega pelo financeiro em 27/11)" value={motivo} onChange={e => setMotivo(e.target.value)} autoFocus />
+            <div className="flex justify-end gap-2"><button className={btnSec} onClick={() => setIgnorar(null)}>Voltar</button><button className={btnPrim} disabled={motivo.trim().length < 5} onClick={salvarIgnorar}>Ignorar</button></div>
+          </div>
+        </div>
+      )}
+      {desfazer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Desfazer">
+          <div className={`${card} w-full max-w-lg p-5 space-y-3`}>
+            <div className="font-semibold">Desfazer esta operação?</div>
+            <div className="text-sm">{fmtBr(desfazer.data_banco)} · {fmt(desfazer.valor_banco)} · {desfazer.titulos || 'conciliação'}{desfazer.taxa ? ` · taxa ${fmt(desfazer.taxa)}` : ''}</div>
+            <div className={`text-xs ${muted}`}>Baixa: apaga a baixa e a 956 e devolve o saldo do título. Conciliação: só desconcilia. Baixa sem extrato já conciliada: desfaça a conciliação antes.</div>
+            <div className="flex justify-end gap-2"><button className={btnSec} onClick={() => setDesfazer(null)}>Voltar</button><button className={btnPrim} onClick={confirmarDesfazer}>Desfazer</button></div>
+          </div>
+        </div>
+      )}
       {!fil && <div className={`${card} p-8 text-center ${muted}`}>Escolha a filial para montar os depósitos da Rede.</div>}
       {fil && carregando && !dados && <div className={`${card} p-8 text-center ${muted}`}><Loader2 className="inline animate-spin mr-2" size={16} />Montando os depósitos…</div>}
       {dados?.aviso && <Aviso tipo="info">{dados.aviso}</Aviso>}
@@ -529,108 +647,81 @@ function DepositosItau({ filiais, filialInicial, tick }) {
         <div className={`${card} p-5 space-y-5`}>
           <div className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-3">
             <Numero rotulo="Prontos para conciliar" valor={fmtN(n('PRONTO'))} sub={fmt(v('PRONTO'))} cor={n('PRONTO') ? 'var(--cb-ok)' : undefined} />
-            <Numero rotulo="Diferença sinalizada" valor={fmtN(n('DIFERENCA'))} sub={`tarifa não lançada ${fmt(dados.totais.tarifa_faltante)} · ajuste Rede ${fmt(dados.totais.ajuste_rede)}`} cor={n('DIFERENCA') ? 'var(--cb-warn)' : undefined} />
-            <Numero rotulo="Pendentes" valor={fmtN(n('PENDENTE') + n('SO_EXTRATO'))} sub="parcela sem baixa, já conciliado em outro lote…" cor={n('PENDENTE') + n('SO_EXTRATO') ? 'var(--cb-err)' : 'var(--cb-ok)'} />
-            <Numero rotulo="Já conciliados" valor={fmtN(n('CONCILIADO'))} sub={fmt(v('CONCILIADO'))} />
-            <Numero rotulo="Aguardando extrato" valor={fmtN(n('SEM_EXTRATO'))} sub={`extrato do Itaú importado até ${fmtBr(dados.extrato_ate)}`} cor={n('SEM_EXTRATO') ? 'var(--cb-info)' : undefined} />
-            <Numero rotulo="Período (depósitos Rede)" valor={`${fmtBr(dados.periodo?.ini).slice(0, 5)} a ${fmtBr(dados.periodo?.fim).slice(0, 5)}`} sub={`janela de datas: ${dados.janela_dias} dias`} />
+            <Numero rotulo="Escolher título" valor={fmtN(n('DECIDIR'))} sub="mais de um título possível" cor={n('DECIDIR') ? 'var(--cb-warn)' : undefined} />
+            <Numero rotulo="Pendentes" valor={fmtN(n('PENDENTE') + n('SO_EXTRATO') + n('DIFERENCA'))} sub="sem título, diferença, só no extrato…" cor={n('PENDENTE') + n('SO_EXTRATO') + n('DIFERENCA') ? 'var(--cb-err)' : 'var(--cb-ok)'} />
+            <Numero rotulo="Aguardando extrato" valor={fmtN(n('SEM_EXTRATO'))} sub={`extrato do Itaú até ${fmtBr(dados.extrato_ate)}`} cor={n('SEM_EXTRATO') ? 'var(--cb-info)' : undefined} />
+            <Numero rotulo="Já conciliados" valor={fmtN(n('CONCILIADO'))} sub={`${fmtN(n('IGNORADO'))} ignorado(s)`} />
+            <Numero rotulo="Período" valor={`${fmtBr(per.ini).slice(0, 5)} a ${fmtBr(per.fim).slice(0, 5)}`} sub={`depósitos da Rede importados · janela ${dados.janela_dias} dias`} />
           </div>
-          <Aviso tipo="info">Parcela já baixada no Mega (baixa automática ou à mão) só é conciliada. Parcela sem baixa: o título em aberto com o mesmo valor é baixado pelo líquido, com a taxa da Rede na ação 956 (se houver mais de um título possível, escolha na linha da parcela). O depósito só concilia quando o total fecha com o extrato. Tarifa não lançada e ajuste da Rede nas baixas automáticas continuam só sinalizados.</Aviso>
-          <div className="flex flex-wrap items-center gap-2">
-            {[['abertos', `Em aberto (${(dados.depositos || []).filter(d => d.situacao !== 'CONCILIADO').length})`], ['todos', `Todos (${dados.depositos.length})`], ...Object.keys(SITD).filter(k => n(k)).map(k => [k, `${SITD[k][0]} (${n(k)})`])].map(([k, t]) => (
-              <button key={k} className={`${btnSec} ${filtro === k ? 'bg-[var(--cb-soft)] font-semibold' : ''}`} onClick={() => setFiltro(k)}>{t}</button>
-            ))}
+          <div className="flex flex-wrap items-center gap-3">
+            <span className={`text-sm ${muted}`}>{fmtN(selecionados.length)} depósito(s) marcado(s){selecionados.length ? ` · ${fmt(totSel)}` : ''}</span>
+            <button className={btnSec} disabled={!selecionados.length || rodando} onClick={validar}>{rodando && !valOk ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Validar</button>
+            <button className={btnPrim} disabled={!valOk || rodando} onClick={executar}>{rodando && valOk ? <Loader2 size={15} className="animate-spin" /> : <CreditCard size={15} />} Baixar e conciliar {valOk ? `${fmtN(selecionados.length)} selecionado(s) · ${fmt(totSel)}` : ''}</button>
+            {!valOk && selecionados.length > 0 && <span className={`text-xs ${muted}`}>Valide antes (roda tudo no Mega e desfaz).</span>}
           </div>
-          {prontos.length > 0 && (
-            <div className="flex flex-wrap items-center gap-3">
-              <span className={`text-sm ${muted}`}>{fmtN(cbasSel.length)} de {fmtN(prontos.length)} pronto(s) selecionado(s){cbasSel.length ? ` · ${fmt(totSel)}` : ''}</span>
-              <button className={btnSec} disabled={!cbasSel.length || rodando} onClick={validar}>{rodando && !valOk ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Validar</button>
-              <button className={btnPrim} disabled={!valOk || rodando} onClick={conciliar}>{rodando && valOk ? <Loader2 size={15} className="animate-spin" /> : <CreditCard size={15} />} Conciliar {valOk ? `${fmtN(cbasSel.length)} depósito(s)` : ''}</button>
-              {!valOk && cbasSel.length > 0 && <span className={`text-xs ${muted}`}>Valide antes de conciliar (roda tudo no Mega e desfaz).</span>}
-            </div>
-          )}
           {(val?.erro || res?.erro) && <Aviso tipo="err">{val?.erro || res?.erro}</Aviso>}
           {resultados.length > 0 && (
             <div className="space-y-1">
-              {resultados.map(r => (
-                <div key={r.cba} className="text-sm flex flex-wrap gap-2 items-center">
-                  <Chip cor={r.status === 'B' ? 'var(--cb-ok)' : r.status === 'S' ? 'var(--cb-info)' : 'var(--cb-err)'}>{r.status === 'B' ? (r.titulo ? 'baixado' : 'conciliado') : r.status === 'S' ? 'validado' : 'recusado'}</Chip>
-                  {r.titulo && <span className="tabular-nums">{r.titulo} · {fmt(r.valor)}{r.desconto ? ` + taxa ${fmt(r.desconto)}` : ''}</span>}
-                  <span className="tabular-nums">{fmtBr(r.data)} · {r.bandeira} {r.modalidade} · {fmt(r.valor)} · {fmtN(r.movimentos)} lançamento(s){r.baixas ? ` · ${fmtN(r.baixas)} título(s) baixado(s) com 956` : ''}</span>
+              {resultados.map((r, i) => (
+                <div key={i} className="text-sm flex flex-wrap gap-2 items-center">
+                  <Chip cor={r.status === 'B' ? 'var(--cb-ok)' : r.status === 'S' ? 'var(--cb-info)' : 'var(--cb-err)'}>{r.status === 'B' ? (r.acao === 'baixa_sem_extrato' ? 'baixado (concilia depois)' : r.acao === 'baixa_conciliacao' ? 'baixado e conciliado' : 'conciliado') : r.status === 'S' ? 'validado' : 'recusado'}</Chip>
+                  <span className="tabular-nums">{fmtBr(r.data)} · {r.bandeira} {r.modalidade}{r.titulo ? ` · ${r.titulo} ${fmt(r.valor)}${r.desconto ? ` + taxa ${fmt(r.desconto)}` : ''}` : r.valor ? ` · ${fmt(r.valor)}` : ''}</span>
                   {r.mensagem && <span className={muted}>{r.mensagem}</span>}
                 </div>
               ))}
             </div>
           )}
-          <div className="overflow-x-auto rounded-xl border border-[var(--cb-line)]">
-            <table className="w-full text-sm min-w-[1100px]">
-              <thead className={`text-xs ${muted} bg-[var(--cb-soft)]`}><tr>
-                <th className="px-3 py-2 w-8">{prontos.length > 0 && <input type="checkbox" aria-label="Selecionar todos os prontos" checked={todosSel} onChange={e => { setVal(null); setSel(e.target.checked ? Object.fromEntries(prontos.map(d => [d.extrato.cba, true])) : {}); }} />}</th>
-                <th className="text-left px-3 py-2">Situação</th><th className="text-left px-3 py-2">Data</th><th className="text-left px-3 py-2">Bandeira · modalidade</th>
-                <th className="text-right px-3 py-2">Rede (depósito)</th><th className="text-right px-3 py-2">Extrato Itaú</th><th className="text-right px-3 py-2">Mega (706)</th><th className="text-right px-3 py-2">Diferença</th>
-                <th className="text-left px-3 py-2">Motivo</th>
-              </tr></thead>
-              <tbody>{deps.map(d => {
-                const [rot, cor] = SITD[d.situacao] || [d.situacao, 'var(--cb-muted)'];
-                const k = d.chave, ab = !!aberto[k], pode = d.situacao === 'PRONTO';
-                return (
-                  <React.Fragment key={k}>
-                    <tr className="border-t border-[var(--cb-line)] align-top">
-                      <td className="px-3 py-2">{pode && <input type="checkbox" aria-label={`Selecionar depósito ${fmtBr(d.data)} ${d.bandeira}`} checked={!!sel[d.extrato.cba]} onChange={e => { setVal(null); setSel(s => ({ ...s, [d.extrato.cba]: e.target.checked })); }} />}</td>
-                      <td className="px-3 py-2"><Chip cor={cor}>{rot}</Chip></td>
-                      <td className="px-3 py-2 tabular-nums">{fmtBr(d.data)}</td>
-                      <td className="px-3 py-2">
-                        {d.parcelas.length > 0
-                          ? <button className="inline-flex items-center gap-1 hover:underline" aria-expanded={ab} onClick={() => setAberto(a => ({ ...a, [k]: !ab }))}>{ab ? <ChevronDown size={14} /> : <ChevronRight size={14} />}{d.bandeira} · {d.modalidade} <span className={`text-xs ${muted}`}>({d.parcelas.length} parcela{d.parcelas.length > 1 ? 's' : ''})</span></button>
-                          : <>{d.bandeira} · {d.modalidade}</>}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">{d.rede ? fmt(d.rede.valor) : '—'}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{d.extrato ? fmt(d.extrato.valor) : '—'}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{d.mega ? <>{fmt(d.mega.soma)} <span className={`text-xs ${muted}`}>({d.mega.movimentos})</span>{d.mega.a_baixar ? <div className="text-xs" style={{ color: 'var(--cb-info)' }}>+ {fmt(d.mega.a_baixar)} a baixar</div> : null}</> : '—'}</td>
-                      <td className="px-3 py-2 text-right tabular-nums" style={{ color: d.dif ? 'var(--cb-warn)' : undefined }}>{d.dif == null ? '—' : d.dif ? fmt(d.dif) : '0,00'}</td>
-                      <td className={`px-3 py-2 text-xs ${muted}`}>{d.motivos.join(' · ')}
-                        {d.baixas?.length > 0 && !d.extrato && d.situacao !== 'CONCILIADO' && (
-                          <div className="mt-1"><button className={btnSec} disabled={rodando} onClick={() => baixarAgora(d)}>{rodando ? <Loader2 size={13} className="animate-spin" /> : <CreditCard size={13} />} Baixar agora (conciliar depois)</button></div>
-                        )}
-                      </td>
-                    </tr>
-                    {ab && (
-                      <tr className="bg-[var(--cb-soft)]"><td></td><td colSpan={8} className="px-3 py-2">
-                        <table className="w-full text-xs">
-                          <thead className={muted}><tr>
-                            <th className="text-left py-1">Venda · parcela</th><th className="text-left py-1">NSU</th><th className="text-right py-1">Bruto</th><th className="text-right py-1">Taxa Rede</th><th className="text-right py-1">Líquido</th>
-                            <th className="text-left py-1 pl-4">Mega: doc · parcela</th><th className="text-left py-1">Baixa</th><th className="text-right py-1">Tarifa 956</th><th className="text-right py-1">No banco (706)</th><th className="text-right py-1">Dif.</th><th className="text-left py-1 pl-3">Obs.</th>
-                          </tr></thead>
-                          <tbody>{d.parcelas.map((p, i) => (
-                            <tr key={i} className="border-t border-[var(--cb-line)]">
-                              <td className="py-1 tabular-nums">{fmtBr(p.venda)} · {p.parcela}/{p.parcelas}</td><td className="py-1">{p.nsu || '—'}</td>
-                              <td className="py-1 text-right tabular-nums">{fmt(p.bruto)}</td><td className="py-1 text-right tabular-nums">{fmt(p.mdr)}</td><td className="py-1 text-right tabular-nums">{fmt(p.liquido)}</td>
-                              <td className="py-1 pl-4">
-                                {p.acao === 'BAIXAR' && <span><Chip cor="var(--cb-info)">baixar</Chip> {p.titulo.doc}-{p.titulo.parcela} · {p.titulo.nome} <span className={muted}>(saldo {fmt(p.titulo.saldo)})</span>{p.titulo.escolhido && <button className="ml-2 underline" onClick={() => escolher(p.nsu, '')}>trocar</button>}</span>}
-                                {p.acao === 'DECIDIR' && (
-                                  <select className={`${campo} text-xs py-1`} aria-label={`Título da parcela NSU ${p.nsu}`} value="" onChange={e => escolher(p.nsu, e.target.value)}>
-                                    <option value="">Escolha o título ({p.candidatos.length})…</option>
-                                    {p.candidatos.map(c => <option key={c.id} value={c.id}>{c.doc}-{c.parcela} · {c.nome} · emissão {fmtBr(c.emissao)} · saldo {fmt(c.saldo)}</option>)}
-                                  </select>
-                                )}
-                                {p.acao !== 'BAIXAR' && p.acao !== 'DECIDIR' && (p.mega ? <>{p.acao === 'MANUAL' && <Chip cor="var(--cb-muted)">baixada à mão</Chip>} {p.mega.docs} · {p.mega.parcela}</> : '—')}
-                                {(!p.acao || p.acao === 'DECIDIR') && d.extrato && d.situacao !== 'CONCILIADO' && (
-                                  <button className="ml-2 inline-flex items-center gap-1 underline" onClick={() => setBuscar({ ...p, org: d.extrato.org })}>Buscar no contas a receber</button>
-                                )}
-                              </td><td className="py-1 tabular-nums">{p.mega ? fmtBr(p.mega.baixa) : '—'}</td>
-                              <td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.tarifa) : p.acao === 'BAIXAR' ? (p.taxa_ja_lancada ? <span className={muted}>já lançada</span> : <span style={{ color: 'var(--cb-info)' }}>{fmt(p.mdr)}</span>) : '—'}</td><td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.movimento) : p.acao === 'BAIXAR' ? <span style={{ color: 'var(--cb-info)' }}>{fmt(p.liquido)}</span> : '—'}</td>
-                              <td className="py-1 text-right tabular-nums" style={{ color: p.dif ? 'var(--cb-warn)' : undefined }}>{p.dif == null ? '—' : p.dif ? fmt(p.dif) : '0,00'}</td>
-                              <td className={`py-1 pl-3 ${muted}`}>{[p.obs, p.tarifa_faltante ? `tarifa não lançada (${fmt(p.tarifa_faltante)})` : '', p.mega?.conciliado ? 'já conciliado' : ''].filter(Boolean).join(' · ')}</td>
-                            </tr>
-                          ))}</tbody>
-                        </table>
-                      </td></tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}</tbody>
-            </table>
-          </div>
+          {SECOES.filter(k => deps.some(d => d.situacao === k)).map(k => {
+            const xs = deps.filter(d => d.situacao === k), ab = secAberta[k] ?? !FECHADAS.has(k), selec = xs.filter(podeSel);
+            return (
+              <div key={k} className="space-y-2">
+                <button className="inline-flex items-center gap-2 font-semibold" aria-expanded={ab} onClick={() => setSecAberta(s => ({ ...s, [k]: !ab }))}>
+                  {ab ? <ChevronDown size={14} /> : <ChevronRight size={14} />}{(SITD[k] || [k])[0]} <span className={`text-xs ${muted}`}>{xs.length}</span>
+                </button>
+                {ab && (
+                  <div className="overflow-x-auto rounded-xl border border-[var(--cb-line)]">
+                    <table className="w-full text-sm min-w-[1100px]">
+                      <thead className={`text-xs ${muted} bg-[var(--cb-soft)]`}><tr>
+                        <th className="px-3 py-2 w-8">{selec.length > 0 && <input type="checkbox" aria-label="Marcar todos desta seção" checked={selec.every(d => sel[d.chave])} onChange={e => { setVal(null); setSel(s => ({ ...s, ...Object.fromEntries(selec.map(d => [d.chave, e.target.checked])) })); }} />}</th>
+                        <th className="text-left px-3 py-2">Situação</th><th className="text-left px-3 py-2">Data</th><th className="text-left px-3 py-2">Bandeira · modalidade</th>
+                        <th className="text-right px-3 py-2">Rede (depósito)</th><th className="text-right px-3 py-2">Extrato Itaú</th><th className="text-right px-3 py-2">Mega (706)</th><th className="text-right px-3 py-2">Diferença</th>
+                        <th className="text-left px-3 py-2">Motivo</th>
+                      </tr></thead>
+                      <tbody>{xs.map(linhaDep)}</tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {fil && (
+        <div className={`${card} p-5 space-y-3`}>
+          <button className="inline-flex items-center gap-2 font-semibold" aria-expanded={verHist} onClick={() => { const nv = !verHist; setVerHist(nv); if (nv) carregarHist(); }}>
+            {verHist ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Feitas (histórico do cartão) <span className={`text-xs ${muted}`}>{fmtBr(per.ini)} a {fmtBr(per.fim)}</span>
+          </button>
+          {verHist && (hist == null ? <div className={muted}><Loader2 className="inline animate-spin mr-2" size={14} />Carregando…</div> : hist.length === 0 ? <div className={`text-sm ${muted}`}>Nada feito no período nesta filial.</div> : (
+            <div className="overflow-x-auto rounded-xl border border-[var(--cb-line)]">
+              <table className="w-full text-sm min-w-[900px]">
+                <thead className={`text-xs ${muted} bg-[var(--cb-soft)]`}><tr>
+                  <th className="text-left px-3 py-2">Quando</th><th className="text-left px-3 py-2">O quê</th><th className="text-left px-3 py-2">Data banco</th><th className="text-right px-3 py-2">Valor</th>
+                  <th className="text-left px-3 py-2">Títulos</th><th className="text-right px-3 py-2">Taxa 956</th><th className="text-left px-3 py-2">Quem</th><th className="text-left px-3 py-2">Situação</th><th></th>
+                </tr></thead>
+                <tbody>{hist.map(f => (
+                  <tr key={f.log_id} className="border-t border-[var(--cb-line)]">
+                    <td className="px-3 py-2 tabular-nums">{f.em.slice(8, 10)}/{f.em.slice(5, 7)} {f.em.slice(11)}</td>
+                    <td className="px-3 py-2">{f.tipo === 'C' ? 'conciliação' : f.sem_extrato ? 'baixa sem extrato' : 'baixa + conciliação'}</td>
+                    <td className="px-3 py-2 tabular-nums">{fmtBr(f.data_banco)}</td><td className="px-3 py-2 text-right tabular-nums">{fmt(f.valor_banco)}</td>
+                    <td className="px-3 py-2">{f.titulos || '—'}</td><td className="px-3 py-2 text-right tabular-nums">{f.taxa ? fmt(f.taxa) : '—'}</td>
+                    <td className="px-3 py-2">{f.usuario}</td>
+                    <td className="px-3 py-2 text-xs">{f.status === 'E' ? <span className={muted}>desfeita por {f.estornado_por} {f.estornado_em.slice(8, 10)}/{f.estornado_em.slice(5, 7)}</span> : <Chip cor="var(--cb-ok)">feita</Chip>}{f.mensagem && f.status === 'B' && /RECUSADO/.test(f.mensagem) ? <div style={{ color: 'var(--cb-err)' }}>{f.mensagem}</div> : null}</td>
+                    <td className="px-3 py-2 text-right">{f.status === 'B' && <button className={btnSec} disabled={rodando} onClick={() => setDesfazer(f)}>Desfazer</button>}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          ))}
         </div>
       )}
     </div>

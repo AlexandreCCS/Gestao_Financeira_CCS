@@ -285,7 +285,106 @@ export default async function conciliacaoCartaoRoutes(app) {
   // Tarifa faltante / ajuste da Rede: so sinalizados (decisao 20/11), nada e lancado.
   // [27/11/2026] escolhas = { "<NSU da parcela>": "seq:lancto" } (titulo escolhido nas parcelas DECIDIR), em JSON na query ou no corpo
   const escolhasDe = v => { try { const o = typeof v === 'string' ? JSON.parse(v) : (v || {}); return Object.fromEntries(Object.entries(o).filter(([k, x]) => /^[\w-]{1,30}$/.test(k) && /^\d+:\d+$/.test(String(x)))); } catch { return {}; } };
-  app.get('/cbc/depositos', opera, async (req) => montarDepositos(megaQuery, req.query.filial, { escolhas: escolhasDe(req.query.escolhas) }));
+  const periodoDe = q => ({ ini: ehData(q?.ini) ? q.ini : null, fim: ehData(q?.fim) ? q.fim : null });
+  app.get('/cbc/depositos', opera, async (req) => montarDepositos(megaQuery, req.query.filial, { escolhas: escolhasDe(req.query.escolhas), ...periodoDe(req.query) }));
+  // [27/11/2026] resumo por filial (chips da tela): pendentes no periodo
+  app.get('/cbc/depositos/resumo', opera, async (req) => {
+    const per = periodoDe(req.query);
+    const fils = (await megaQuery(`SELECT DISTINCT E.FIL_IN_CODIGO FIL FROM MEGA.CCS_TB_GFIN_CBC_ESTAB E WHERE NVL(E.ESTAB_CH_ATIVO,'S') = 'S' ORDER BY 1`).catch(() => megaQuery(`SELECT DISTINCT FIL_IN_CODIGO FIL FROM MEGA.CCS_TB_GFIN_CBC_ESTAB ORDER BY 1`))).map(x => num(x.FIL));
+    const out = [];
+    for (const f of fils) {
+      try {
+        const r = await montarDepositos(megaQuery, f, per);
+        const pend = (r.depositos || []).filter(d => !['CONCILIADO', 'IGNORADO'].includes(d.situacao));
+        out.push({ filial: f, pendentes: pend.length, valor: Math.round(pend.reduce((t, d) => t + (d.extrato?.valor || d.rede?.valor || 0), 0) * 100) / 100, prontos: pend.filter(d => d.situacao === 'PRONTO').length });
+      } catch (e) { out.push({ filial: f, erro: String(e.message || e).slice(0, 120) }); }
+    }
+    return { periodo: per, filiais: out };
+  });
+  // [27/11/2026] acoes por deposito (usadas pelas rotas abaixo)
+  async function conciliarDeposito(d, cba, ctx) {
+    return d.baixas?.length
+      ? executarBaixa({ tipo: 'R', org: d.extrato.org, conta: d.extrato.conta, data: d.extrato.data, tpd_fin: d.modalidade === 'debito' ? 'CARDEB' : 'CARCRED', doc_fin: String(cba),
+          hist: `REDE ${String(d.bandeira).toUpperCase()} ${d.modalidade === 'debito' ? 'DEBITO' : 'CREDITO'} DEPOSITO ${d.data.split('-').reverse().join('/')} (CONCILIACAO DE CARTAO - GESTOR FINANCEIRO)`,
+          titulos: d.baixas.map(b => ({ seq: b.seq, lancto: b.lancto, valor: b.valor, juros: 0, multa: 0, desconto: b.desconto })), cbas: [cba], arquivo: 'REDE',
+          desc_acao: 956, movs_conc: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })) }, ctx)
+      : executarConc({ org: d.mega.org, conta: d.extrato.conta, movs: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: [cba], tipo_conc: 'A', janela: d.janela_conc }, ctx);
+  }
+  async function baixarSemExtrato(d, baixas, conta, ctx) {
+    const out = [];
+    for (const b of baixas) {
+      const res = await executarBaixa({ tipo: 'R', org: b.org, conta, data: d.data, tpd_fin: d.modalidade === 'debito' ? 'CARDEB' : 'CARCRED',
+        doc_fin: String(b.nsu || b.lancto).replace(/\D/g, '') || String(b.lancto),
+        hist: `REDE ${String(d.bandeira).toUpperCase()} ${d.modalidade === 'debito' ? 'DEBITO' : 'CREDITO'} NSU ${b.nsu} DEPOSITO ${d.data.split('-').reverse().join('/')} (CONCILIACAO DE CARTAO - BAIXA SEM EXTRATO)`,
+        titulos: [{ seq: b.seq, lancto: b.lancto, valor: b.valor, juros: 0, multa: 0, desconto: b.desconto }], cbas: [], arquivo: 'REDE', desc_acao: 956, sem_extrato: true }, ctx);
+      out.push({ nsu: b.nsu, titulo: `${b.doc}-${b.parcela}`, valor: b.valor, desconto: b.desconto, ...res });
+    }
+    return out;
+  }
+  // [27/11/2026] UM botao como na conciliacao normal: itens = [{chave, excluir: [NSU das parcelas desmarcadas]}]. Deposito PRONTO com todas as
+  // parcelas marcadas = baixa + conciliacao (como antes); sem extrato ou com parcela desmarcada = so baixa as marcadas, sem extrato (o deposito
+  // continua pendente para conciliar depois - decisao do Alexandre 27/11).
+  app.post('/cbc/depositos/executar', { ...opera, schema: { body: { type: 'object', required: ['filial', 'itens'], properties: {
+    filial: { type: 'integer', minimum: 1 }, simular: { type: 'boolean' }, ini: { type: 'string', maxLength: 10 }, fim: { type: 'string', maxLength: 10 },
+    escolhas: { type: 'object', additionalProperties: { type: 'string', maxLength: 30 } },
+    itens: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'object', required: ['chave'], properties: { chave: { type: 'string', maxLength: 80 }, excluir: { type: 'array', maxItems: 200, items: { type: 'string', maxLength: 30 } } } } } } } } }, async (req) => {
+    const fil = num(req.body.filial), simular = req.body.simular === true;
+    const r = await montarDepositos(megaQuery, fil, { escolhas: escolhasDe(req.body.escolhas), ...periodoDe(req.body) });
+    const ctx = { usu: num(req.user.sub), login: login(req), origem: 'T', simular };
+    const resultados = [];
+    for (const it of req.body.itens) {
+      const d = r.depositos.find(x => x.chave === it.chave);
+      const base = { chave: it.chave, data: d?.data, bandeira: d?.bandeira, modalidade: d?.modalidade };
+      if (!d) { resultados.push({ ...base, status: 'X', mensagem: 'Deposito nao encontrado no periodo (atualize a tela).' }); continue; }
+      if (['CONCILIADO', 'IGNORADO'].includes(d.situacao)) { resultados.push({ ...base, status: 'X', mensagem: `Deposito ${d.situacao === 'IGNORADO' ? 'ignorado' : 'ja conciliado'}.` }); continue; }
+      const excl = new Set((it.excluir || []).map(String));
+      const baixasSel = (d.baixas || []).filter(b => !excl.has(String(b.nsu)));
+      if (d.situacao === 'PRONTO' && d.extrato && baixasSel.length === (d.baixas || []).length) {
+        const res = await conciliarDeposito(d, d.extrato.cba, ctx);
+        resultados.push({ ...base, acao: d.baixas?.length ? 'baixa_conciliacao' : 'conciliacao', valor: d.extrato.valor, movimentos: d.movs.length, baixas: d.baixas?.length || 0, ...res });
+      } else if (baixasSel.length) {
+        if (!r.conta_loja) { resultados.push({ ...base, status: 'X', mensagem: 'Filial sem uma unica conta de loja ativa (Configurar > Loja).' }); continue; }
+        for (const x of await baixarSemExtrato(d, baixasSel, r.conta_loja.conta, ctx)) resultados.push({ ...base, acao: 'baixa_sem_extrato', ...x });
+      } else resultados.push({ ...base, status: 'X', mensagem: `Nada a fazer: ${d.motivos.join('; ') || d.situacao}` });
+    }
+    req.log.info({ gfin: 'cbc_dep_executar', fil, simular, usu: req.user.sub, n: resultados.length, ok: resultados.filter(x => x.status === 'B' || x.status === 'S').length }, 'conciliacao de cartao');
+    return { filial: fil, simular, resultados };
+  });
+  // [27/11/2026] IGNORAR deposito (D) ou parcela (P) com motivo; VOLTAR
+  app.post('/cbc/ignorar', { ...opera, schema: { body: { type: 'object', required: ['filial', 'tipo', 'chave', 'motivo'], properties: {
+    filial: { type: 'integer', minimum: 1 }, tipo: { type: 'string', enum: ['D', 'P'] }, chave: { type: 'string', maxLength: 80 }, nsu: { type: 'string', maxLength: 30 },
+    data: { type: 'string', maxLength: 10 }, valor: { type: 'number' }, motivo: { type: 'string', minLength: 5, maxLength: 300 } } } } }, async (req, reply) => {
+    const b = req.body;
+    if (b.tipo === 'P' && !b.nsu) return reply.code(400).send({ error: 'nsu', message: 'Informe a parcela (NSU).' });
+    if (String(b.motivo).trim().length < 5) return reply.code(400).send({ error: 'motivo', message: 'Informe o motivo (ao menos 5 letras).' });
+    const t = s => `'${txt(s, 300)}'`;
+    await megaExec(`BEGIN INSERT INTO MEGA.CCS_TB_GFIN_CBC_IGNORA (IGN_IN_CODIGO, FIL_IN_CODIGO, IGN_CH_TIPO, IGN_ST_CHAVE, IGN_ST_NSU, IGN_DT_DATA, IGN_RE_VALOR, IGN_ST_MOTIVO, USU_IN_CODIGO, USU_ST_LOGIN)
+      VALUES (MEGA.CCS_SEQ_GFIN_CBC_IGNORA.NEXTVAL, ${num(b.filial)}, '${b.tipo}', ${t(b.chave)}, ${b.nsu ? t(b.nsu) : 'NULL'}, ${ehData(b.data) ? dt(b.data) : 'NULL'}, ${Number.isFinite(b.valor) ? Number(b.valor) : 'NULL'},
+        ${t(String(b.motivo).trim())}, ${num(req.user.sub)}, ${t(login(req))}); COMMIT; END;`);
+    return { ok: true };
+  });
+  app.post('/cbc/ignorar/:id/voltar', opera, async (req) => {
+    await megaExec(`BEGIN UPDATE MEGA.CCS_TB_GFIN_CBC_IGNORA SET IGN_CH_ATIVO = 'N', IGN_DT_VOLTA = SYSDATE, IGN_ST_USU_VOLTA = '${txt(login(req), 60)}'
+      WHERE IGN_IN_CODIGO = ${num(req.params.id)} AND IGN_CH_ATIVO = 'S'; COMMIT; END;`);
+    return { ok: true };
+  });
+  // [27/11/2026] HISTORICO ("Feitas") do cartao: logs da conta de loja da filial ligados a deposito da Rede (arquivo REDE ou linha do extrato
+  // "REDE ..."), no periodo, com os titulos; o Desfazer usa POST /bxc/estornar.
+  app.get('/cbc/historico', opera, async (req) => {
+    const fil = num(req.query.filial), per = periodoDe(req.query);
+    if (!fil || !per.ini || !per.fim) return { logs: [] };
+    const rows = await megaQuery(`SELECT * FROM (SELECT L.LOG_IN_CODIGO ID, L.LOG_CH_TIPO TIPO, L.LOG_CH_STATUS ST, TO_CHAR(L.LOG_DT_BANCO,'YYYY-MM-DD') DT, L.LOG_RE_VALOR_BANCO VB, L.LOG_RE_VALOR_TITULOS VT,
+        L.LOG_RE_DESCONTO DESCO, L.LOG_IN_QT_TITULOS QT, NVL(L.LOG_CH_SEM_EXTRATO,'N') SEM, L.LOG_ST_CBAS CBAS, L.USU_ST_LOGIN USU, TO_CHAR(L.LOG_DT_INCLUSAO,'YYYY-MM-DD HH24:MI') EM,
+        L.EST_USU_ST_LOGIN EUSU, TO_CHAR(L.EST_DT,'YYYY-MM-DD HH24:MI') EEM, SUBSTR(L.LOG_ST_MENSAGEM,1,300) MSG, SUBSTR(L.EXT_ST_HISTORICO,1,120) HIST,
+        (SELECT LISTAGG(T.MOV_ST_DOCUMENTO || '-' || T.MOV_ST_PARCELA, ', ') WITHIN GROUP (ORDER BY T.LGT_IN_CODIGO) FROM MEGA.CCS_TB_GFIN_BXC_LOG_TIT T WHERE T.LOG_IN_CODIGO = L.LOG_IN_CODIGO) TITS
+      FROM MEGA.CCS_TB_GFIN_BXC_LOG L
+      WHERE L.LOG_CH_STATUS IN ('B','E') AND L.LOG_DT_INCLUSAO >= ${dt(per.ini)} AND L.LOG_DT_INCLUSAO < ${dt(per.fim)} + 1
+        AND L.CTA_AGN_IN_CODIGO IN (SELECT K.AGN_IN_CODIGO FROM MEGA.CCS_TB_GFIN_BXC_CONTA K WHERE K.FIL_IN_CODIGO = ${fil} AND NVL(K.CTA_CH_LOJA,'N') = 'S')
+        AND (L.EXT_ST_ARQUIVO = 'REDE' OR EXISTS (SELECT 1 FROM MEGA.FIN_CONCILIACAO C WHERE C.CBA_IN_SEQUENCIA = TO_NUMBER(REGEXP_SUBSTR(L.LOG_ST_CBAS, '^[0-9]+')) AND UPPER(C.CBA_ST_HISTORICO) LIKE 'REDE%'))
+      ORDER BY L.LOG_IN_CODIGO DESC) WHERE ROWNUM <= 300`);
+    return { logs: rows.map(x => ({ log_id: num(x.ID), tipo: x.TIPO, status: x.ST, data_banco: x.DT, valor_banco: num(x.VB), valor_titulos: num(x.VT), taxa: num(x.DESCO), qt_titulos: num(x.QT),
+      sem_extrato: x.SEM === 'S', cbas: x.CBAS || '', usuario: x.USU || '', em: x.EM || '', estornado_por: x.EUSU || '', estornado_em: x.EEM || '', mensagem: x.MSG || '', historico: x.HIST || '', titulos: x.TITS || '' })) };
+  });
   app.post('/cbc/depositos/conciliar', { ...opera, schema: { body: { type: 'object', required: ['filial', 'cbas'], properties: {
     filial: { type: 'integer', minimum: 1 }, cbas: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'integer', minimum: 1 } }, simular: { type: 'boolean' },
     escolhas: { type: 'object', additionalProperties: { type: 'string', maxLength: 30 } } } } } }, async (req) => {

@@ -26,7 +26,7 @@ const chave = (data, band, mod) => `${data}|${band4(band)}|${mod}`;
 // BAIXAR pelo liquido com a taxa (MDR) na acao 956 (CCS_P_GFIN_BXC, sql/45); varios = DECIDIR (o usuario escolhe). Diferenca de data deixou
 // de bloquear (a parcela baixada a mao pode ter outra data): vira aviso.
 export const SITUACOES_DEP = {
-  PRONTO: 'pronto para conciliar', DECIDIR: 'escolher o título', DIFERENCA: 'diferença (sinalizada)', PENDENTE: 'pendente', CONCILIADO: 'já conciliado', SEM_EXTRATO: 'aguardando extrato do Itaú',
+  PRONTO: 'pronto para conciliar', DECIDIR: 'escolher o título', IGNORADO: 'ignorado', DIFERENCA: 'diferença (sinalizada)', PENDENTE: 'pendente', CONCILIADO: 'já conciliado', SEM_EXTRATO: 'aguardando extrato do Itaú',
   SO_EXTRATO: 'só no extrato (sem depósito da Rede importado)',
 };
 
@@ -41,11 +41,16 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       L.LIN_ST_BANDEIRA BAND, L.LIN_ST_MODALIDADE MODAL, L.LIN_IN_PARCELA PARC, L.LIN_IN_PARCELAS PARCS, L.LIN_RE_BRUTO BRUTO, L.LIN_RE_MDR MDR, L.LIN_RE_LIQUIDO LIQ,
       L.LIN_ST_NSU NSU, L.LIN_ST_STATUS ST, L.LIN_ST_DESCRICAO DESCR
       FROM MEGA.CCS_TB_GFIN_CBC_LINHA L WHERE L.FIL_IN_CODIGO = ${fil} AND L.LIN_CH_SITUACAO = 'I' AND L.LIN_CH_ABA IN ('D','P','A')
+        ${opc.ini && opc.fim ? `AND L.LIN_DT_DATA BETWEEN ${D(opc.ini)} AND ${D(opc.fim)}` : ''}   -- [27/11/2026] periodo (padrao da tela: ultimos 30 dias)
       ORDER BY L.LIN_DT_DATA, L.ARQ_IN_CODIGO, L.LIN_IN_ORDEM`);
   const rede = rl.map(x => ({ arq: num(x.ARQ), ordem: num(x.ORD), aba: x.ABA, data: iso(x.DT), venda: iso(x.VENDA), bandeira: x.BAND || '', mod: modal(x.MODAL),
     parcela: num(x.PARC) || 1, parcelas: num(x.PARCS) || 1, bruto: r2(x.BRUTO), mdr: r2(x.MDR), liquido: r2(x.LIQ), nsu: x.NSU || '', status: x.ST || '', descricao: x.DESCR || '' }));
   const deps = rede.filter(r => r.aba === 'D'), pags = rede.filter(r => r.aba === 'P'), ajustes = rede.filter(r => r.aba === 'A');
-  if (!deps.length) return { filial: fil, aviso: 'Nenhum deposito importado nesta filial (importe o relatorio de recebimentos da Rede).', depositos: [], resumo: {} };
+  if (!deps.length) return { filial: fil, periodo: { ini: opc.ini || null, fim: opc.fim || null }, aviso: opc.ini ? 'Nenhum deposito da Rede importado nesta filial no periodo.' : 'Nenhum deposito importado nesta filial (importe o relatorio de recebimentos da Rede).', depositos: [], resumo: {} };
+  // [27/11/2026] ignorados (CCS_TB_GFIN_CBC_IGNORA, sql/47): deposito inteiro (D) ou parcela (P), com motivo
+  const ign = (await megaQuery(`SELECT IGN_IN_CODIGO ID, IGN_CH_TIPO T, IGN_ST_CHAVE CH, IGN_ST_NSU NSU, IGN_ST_MOTIVO M, USU_ST_LOGIN U, TO_CHAR(IGN_DT_INCLUSAO,'YYYY-MM-DD HH24:MI') EM
+      FROM MEGA.CCS_TB_GFIN_CBC_IGNORA WHERE FIL_IN_CODIGO = ${fil} AND IGN_CH_ATIVO = 'S'`).catch(() => [])).map(x => ({ id: num(x.ID), tipo: x.T, chave: x.CH, nsu: x.NSU || '', motivo: x.M || '', usuario: x.U || '', em: x.EM || '' }));
+  const ignDep = new Map(ign.filter(i => i.tipo === 'D').map(i => [i.chave, i])), ignParc = new Map(ign.filter(i => i.tipo === 'P').map(i => [`${i.chave}|${i.nsu}`, i]));
   const datas = deps.map(d => d.data).sort();
   const ini = opc.ini || datas[0], fim = opc.fim || datas[datas.length - 1];
   // ---------------------------------------------------------------- extrato do Itau: linhas "REDE ..." do estabelecimento da filial
@@ -167,6 +172,9 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     const movs = new Map(), baixas = [];
     const parcelas = g.parcelas.map(p => {
       const ms = p.ms || [];
+      const ig = ignParc.get(`${g.chave}|${p.nsu}`);
+      if (ig) return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: 'IGNORADA', ignorado: ig,
+        mega: null, obs: `ignorada por ${ig.usuario} em ${ig.em}: ${ig.motivo}`, dif: null, tarifa_faltante: 0 };
       for (const m of ms) if (m.mov) movs.set(m.mov.lancto, { ...m.mov, org: m.org });
       // [27/11/2026] baixada a mao (movimento existente) | titulo a baixar | escolher o titulo
       if (!ms.length && p.manual) {
@@ -208,6 +216,8 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     const valorBanco = e ? e.valor : valorRede;
     const motivos = [];
     const semPar = parcelas.filter(p => !p.mega && !p.acao).length;
+    const ignoradas = parcelas.filter(p => p.acao === 'IGNORADA').length;
+    if (ignoradas) motivos.push(`${ignoradas} parcela(s) ignorada(s): o deposito nao fecha ate tratar`);
     const decidir = parcelas.filter(p => p.acao === 'DECIDIR').length;
     if (semPar) motivos.push(`${semPar} parcela(s) sem baixa no Mega e sem titulo em aberto do mesmo valor`);
     if (decidir) motivos.push(`${decidir} parcela(s) com mais de um titulo possivel: escolha`);
@@ -226,13 +236,15 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     const dif = r2(somaMov + somaBaixar - valorBanco);
     let situacao;
     if (e && (e.status === 'S' || e.con)) situacao = 'CONCILIADO';
-    else if (semPar || parcelas.some(p => p.mega?.sem_movimento || p.mega?.conciliado) || (e && lista.some(m => m.conta !== e.conta)) || (e && baixas.some(b => b.org !== e.org)) || (!lista.length && !baixas.length && !decidir)) situacao = 'PENDENTE';
+    else if (ignDep.get(g.chave)) situacao = 'IGNORADO';
+    else if (ignoradas || semPar || parcelas.some(p => p.mega?.sem_movimento || p.mega?.conciliado) || (e && lista.some(m => m.conta !== e.conta)) || (e && baixas.some(b => b.org !== e.org)) || (!lista.length && !baixas.length && !decidir)) situacao = 'PENDENTE';
     else if (decidir) situacao = 'DECIDIR';
     else if (Math.abs(dif) < 0.005 && espalho <= 60) situacao = e ? 'PRONTO' : 'SEM_EXTRATO';
     else situacao = e ? 'DIFERENCA' : 'SEM_EXTRATO';
     if (situacao === 'DIFERENCA' && !motivos.length) motivos.push(`diferenca de ${dif.toFixed(2)} sem causa identificada`);
     if (situacao === 'CONCILIADO') motivos.length = 0;
-    depositos.push({ chave: g.chave, data: g.data, bandeira: g.bandeira, modalidade: g.mod === 'D' ? 'debito' : 'credito', situacao,
+    if (situacao === 'IGNORADO') { const ig = ignDep.get(g.chave); motivos.length = 0; motivos.push(`ignorado por ${ig.usuario} em ${ig.em}: ${ig.motivo}`); }
+    depositos.push({ chave: g.chave, data: g.data, bandeira: g.bandeira, modalidade: g.mod === 'D' ? 'debito' : 'credito', situacao, ignorado: ignDep.get(g.chave) || null,
       rede: { valor: valorRede, parcelas: parcelas.length, soma_parcelas: somaParc, status: g.rede.map(d => d.status).join(', ') },
       extrato: e ? { cba: e.cba, conta: e.conta, org: e.org, data: e.data, valor: e.valor, historico: e.historico, status: e.status } : null,
       mega: { movimentos: lista.length, soma: somaMov, a_baixar: somaBaixar, org: lista[0]?.org || e?.org || null, conta: lista[0]?.conta || e?.conta || null },

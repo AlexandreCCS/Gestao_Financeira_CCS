@@ -241,7 +241,12 @@ export const api = {
   cbcEfetivar: (body) => req('/cbc/efetivar', { method: 'POST', body: JSON.stringify(body) }),
   cbcEfetivacoes: (filial) => req(`/cbc/efetivacoes${filial ? `?filial=${filial}` : ''}`),
   cbcConfCredito: (filial) => req(`/cbc/conferencia/credito?filial=${filial}`),                                // [19/11/2026] conferencia do credito
-  cbcDepositos: (filial, escolhas) => req(`/cbc/depositos?filial=${filial}${escolhas && Object.keys(escolhas).length ? `&escolhas=${encodeURIComponent(JSON.stringify(escolhas))}` : ''}`),   // [27/11/2026] + escolhas {nsu: 'seq:lancto'}                                            // [20/11/2026] perna do Mega (extrato Itau)
+  cbcDepositos: (filial, escolhas, per) => req(`/cbc/depositos?filial=${filial}${per?.ini ? `&ini=${per.ini}&fim=${per.fim}` : ''}${escolhas && Object.keys(escolhas).length ? `&escolhas=${encodeURIComponent(JSON.stringify(escolhas))}` : ''}`),
+  cbcDepResumo: (per) => req(`/cbc/depositos/resumo?ini=${per.ini}&fim=${per.fim}`),                       // [27/11/2026] chips de filial
+  cbcDepExecutar: (body) => req('/cbc/depositos/executar', { method: 'POST', body: JSON.stringify(body) }),  // [27/11/2026] botao unico
+  cbcIgnorar: (body) => req('/cbc/ignorar', { method: 'POST', body: JSON.stringify(body) }),
+  cbcIgnorarVoltar: (id) => req(`/cbc/ignorar/${id}/voltar`, { method: 'POST', body: '{}' }),
+  cbcHistorico: (filial, per) => req(`/cbc/historico?filial=${filial}&ini=${per.ini}&fim=${per.fim}`),   // [27/11/2026] + escolhas {nsu: 'seq:lancto'}                                            // [20/11/2026] perna do Mega (extrato Itau)
   cbcDepConciliar: (body) => req('/cbc/depositos/conciliar', { method: 'POST', body: JSON.stringify(body) }),
   cbcDepBaixar: (body) => req('/cbc/depositos/baixar', { method: 'POST', body: JSON.stringify(body) }),   // [27/11/2026] baixar agora, conciliar depois
   bxcPendentes: (params) => req(`/bxc/pendentes?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),

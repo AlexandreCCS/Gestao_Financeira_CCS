@@ -64,8 +64,12 @@ CREATE OR REPLACE PROCEDURE MEGA.CCS_P_GFIN_BXC_X (
     P_TITULOS  IN VARCHAR2,
     P_CBAS     IN VARCHAR2,
     P_DESC_ACAO IN NUMBER DEFAULT NULL,
-    P_MOVS_CONC IN VARCHAR2 DEFAULT NULL
+    P_MOVS_CONC IN VARCHAR2 DEFAULT NULL,
+    P_SEM_EXTRATO IN VARCHAR2 DEFAULT 'N'
 ) IS
+    /* [27/11/2026 - Alexandre Carvalho] BAIXAR AGORA, CONCILIAR DEPOIS (sql/46, conciliacao de cartao): P_SEM_EXTRATO = 'S' -> baixa sem linha
+       do extrato e sem conciliacao, so a receber, so com P_DESC_ACAO = 956, sem P_MOVS_CONC, so em conta de loja (CTA_CH_LOJA). O movimento no
+       banco nasce pendente; quando o extrato chegar, a conciliacao de cartao acha a parcela como "baixada a mao" e so concilia. */
     /* [27/11/2026 - Alexandre Carvalho] CONCILIACAO DE CARTAO (sql/45): P_DESC_ACAO = 956 -> o desconto de cada titulo vai numa acao 956
        "Desconto Taxa Adm. Cartao (CRE)" propria (pegada da baixa automatica do varejo: CREDITO/DESC no cliente, classe BXC_CLA_CR_TAXA 830,
        CC BXC_CC_CR_TAXA 24); P_MOVS_CONC = 'seq:lancto,...' movimentos JA EXISTENTES na conta (parcelas ja baixadas, pela baixa automatica ou
@@ -117,6 +121,7 @@ CREATE OR REPLACE PROCEDURE MEGA.CCS_P_GFIN_BXC_X (
     EXS_LAN    T_NUM;
     W_ACAOM_FIN NUMBER;
     W_ACAOM_D  NUMBER;
+    W_SEM      BOOLEAN := (NVL(P_SEM_EXTRATO, 'N') = 'S');
     E_OCUPADO  EXCEPTION;
     PRAGMA EXCEPTION_INIT(E_OCUPADO, -54);
 
@@ -343,7 +348,13 @@ BEGIN
             WHEN E_OCUPADO THEN RAISE_APPLICATION_ERROR(-20100, 'Linha ' || CBAS(W_N) || ' do extrato em uso por outro usuario no Mega.');
         END;
     END LOOP;
-    IF CBAS.COUNT = 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Nenhuma linha do extrato informada: a baixa nasce do extrato.'); END IF;
+    IF W_SEM THEN
+        /* [27/11/2026] sem extrato: so cartao (receber + 956), so conta de loja, sem linha e sem movimento existente */
+        IF CBAS.COUNT > 0 OR P_MOVS_CONC IS NOT NULL THEN RAISE_APPLICATION_ERROR(-20100, 'Baixa sem extrato nao recebe linha do extrato nem movimento existente.'); END IF;
+        IF NOT W_RECEBER OR NVL(P_DESC_ACAO, 0) <> 956 THEN RAISE_APPLICATION_ERROR(-20100, 'Baixa sem extrato so vale para o cartao (contas a receber, taxa 956).'); END IF;
+        SELECT COUNT(*) INTO W_N FROM MEGA.CCS_TB_GFIN_BXC_CONTA K WHERE K.AGN_IN_CODIGO = P_CTA AND K.CTA_CH_ATIVA = 'S' AND NVL(K.CTA_CH_LOJA, 'N') = 'S';
+        IF W_N = 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Baixa sem extrato so na conta de loja (Configurar > Loja).'); END IF;
+    ELSIF CBAS.COUNT = 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Nenhuma linha do extrato informada: a baixa nasce do extrato.'); END IF;
 
     /* TITULOS */
     W_N := 0;
@@ -440,6 +451,7 @@ BEGIN
             WHEN E_OCUPADO THEN RAISE_APPLICATION_ERROR(-20100, 'Movimento ' || EXS_LAN(W_N) || ' em uso por outro usuario no Mega.');
         END;
     END LOOP;
+    IF W_SEM THEN W_BANCO := W_TOTAL; END IF;
     IF ABS(W_TOTAL + W_EXTRA - W_BANCO) >= 0.005 THEN
         RAISE_APPLICATION_ERROR(-20100, 'Soma dos titulos (' || TO_CHAR(W_TOTAL, 'FM999G999G990D00') || ')'
           || CASE WHEN W_EXTRA <> 0 THEN ' + ja baixados (' || TO_CHAR(W_EXTRA, 'FM999G999G990D00') || ')' END
@@ -628,6 +640,7 @@ BEGIN
     END LOOP;
 
     /* CONCILIACAO: o mov FIN nasce conciliado com as linhas do extrato (mesmo teste de periodo da tela do Mega) */
+    IF NOT W_SEM THEN
     BEGIN
         MEGA.FIN_PCK_CONCILIACAOBANC.P_VALIDACONCILIACAO(P_ORG, W_FIL, LEAST(W_MAIOR, W_DATA));
     EXCEPTION WHEN OTHERS THEN RAISE_APPLICATION_ERROR(-20100, 'Periodo de conciliacao encerrado no Mega para a empresa ' || W_FIL || '.');
@@ -649,13 +662,14 @@ BEGIN
         UPDATE MEGA.FIN_CONCILIACAO SET CBA_CH_STATUS = 'S', CON_IN_SEQUENCIAL = W_CON WHERE CBA_IN_SEQUENCIA = CBAS(I);
         IF SQL%ROWCOUNT <> 1 THEN RAISE_APPLICATION_ERROR(-20100, 'Falha ao conciliar a linha ' || CBAS(I) || ' do extrato.'); END IF;
     END LOOP;
+    END IF;   -- [27/11/2026] NOT W_SEM
 
     W_N := TITS.COUNT;
     UPDATE MEGA.CCS_TB_GFIN_BXC_LOG
        SET FIL_IN_CODIGO = W_FIL, LOG_RE_VALOR_BANCO = W_BANCO, LOG_RE_VALOR_TITULOS = W_TOT_TIT, LOG_RE_JUROS = W_TOT_JUR, LOG_RE_MULTA = W_TOT_MUL, LOG_RE_DESCONTO = W_TOT_DESC,
            LOG_IN_QT_TITULOS = W_N, ACAO_IN_CODIGO = W_ACAO_FIN, ACAOM_IN_SEQUENCIA = W_ACAOM, MOV_SEQ_IN_CODIGO = W_SEQ, LANCTO_FIN = W_FIN, CON_IN_SEQUENCIAL = W_CON,
            LOG_ST_MOVS = SUBSTR(W_MOVS, 1, 2000), LOG_ST_DOC_FIN = W_DOC, TPD_FIN_ST_CODIGO = P_TPD_FIN,
-           LOG_ST_MOVS_CONC = SUBSTR(P_MOVS_CONC, 1, 2000)
+           LOG_ST_MOVS_CONC = SUBSTR(P_MOVS_CONC, 1, 2000), LOG_CH_SEM_EXTRATO = NVL(P_SEM_EXTRATO, 'N')
      WHERE LOG_IN_CODIGO = P_LOG;
 END CCS_P_GFIN_BXC_X;
 /
@@ -677,7 +691,8 @@ CREATE OR REPLACE PROCEDURE MEGA.CCS_P_GFIN_BXC (
     P_COMP     IN NUMBER DEFAULT NULL,
     P_SIMULAR  IN VARCHAR2 DEFAULT 'N',
     P_DESC_ACAO IN NUMBER DEFAULT NULL,
-    P_MOVS_CONC IN VARCHAR2 DEFAULT NULL
+    P_MOVS_CONC IN VARCHAR2 DEFAULT NULL,
+    P_SEM_EXTRATO IN VARCHAR2 DEFAULT 'N'
 ) IS
     /* [25/10/2026 - Alexandre Carvalho] O QUE A API CHAMA. Cria a linha de log, roda o nucleo num SAVEPOINT e registra o resultado:
        B = baixado e conciliado | S = simulado (nada gravado) | X = recusado. Nunca propaga erro de regra. */
@@ -694,7 +709,7 @@ BEGIN
       P_COMP, P_USU, SUBSTR(P_LOGIN, 1, 60), SYSDATE, SUBSTR(P_HIST, 1, 120), SUBSTR(P_ARQ, 1, 120) );
     SAVEPOINT SP_GFIN_BXC;
     BEGIN
-        MEGA.CCS_P_GFIN_BXC_X(W_LOG, P_TIPO, P_ORG, P_CTA, P_DATA, P_TPD_FIN, P_DOC_FIN, P_HIST, P_USU, P_TITULOS, P_CBAS, P_DESC_ACAO, P_MOVS_CONC);
+        MEGA.CCS_P_GFIN_BXC_X(W_LOG, P_TIPO, P_ORG, P_CTA, P_DATA, P_TPD_FIN, P_DOC_FIN, P_HIST, P_USU, P_TITULOS, P_CBAS, P_DESC_ACAO, P_MOVS_CONC, P_SEM_EXTRATO);
         IF NVL(P_SIMULAR, 'N') = 'S' THEN
             SELECT 'Simulacao sem erro: ' || LOG_IN_QT_TITULOS || ' titulo(s), R$ ' || TO_CHAR(LOG_RE_VALOR_BANCO, 'FM999G999G990D00') || ' do banco. Nada foi gravado.' INTO W_MSG
               FROM MEGA.CCS_TB_GFIN_BXC_LOG WHERE LOG_IN_CODIGO = W_LOG;

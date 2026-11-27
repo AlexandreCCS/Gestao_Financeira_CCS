@@ -46,7 +46,14 @@ BEGIN
         W_N := W_N + 1; W_ITEM := REGEXP_SUBSTR(L.LOG_ST_MOVS, '[^,]+', 1, W_N); EXIT WHEN W_ITEM IS NULL;
         MOVS(W_N) := TO_NUMBER(TRIM(W_ITEM));
     END LOOP;
-    IF L.CON_IN_SEQUENCIAL IS NULL OR MOVS.COUNT = 0 THEN RAISE_APPLICATION_ERROR(-20100, 'Operacao sem conciliacao ou sem movimentos registrados.'); END IF;
+    IF MOVS.COUNT = 0 OR (L.CON_IN_SEQUENCIAL IS NULL AND NVL(L.LOG_CH_SEM_EXTRATO, 'N') <> 'S') THEN RAISE_APPLICATION_ERROR(-20100, 'Operacao sem conciliacao ou sem movimentos registrados.'); END IF;
+    /* [27/11/2026] baixa SEM EXTRATO (sql/46): se o movimento no banco ja foi conciliado depois (deposito da Rede), desfaca a conciliacao antes */
+    IF L.CON_IN_SEQUENCIAL IS NULL THEN
+        SELECT COUNT(*) INTO W_N FROM MEGA.FIN_MOVIMENTO M
+         WHERE M.ORG_IN_CODIGO = L.ORG_IN_CODIGO AND M.MOV_TAB_IN_CODIGO = C_MOV_TAB AND M.MOV_SEQ_IN_CODIGO = L.MOV_SEQ_IN_CODIGO
+           AND INSTR(',' || L.LOG_ST_MOVS || ',', ',' || M.MOV_IN_NUMLANCTO || ',') > 0 AND (NVL(M.MOV_CH_CONCILIADO, 'N') = 'S' OR M.CON_IN_SEQUENCIAL IS NOT NULL);
+        IF W_N > 0 THEN RAISE_APPLICATION_ERROR(-20100, 'O lancamento no banco desta baixa ja foi conciliado (deposito da Rede). Desfaca a conciliacao antes.'); END IF;
+    END IF;
     W_NEXTRA := NVL(REGEXP_COUNT(L.LOG_ST_MOVS_CONC, '[^,]+'), 0);
     /* [28/10/2026] transferencia do Gestor (sql/35): a outra ponta foi conciliada por um log companheiro tipo C; desfaz ele antes.
        Conciliada por fora do Gestor: recusa. Nas baixas e lancamentos avulsos o contra-movimento nunca e conciliado (nada muda). */
@@ -69,6 +76,7 @@ BEGIN
     END IF;
 
     /* CONCILIACAO INTACTA? os mesmos movimentos e as mesmas linhas, nada a mais */
+    IF L.CON_IN_SEQUENCIAL IS NOT NULL THEN   -- [27/11/2026] baixa sem extrato nao tem conciliacao
     SELECT COUNT(*) INTO W_N FROM MEGA.FIN_MOVIMENTO M WHERE M.CON_IN_SEQUENCIAL = L.CON_IN_SEQUENCIAL;
     IF W_N <> (CASE WHEN L.LOG_CH_TIPO = 'C' THEN MOVS.COUNT ELSE 1 + W_NEXTRA END) THEN
         RAISE_APPLICATION_ERROR(-20100, 'A conciliacao foi alterada no Mega (' || W_N || ' lancamento(s) ligados). Desfaca pelo Mega.');
@@ -77,6 +85,7 @@ BEGIN
     IF W_N <> CBAS.COUNT THEN RAISE_APPLICATION_ERROR(-20100, 'As linhas do extrato desta conciliacao mudaram no Mega. Desfaca pelo Mega.'); END IF;
     SELECT COUNT(*) INTO W_N FROM MEGA.FIN_CONCILIAMOVIMENTO C WHERE C.CON_IN_SEQUENCIAL = L.CON_IN_SEQUENCIAL AND C.CON_CH_TIPO = 'A';
     IF W_N <> 1 THEN RAISE_APPLICATION_ERROR(-20100, 'Conciliacao nao encontrada no Mega (ja desfeita por la?).'); END IF;
+    END IF;
 
     IF L.LOG_CH_TIPO IN ('P', 'R', 'A') THEN
         SELECT COUNT(*) INTO W_N FROM MEGA.CON_LANCAMENTO C WHERE C.ACAOM_ORG_IN_CODIGO = L.ORG_IN_CODIGO
@@ -112,9 +121,11 @@ BEGIN
     END IF;
 
     /* 1) DESCONCILIA */
+    IF L.CON_IN_SEQUENCIAL IS NOT NULL THEN
     UPDATE MEGA.FIN_CONCILIACAO SET CBA_CH_STATUS = 'N', CON_IN_SEQUENCIAL = NULL WHERE CON_IN_SEQUENCIAL = L.CON_IN_SEQUENCIAL;
     UPDATE MEGA.FIN_MOVIMENTO SET MOV_CH_CONCILIADO = 'N', CON_IN_SEQUENCIAL = NULL WHERE CON_IN_SEQUENCIAL = L.CON_IN_SEQUENCIAL;
     DELETE FROM MEGA.FIN_CONCILIAMOVIMENTO WHERE CON_IN_SEQUENCIAL = L.CON_IN_SEQUENCIAL;
+    END IF;
     IF L.LOG_CH_TIPO = 'C' THEN RETURN; END IF;
 
     /* 2) DESATUALIZA E APAGA OS MOVIMENTOS CRIADOS (ordem inversa da criacao) */

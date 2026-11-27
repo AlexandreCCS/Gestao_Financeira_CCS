@@ -310,6 +310,33 @@ export default async function conciliacaoCartaoRoutes(app) {
     req.log.info({ gfin: 'cbc_dep_conciliar', fil, simular, usu: req.user.sub, ok: resultados.filter(x => x.status === 'B' || x.status === 'S').length, n: resultados.length }, 'conciliacao deposito Rede');
     return { filial: fil, simular, resultados };
   });
+  // [27/11/2026 - ALEXANDRE CARVALHO] BAIXAR AGORA, CONCILIAR DEPOIS (caminho B): deposito da Rede ainda sem o extrato do Itau. Baixa cada titulo
+  // identificado (BAIXAR) sozinho, sem extrato e sem conciliacao (CCS_P_GFIN_BXC P_SEM_EXTRATO = 'S', sql/46): liquido na conta de loja com a data
+  // do deposito + taxa na acao 956. Uma baixa por parcela (o movimento no banco = liquido da parcela): quando o extrato chegar, a parcela aparece
+  // como "baixada a mao" e o deposito so concilia.
+  app.post('/cbc/depositos/baixar', { ...opera, schema: { body: { type: 'object', required: ['filial', 'chave'], properties: {
+    filial: { type: 'integer', minimum: 1 }, chave: { type: 'string', maxLength: 80 }, simular: { type: 'boolean' },
+    escolhas: { type: 'object', additionalProperties: { type: 'string', maxLength: 30 } } } } } }, async (req) => {
+    const fil = num(req.body.filial), simular = req.body.simular === true;
+    const r = await montarDepositos(megaQuery, fil, { escolhas: escolhasDe(req.body.escolhas) });
+    const d = r.depositos.find(x => x.chave === req.body.chave);
+    if (!d) return { filial: fil, simular, resultados: [{ status: 'X', mensagem: 'Deposito da Rede nao encontrado (atualize a tela).' }] };
+    if (d.situacao === 'CONCILIADO') return { filial: fil, simular, resultados: [{ status: 'X', mensagem: 'Deposito ja conciliado.' }] };
+    if (!d.baixas?.length) return { filial: fil, simular, resultados: [{ status: 'X', mensagem: 'Nenhum titulo a baixar neste deposito.' }] };
+    if (!r.conta_loja) return { filial: fil, simular, resultados: [{ status: 'X', mensagem: 'Filial sem uma unica conta de loja ativa (Configurar > Loja).' }] };
+    const ctx = { usu: num(req.user.sub), login: login(req), origem: 'T', simular };
+    const resultados = [];
+    for (const b of d.baixas) {
+      const res = await executarBaixa({ tipo: 'R', org: b.org, conta: r.conta_loja.conta, data: d.data, tpd_fin: d.modalidade === 'debito' ? 'CARDEB' : 'CARCRED',
+        doc_fin: String(b.nsu || b.lancto).replace(/\D/g, '') || String(b.lancto),
+        hist: `REDE ${String(d.bandeira).toUpperCase()} ${d.modalidade === 'debito' ? 'DEBITO' : 'CREDITO'} NSU ${b.nsu} DEPOSITO ${d.data.split('-').reverse().join('/')} (CONCILIACAO DE CARTAO - BAIXA SEM EXTRATO)`,
+        titulos: [{ seq: b.seq, lancto: b.lancto, valor: b.valor, juros: 0, multa: 0, desconto: b.desconto }], cbas: [], arquivo: 'REDE',
+        desc_acao: 956, sem_extrato: true }, ctx);
+      resultados.push({ nsu: b.nsu, titulo: `${b.doc}-${b.parcela}`, valor: b.valor, desconto: b.desconto, ...res });
+    }
+    req.log.info({ gfin: 'cbc_dep_baixar', fil, simular, usu: req.user.sub, chave: d.chave, n: resultados.length, ok: resultados.filter(x => x.status === 'B' || x.status === 'S').length }, 'baixa sem extrato (cartao)');
+    return { filial: fil, simular, chave: d.chave, resultados };
+  });
   app.get('/cbc/efetivacoes', opera, async (req) => {
     const fil = num(req.query.filial);
     const rows = await megaQuery(`SELECT * FROM (SELECT E.EFE_IN_CODIGO ID, E.FIL_IN_CODIGO FIL, E.CTA_AGN_IN_CODIGO CTA, E.EFE_CH_STATUS ST, E.EFE_ST_MENSAGEM MSG, E.EFE_IN_QT_LINHAS N, E.EFE_RE_CREDITOS C, E.EFE_RE_DEBITOS D,

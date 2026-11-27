@@ -243,6 +243,7 @@ export const api = {
   cbcConfCredito: (filial) => req(`/cbc/conferencia/credito?filial=${filial}`),                                // [19/11/2026] conferencia do credito
   cbcDepositos: (filial, escolhas) => req(`/cbc/depositos?filial=${filial}${escolhas && Object.keys(escolhas).length ? `&escolhas=${encodeURIComponent(JSON.stringify(escolhas))}` : ''}`),   // [27/11/2026] + escolhas {nsu: 'seq:lancto'}                                            // [20/11/2026] perna do Mega (extrato Itau)
   cbcDepConciliar: (body) => req('/cbc/depositos/conciliar', { method: 'POST', body: JSON.stringify(body) }),
+  cbcDepBaixar: (body) => req('/cbc/depositos/baixar', { method: 'POST', body: JSON.stringify(body) }),   // [27/11/2026] baixar agora, conciliar depois
   bxcPendentes: (params) => req(`/bxc/pendentes?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
   bxcTitulos: (params) => req(`/bxc/titulos?${new URLSearchParams(Object.fromEntries(Object.entries(params || {}).filter(([, v]) => v != null && v !== '')))}`),
   bxcExecutar: (body) => req('/bxc/executar', { method: 'POST', body: JSON.stringify(body) }),

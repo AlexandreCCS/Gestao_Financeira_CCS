@@ -492,6 +492,20 @@ function DepositosItau({ filiais, filialInicial, tick }) {
     try { setRes(await api.cbcDepConciliar({ filial: Number(fil), cbas: cbasSel, simular: false, escolhas })); setVal(null); setSel({}); setDados(await api.cbcDepositos(fil, escolhas)); }
     catch (e) { setRes({ erro: e.detalhe || e.message }); } finally { setRodando(false); }
   };
+  // [27/11/2026] caminho B: baixar agora (sem extrato), conciliar depois. Simula, confirma, grava; depois a parcela vira "baixada a mao".
+  const baixarAgora = async d => {
+    setRodando(true); setRes(null); setVal(null);
+    try {
+      const sim = await api.cbcDepBaixar({ filial: Number(fil), chave: d.chave, simular: true, escolhas });
+      const ruins = (sim.resultados || []).filter(r => r.status !== 'S');
+      if (ruins.length) { setRes({ resultados: sim.resultados.map((r, i) => ({ ...r, cba: `b${i}`, data: d.data, bandeira: d.bandeira, modalidade: d.modalidade, valor: r.valor })) }); return; }
+      const txt = d.baixas.map(b => `• ${b.doc}-${b.parcela}: ${fmt(b.valor)} no banco${b.desconto ? ` + taxa ${fmt(b.desconto)} na ação 956` : ''}`).join('\n');
+      if (!window.confirm(`Baixar agora, sem o extrato do Itaú (o depósito de ${fmtBr(d.data)} concilia depois, quando o extrato chegar)?\n\n${txt}\n\nCada título é baixado com a data do depósito na conta da loja.`)) return;
+      const r = await api.cbcDepBaixar({ filial: Number(fil), chave: d.chave, simular: false, escolhas });
+      setRes({ resultados: (r.resultados || []).map((x, i) => ({ ...x, cba: `b${i}`, data: d.data, bandeira: d.bandeira, modalidade: d.modalidade })) });
+      setEscolhas({}); setDados(await api.cbcDepositos(fil, {}));
+    } catch (e) { setRes({ erro: e.detalhe || e.message }); } finally { setRodando(false); }
+  };
   const resultados = res?.resultados || val?.resultados || [];
   return (
     <div className="space-y-4">
@@ -540,7 +554,8 @@ function DepositosItau({ filiais, filialInicial, tick }) {
             <div className="space-y-1">
               {resultados.map(r => (
                 <div key={r.cba} className="text-sm flex flex-wrap gap-2 items-center">
-                  <Chip cor={r.status === 'B' ? 'var(--cb-ok)' : r.status === 'S' ? 'var(--cb-info)' : 'var(--cb-err)'}>{r.status === 'B' ? 'conciliado' : r.status === 'S' ? 'validado' : 'recusado'}</Chip>
+                  <Chip cor={r.status === 'B' ? 'var(--cb-ok)' : r.status === 'S' ? 'var(--cb-info)' : 'var(--cb-err)'}>{r.status === 'B' ? (r.titulo ? 'baixado' : 'conciliado') : r.status === 'S' ? 'validado' : 'recusado'}</Chip>
+                  {r.titulo && <span className="tabular-nums">{r.titulo} · {fmt(r.valor)}{r.desconto ? ` + taxa ${fmt(r.desconto)}` : ''}</span>}
                   <span className="tabular-nums">{fmtBr(r.data)} · {r.bandeira} {r.modalidade} · {fmt(r.valor)} · {fmtN(r.movimentos)} lançamento(s){r.baixas ? ` · ${fmtN(r.baixas)} título(s) baixado(s) com 956` : ''}</span>
                   {r.mensagem && <span className={muted}>{r.mensagem}</span>}
                 </div>
@@ -573,7 +588,11 @@ function DepositosItau({ filiais, filialInicial, tick }) {
                       <td className="px-3 py-2 text-right tabular-nums">{d.extrato ? fmt(d.extrato.valor) : '—'}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{d.mega ? <>{fmt(d.mega.soma)} <span className={`text-xs ${muted}`}>({d.mega.movimentos})</span>{d.mega.a_baixar ? <div className="text-xs" style={{ color: 'var(--cb-info)' }}>+ {fmt(d.mega.a_baixar)} a baixar</div> : null}</> : '—'}</td>
                       <td className="px-3 py-2 text-right tabular-nums" style={{ color: d.dif ? 'var(--cb-warn)' : undefined }}>{d.dif == null ? '—' : d.dif ? fmt(d.dif) : '0,00'}</td>
-                      <td className={`px-3 py-2 text-xs ${muted}`}>{d.motivos.join(' · ')}</td>
+                      <td className={`px-3 py-2 text-xs ${muted}`}>{d.motivos.join(' · ')}
+                        {d.baixas?.length > 0 && !d.extrato && d.situacao !== 'CONCILIADO' && (
+                          <div className="mt-1"><button className={btnSec} disabled={rodando} onClick={() => baixarAgora(d)}>{rodando ? <Loader2 size={13} className="animate-spin" /> : <CreditCard size={13} />} Baixar agora (conciliar depois)</button></div>
+                        )}
+                      </td>
                     </tr>
                     {ab && (
                       <tr className="bg-[var(--cb-soft)]"><td></td><td colSpan={8} className="px-3 py-2">
@@ -599,7 +618,7 @@ function DepositosItau({ filiais, filialInicial, tick }) {
                                   <button className="ml-2 inline-flex items-center gap-1 underline" onClick={() => setBuscar({ ...p, org: d.extrato.org })}>Buscar no contas a receber</button>
                                 )}
                               </td><td className="py-1 tabular-nums">{p.mega ? fmtBr(p.mega.baixa) : '—'}</td>
-                              <td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.tarifa) : p.acao === 'BAIXAR' ? <span style={{ color: 'var(--cb-info)' }}>{fmt(p.mdr)}</span> : '—'}</td><td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.movimento) : p.acao === 'BAIXAR' ? <span style={{ color: 'var(--cb-info)' }}>{fmt(p.liquido)}</span> : '—'}</td>
+                              <td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.tarifa) : p.acao === 'BAIXAR' ? (p.taxa_ja_lancada ? <span className={muted}>já lançada</span> : <span style={{ color: 'var(--cb-info)' }}>{fmt(p.mdr)}</span>) : '—'}</td><td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.movimento) : p.acao === 'BAIXAR' ? <span style={{ color: 'var(--cb-info)' }}>{fmt(p.liquido)}</span> : '—'}</td>
                               <td className="py-1 text-right tabular-nums" style={{ color: p.dif ? 'var(--cb-warn)' : undefined }}>{p.dif == null ? '—' : p.dif ? fmt(p.dif) : '0,00'}</td>
                               <td className={`py-1 pl-3 ${muted}`}>{[p.obs, p.tarifa_faltante ? `tarifa não lançada (${fmt(p.tarifa_faltante)})` : '', p.mega?.conciliado ? 'já conciliado' : ''].filter(Boolean).join(' · ')}</td>
                             </tr>

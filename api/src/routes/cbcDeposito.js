@@ -97,7 +97,10 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       if (Math.abs(ms[i].valor + ms[j].valor - r.bruto) <= TOL_SOMA) { ms[i].usada = ms[j].usada = true; r.ms = [ms[i], ms[j]]; r.soma = true; break achou; }
   }
   // ---------------------------------------------------------------- [27/11/2026] parcela sem baixa automatica: baixa a mao ou titulo em aberto
-  const contas = [...new Set(ext.map(e => e.conta))];
+  // conta e org da loja tambem pelo cadastro (Configurar > Loja; org = PAI da filial): deposito sem extrato importado ainda acha os titulos
+  const loja = (await megaQuery(`SELECT K.AGN_IN_CODIGO CTA, (SELECT MAX(A.PAI_AGN_IN_CODIGO) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = 53 AND A.AGN_IN_CODIGO = K.FIL_IN_CODIGO) ORG
+      FROM MEGA.CCS_TB_GFIN_BXC_CONTA K WHERE K.FIL_IN_CODIGO = ${fil} AND K.CTA_CH_ATIVA = 'S' AND NVL(K.CTA_CH_LOJA,'N') = 'S'`)).map(x => ({ conta: num(x.CTA), org: num(x.ORG) }));
+  const contas = [...new Set([...ext.map(e => e.conta), ...loja.map(l => l.conta)])];
   const usadosAuto = new Set(mega.filter(m => m.usada && m.mov).map(m => m.mov.lancto));
   const semAuto = pags.filter(r => !r.ms);
   if (semAuto.length && contas.length) {
@@ -116,7 +119,7 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     }
     const faltam = semAuto.filter(r => !r.manual);
     if (faltam.length) {
-      const orgs = [...new Set(ext.map(e => e.org))];
+      const orgs = [...new Set([...ext.map(e => e.org), ...loja.map(l => l.org)].filter(Boolean))];
       // saldo do titulo = BRUTO (taxa ainda nao lancada: baixa liquido + 956) ou = LIQUIDO (a taxa 956 ja foi lancada a mao: baixa so o liquido)
       const bMin = Math.min(...faltam.map(r => r.liquido)) - TOL_VALOR, bMax = Math.max(...faltam.map(r => r.bruto)) + TOL_VALOR;
       const sqlAbertos = filtro => `SELECT M.ORG_IN_CODIGO ORG, M.MOV_SEQ_IN_CODIGO SEQ, M.MOV_IN_NUMLANCTO LAN, M.MOV_ST_DOCUMENTO DOC, M.MOV_ST_PARCELA PARC, M.MOV_RE_SALDOCPACRE SALDO, M.AGN_IN_CODIGO AGN,
@@ -249,7 +252,7 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     resumo[k] = { rotulo: SITUACOES_DEP[k], depositos: xs.length, valor: r2(xs.reduce((s, d) => s + (d.extrato ? d.extrato.valor : d.rede?.valor || 0), 0)) };
   }
   const extMax = ext.map(e => e.data).sort().pop() || null;
-  return { filial: fil, periodo: { ini, fim }, extrato_ate: extMax, janela_dias: janela,
+  return { filial: fil, periodo: { ini, fim }, extrato_ate: extMax, janela_dias: janela, conta_loja: loja.length === 1 ? loja[0] : null,
     totais: { tarifa_faltante: r2(depositos.reduce((s, d) => s + d.tarifa_faltante, 0)), ajuste_rede: r2(depositos.reduce((s, d) => s + (d.ajuste_rede || 0), 0)) },
     resumo, depositos };
 }

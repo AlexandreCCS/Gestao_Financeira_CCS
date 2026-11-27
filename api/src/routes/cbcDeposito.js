@@ -19,8 +19,14 @@ const TOL_VALOR = 0.02, TOL_VENDA = 1, TOL_SOMA = 0.05, JAN_SOMA = 7;
 const band4 = s => String(s || '').normalize('NFD').replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 4);
 const modal = s => (/deb/i.test(String(s || '')) ? 'D' : 'C');   // C credito | D debito
 const chave = (data, band, mod) => `${data}|${band4(band)}|${mod}`;
+// [27/11/2026] Pedido do Alexandre: "os titulos que voce encontrar baixados ja vamos apenas conciliar, os titulos que nao tiverem baixados tem
+// que buscar a correlacao e fazer a baixa (igual acontece hoje com a conciliacao normal) ... essa baixa deve ter a acao de desconto referente a
+// taxa". Por parcela da Rede: (1) baixa automatica (como antes); (2) baixa A MAO: movimento CARDEB/CARCRED na conta da loja, nao conciliado,
+// com o LIQUIDO da parcela; (3) titulo a receber EM ABERTO da filial com saldo = BRUTO da parcela (emitido ate o dia da venda): 1 candidato =
+// BAIXAR pelo liquido com a taxa (MDR) na acao 956 (CCS_P_GFIN_BXC, sql/45); varios = DECIDIR (o usuario escolhe). Diferenca de data deixou
+// de bloquear (a parcela baixada a mao pode ter outra data): vira aviso.
 export const SITUACOES_DEP = {
-  PRONTO: 'pronto para conciliar', DIFERENCA: 'diferença (sinalizada)', PENDENTE: 'pendente', CONCILIADO: 'já conciliado', SEM_EXTRATO: 'aguardando extrato do Itaú',
+  PRONTO: 'pronto para conciliar', DECIDIR: 'escolher o título', DIFERENCA: 'diferença (sinalizada)', PENDENTE: 'pendente', CONCILIADO: 'já conciliado', SEM_EXTRATO: 'aguardando extrato do Itaú',
   SO_EXTRATO: 'só no extrato (sem depósito da Rede importado)',
 };
 
@@ -43,12 +49,12 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
   const datas = deps.map(d => d.data).sort();
   const ini = opc.ini || datas[0], fim = opc.fim || datas[datas.length - 1];
   // ---------------------------------------------------------------- extrato do Itau: linhas "REDE ..." do estabelecimento da filial
-  const ext = (await megaQuery(`SELECT C.CBA_IN_SEQUENCIA SEQ, C.AGN_IN_CODIGO AGN, C.FIL_IN_CODIGO FIL, TO_CHAR(C.CBA_DT_DATA,'YYYY-MM-DD') DT, C.CBA_CH_NATUREZA NAT, C.CBA_RE_VALOR V,
+  const ext = (await megaQuery(`SELECT C.CBA_IN_SEQUENCIA SEQ, C.AGN_IN_CODIGO AGN, C.FIL_IN_CODIGO FIL, C.ORG_IN_CODIGO ORG, TO_CHAR(C.CBA_DT_DATA,'YYYY-MM-DD') DT, C.CBA_CH_NATUREZA NAT, C.CBA_RE_VALOR V,
       C.CBA_ST_HISTORICO H, NVL(C.CBA_CH_STATUS,'N') ST, C.CON_IN_SEQUENCIAL CON
       FROM MEGA.FIN_CONCILIACAO C WHERE C.CBA_DT_DATA BETWEEN ${D(addDias(ini, -3))} AND ${D(addDias(fim, 3))} AND UPPER(C.CBA_ST_HISTORICO) LIKE 'REDE%'
         AND (${estabs.map(e => `C.CBA_ST_HISTORICO LIKE '%${e}%'`).join(' OR ')})`)).map(x => {
     const m = String(x.H || '').toUpperCase().match(/^REDE\s+([A-Z]+)\s*(CD|DB)\s*0*(\d+)/);
-    return { cba: num(x.SEQ), conta: num(x.AGN), fil: num(x.FIL), data: iso(x.DT), natureza: x.NAT, valor: r2(x.V), historico: String(x.H || '').trim(), status: x.ST, con: x.CON ? num(x.CON) : null,
+    return { cba: num(x.SEQ), conta: num(x.AGN), fil: num(x.FIL), org: num(x.ORG), data: iso(x.DT), natureza: x.NAT, valor: r2(x.V), historico: String(x.H || '').trim(), status: x.ST, con: x.CON ? num(x.CON) : null,
       band: m ? band4(m[1]) : '', mod: m ? (m[2] === 'DB' ? 'D' : 'C') : '', estab: m ? m[3] : '', usado: false };
   }).filter(e => e.band && estabs.includes(e.estab));
   // ---------------------------------------------------------------- Mega: baixas automaticas de cartao + movimento 706 no banco
@@ -90,6 +96,49 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     achou: for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++)
       if (Math.abs(ms[i].valor + ms[j].valor - r.bruto) <= TOL_SOMA) { ms[i].usada = ms[j].usada = true; r.ms = [ms[i], ms[j]]; r.soma = true; break achou; }
   }
+  // ---------------------------------------------------------------- [27/11/2026] parcela sem baixa automatica: baixa a mao ou titulo em aberto
+  const contas = [...new Set(ext.map(e => e.conta))];
+  const usadosAuto = new Set(mega.filter(m => m.usada && m.mov).map(m => m.mov.lancto));
+  const semAuto = pags.filter(r => !r.ms);
+  if (semAuto.length && contas.length) {
+    const manuais = (await megaQuery(`SELECT M.ORG_IN_CODIGO ORG, M.MOV_SEQ_IN_CODIGO SEQ, M.MOV_IN_NUMLANCTO LAN, M.AGN_IN_CODIGO AGN, M.MOV_RE_VALOR V, TO_CHAR(M.MOV_DT_DATADOCTO,'YYYY-MM-DD') DT, M.TPD_ST_CODIGO TPD,
+        (SELECT MAX(B.MOV_ST_DOCUMENTO || '-' || B.MOV_ST_PARCELA) FROM MEGA.FIN_MOVIMENTO B WHERE B.ORG_IN_CODIGO = M.ORG_IN_CODIGO AND B.ACAOM_IN_SEQUENCIA = M.ACAOM_IN_SEQUENCIA AND B.TREF_ST_CODIGO = 'BXCRE') TIT,
+        (SELECT MAX(B.AGN_IN_CODIGO) FROM MEGA.FIN_MOVIMENTO B WHERE B.ORG_IN_CODIGO = M.ORG_IN_CODIGO AND B.ACAOM_IN_SEQUENCIA = M.ACAOM_IN_SEQUENCIA AND B.TREF_ST_CODIGO = 'BXCRE') CLI
+        FROM MEGA.FIN_MOVIMENTO M WHERE M.AGN_IN_CODIGO IN (${contas.join(',')}) AND M.CONT_TAC_ST_CODIGO = 'MVFIN' AND M.MOV_CH_NATUREZA = 'D' AND M.TPD_ST_CODIGO IN ('CARDEB','CARCRED')
+          AND NVL(M.MOV_CH_CONCILIADO,'N') <> 'S' AND M.CON_IN_SEQUENCIAL IS NULL AND NVL(M.MOV_CH_SITUACAO,'N') <> 'C' AND M.MOV_DT_DATADOCTO >= ${D(pIni)}`))
+      .map(x => ({ org: num(x.ORG), seq: num(x.SEQ), lancto: num(x.LAN), conta: num(x.AGN), valor: r2(x.V), data: iso(x.DT), mod: x.TPD === 'CARDEB' ? 'D' : 'C', titulo: x.TIT || '', cliente: num(x.CLI), conciliado: false }))
+      .filter(m => !usadosAuto.has(m.lancto));
+    for (const r of semAuto) {
+      let best = null;
+      for (const m of manuais) if (!m.usado && m.mod === r.mod && Math.abs(m.valor - r.liquido) <= TOL_VALOR + 1e-9 && (!r.venda || m.data >= addDias(r.venda, -1)))
+        if (!best || Math.abs(dias(m.data, r.data)) < Math.abs(dias(best.data, r.data))) best = m;
+      if (best) { best.usado = true; r.manual = best; }
+    }
+    const faltam = semAuto.filter(r => !r.manual);
+    if (faltam.length) {
+      const orgs = [...new Set(ext.map(e => e.org))];
+      // saldo do titulo = BRUTO (taxa ainda nao lancada: baixa liquido + 956) ou = LIQUIDO (a taxa 956 ja foi lancada a mao: baixa so o liquido)
+      const bMin = Math.min(...faltam.map(r => r.liquido)) - TOL_VALOR, bMax = Math.max(...faltam.map(r => r.bruto)) + TOL_VALOR;
+      const abertos = (await megaQuery(`SELECT M.ORG_IN_CODIGO ORG, M.MOV_SEQ_IN_CODIGO SEQ, M.MOV_IN_NUMLANCTO LAN, M.MOV_ST_DOCUMENTO DOC, M.MOV_ST_PARCELA PARC, M.MOV_RE_SALDOCPACRE SALDO, M.AGN_IN_CODIGO AGN,
+          TO_CHAR(M.MOV_DT_DATADOCTO,'YYYY-MM-DD') EMI, TO_CHAR(M.MOV_DT_VENCTO,'YYYY-MM-DD') VENC, M.TPD_ST_CODIGO TPD,
+          (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = M.AGN_TAB_IN_CODIGO AND A.AGN_PAD_IN_CODIGO = M.AGN_PAD_IN_CODIGO AND A.AGN_IN_CODIGO = M.AGN_IN_CODIGO) NOME
+          FROM MEGA.FIN_MOVIMENTO M WHERE M.FIL_IN_CODIGO = ${fil} AND M.ORG_IN_CODIGO IN (${orgs.join(',')}) AND EXISTS (SELECT 1 FROM MEGA.FIN_CONTASRECEBER CR WHERE CR.ORG_IN_CODIGO = M.ORG_IN_CODIGO AND CR.MOV_TAB_IN_CODIGO = M.MOV_TAB_IN_CODIGO AND CR.MOV_SEQ_IN_CODIGO = M.MOV_SEQ_IN_CODIGO AND CR.MOV_IN_NUMLANCTO = M.MOV_IN_NUMLANCTO) AND NVL(M.MOV_BO_SALDOZERADO,'N') = 'N'
+            AND NVL(M.MOV_CH_SITUACAO,'N') <> 'C' AND NVL(M.MOV_BO_PREVISAO,'N') = 'N' AND M.MOV_RE_SALDOCPACRE BETWEEN ${bMin.toFixed(2)} AND ${bMax.toFixed(2)}
+            AND M.MOV_DT_DATADOCTO BETWEEN ${D(addDias(pIni, -150))} AND ${D(pFim)}`))
+        .map(x => ({ org: num(x.ORG), seq: num(x.SEQ), lancto: num(x.LAN), doc: x.DOC || '', parcela: x.PARC || '', saldo: r2(x.SALDO), cliente: num(x.AGN), nome: x.NOME || '', emissao: iso(x.EMI), vencto: iso(x.VENC), tpd: x.TPD || '' }));
+      const cands = r => abertos.filter(t => !t.usado && (Math.abs(t.saldo - r.bruto) <= TOL_VALOR + 1e-9 || Math.abs(t.saldo - r.liquido) <= TOL_VALOR + 1e-9) && (!r.venda || !t.emissao || t.emissao <= addDias(r.venda, 1)));
+      const esc = opc.escolhas || {};
+      // escolhas do usuario primeiro, depois as de candidato unico, por fim as ambiguas
+      for (const r of faltam) {
+        const e = esc[r.nsu]; if (!e) continue;
+        const [sq, ln] = String(e).split(':').map(Number);
+        const t = cands(r).find(x => x.seq === sq && x.lancto === ln);
+        if (t) { t.usado = true; r.titulo = t; r.escolhido = true; }
+      }
+      for (const r of faltam) { if (r.titulo) continue; const c = cands(r); if (c.length === 1) { c[0].usado = true; r.titulo = c[0]; } }
+      for (const r of faltam) { if (r.titulo) continue; const c = cands(r); if (c.length > 1) r.candidatos = c.slice(0, 15); }
+    }
+  }
   // ---------------------------------------------------------------- monta cada deposito
   const porChave = new Map();
   for (const d of deps) {
@@ -107,46 +156,75 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     let e = ext.find(x => !x.usado && x.data === g.data && x.band === band4(g.bandeira) && x.mod === g.mod && Math.abs(x.valor - valorRede) < 0.005)
       || ext.find(x => !x.usado && x.data === g.data && x.band === band4(g.bandeira) && x.mod === g.mod);
     if (e) e.usado = true;
-    const movs = new Map();
+    const movs = new Map(), baixas = [];
     const parcelas = g.parcelas.map(p => {
       const ms = p.ms || [];
       for (const m of ms) if (m.mov) movs.set(m.mov.lancto, { ...m.mov, org: m.org });
+      // [27/11/2026] baixada a mao (movimento existente) | titulo a baixar | escolher o titulo
+      if (!ms.length && p.manual) {
+        movs.set(p.manual.lancto, { seq: p.manual.seq, lancto: p.manual.lancto, conta: p.manual.conta, valor: p.manual.valor, data: p.manual.data, conciliado: false, tpd: p.manual.mod === 'D' ? 'CARDEB' : 'CARCRED', org: p.manual.org });
+        return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: 'MANUAL',
+          mega: { docs: p.manual.titulo, parcela: p.parcela, valor: p.manual.valor, baixa: p.manual.data, tarifa: 0, movimento: p.manual.valor, lanctos: [p.manual.lancto], sem_movimento: false, conciliado: false },
+          obs: `baixada a mao em ${p.manual.data} (titulo ${p.manual.titulo || '?'}): so concilia`, dif: r2(p.manual.valor - p.liquido), tarifa_faltante: 0 };
+      }
+      if (!ms.length && p.titulo) {
+        const taxaJa = Math.abs(p.titulo.saldo - p.liquido) <= TOL_VALOR + 1e-9 && Math.abs(p.titulo.saldo - p.bruto) > TOL_VALOR + 1e-9;   // 956 ja lancada a mao
+        const desc = taxaJa ? 0 : r2(p.bruto - p.liquido);
+        baixas.push({ seq: p.titulo.seq, lancto: p.titulo.lancto, org: p.titulo.org, valor: p.liquido, desconto: desc, doc: p.titulo.doc, parcela: p.titulo.parcela, cliente: p.titulo.cliente, nsu: p.nsu });
+        return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: 'BAIXAR',
+          titulo: { seq: p.titulo.seq, lancto: p.titulo.lancto, doc: p.titulo.doc, parcela: p.titulo.parcela, saldo: p.titulo.saldo, cliente: p.titulo.cliente, nome: p.titulo.nome, emissao: p.titulo.emissao, escolhido: !!p.escolhido },
+          mega: null, taxa_ja_lancada: taxaJa, obs: `baixar ${p.titulo.doc}-${p.titulo.parcela} (${p.titulo.nome}): ${p.liquido.toFixed(2)} no banco` + (taxaJa ? ' (taxa 956 ja lancada no titulo)' : ` + taxa ${desc.toFixed(2)} na acao 956`), dif: 0, tarifa_faltante: 0 };
+      }
+      if (!ms.length && p.candidatos) {
+        return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: 'DECIDIR',
+          candidatos: p.candidatos.map(t => ({ id: `${t.seq}:${t.lancto}`, doc: t.doc, parcela: t.parcela, saldo: t.saldo, cliente: t.cliente, nome: t.nome, emissao: t.emissao, vencto: t.vencto })),
+          mega: null, obs: `${p.candidatos.length} titulos em aberto com o mesmo valor: escolha`, dif: null, tarifa_faltante: 0 };
+      }
       const valMov = r2(ms.reduce((s, m) => s + (m.mov ? m.mov.valor : 0), 0));
       const tarMega = r2(ms.reduce((s, m) => s + m.tarifa, 0));
-      return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido,
+      return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: ms.length ? 'AUTO' : null,
         mega: ms.length ? { docs: ms.map(m => m.doc).join(' + '), parcela: ms[0].parcela, valor: r2(ms.reduce((s, m) => s + m.valor, 0)), baixa: ms[0].baixa, tarifa: tarMega,
           movimento: valMov, lanctos: ms.map(m => m.mov?.lancto).filter(Boolean), sem_movimento: ms.some(m => !m.mov), conciliado: ms.some(m => m.mov?.conciliado) } : null,
-        obs: !ms.length ? 'sem baixa no Mega' : p.soma ? '1 parcela da Rede = 2 titulos do Mega' : p.semParcela ? 'casada sem o numero da parcela' : '',
+        obs: !ms.length ? 'sem baixa no Mega e nenhum titulo em aberto com este valor' : p.soma ? '1 parcela da Rede = 2 titulos do Mega' : p.semParcela ? 'casada sem o numero da parcela' : '',
         dif: ms.length ? r2(valMov - p.liquido) : null,
         tarifa_faltante: ms.length && tarMega === 0 && p.mdr > 0 && Math.abs(valMov - p.bruto) <= TOL_VALOR + 1e-9 ? p.mdr : 0 };
     });
     const lista = [...movs.values()];
     const somaMov = r2(lista.reduce((s, m) => s + m.valor, 0));
+    const somaBaixar = r2(baixas.reduce((s, b) => s + b.valor, 0));
     const ajustesDia = ajustes.filter(a => a.data === g.data);
     const valorBanco = e ? e.valor : valorRede;
     const motivos = [];
-    const semPar = parcelas.filter(p => !p.mega).length;
-    if (semPar) motivos.push(`${semPar} parcela(s) sem baixa no Mega`);
+    const semPar = parcelas.filter(p => !p.mega && !p.acao).length;
+    const decidir = parcelas.filter(p => p.acao === 'DECIDIR').length;
+    if (semPar) motivos.push(`${semPar} parcela(s) sem baixa no Mega e sem titulo em aberto do mesmo valor`);
+    if (decidir) motivos.push(`${decidir} parcela(s) com mais de um titulo possivel: escolha`);
+    if (baixas.length) motivos.push(`${baixas.length} titulo(s) a baixar (${somaBaixar.toFixed(2)}` + (baixas.some(b => b.desconto > 0) ? ` + taxa ${r2(baixas.reduce((t, b) => t + b.desconto, 0)).toFixed(2)} na acao 956)` : ')'));
     if (parcelas.some(p => p.mega?.sem_movimento)) motivos.push('baixa sem movimento no banco');
     if (parcelas.some(p => p.mega?.conciliado)) motivos.push('movimento do Mega ja conciliado em outro lote');
     if (e && lista.some(m => m.conta !== e.conta)) motivos.push('movimento do Mega em outra conta');
+    if (e && baixas.some(b => b.org !== e.org)) motivos.push('titulo de outra organizacao');
     if (Math.abs(somaParc - valorRede) >= 0.005) motivos.push(`parcelas da Rede (${somaParc.toFixed(2)}) diferente do deposito (${valorRede.toFixed(2)})` + (ajustesDia.length ? `: ajuste da Rede no dia (${ajustesDia.map(a => a.descricao.replace(/\s+/g, ' ').trim() + ' ' + a.liquido.toFixed(2)).join('; ')})` : ''));
     const tarifaFalt = r2(parcelas.reduce((s, p) => s + p.tarifa_faltante, 0));
     if (tarifaFalt > 0) motivos.push(`tarifa nao lancada no Mega: ${tarifaFalt.toFixed(2)}`);
     const datas = [...lista.map(m => m.data), ...(e ? [e.data] : [])].filter(Boolean).sort();
-    if (datas.length && dias(datas[datas.length - 1], datas[0]) > janela) motivos.push(`datas com mais de ${janela} dias de distancia (${datas[0]} a ${datas[datas.length - 1]})`);
-    const dif = r2(somaMov - valorBanco);
+    const espalho = datas.length ? dias(datas[datas.length - 1], datas[0]) : 0;
+    // [27/11/2026] diferenca de data so avisa (parcela baixada a mao com outra data concilia do mesmo jeito; janela da conciliacao ate 60 dias)
+    if (espalho > janela) motivos.push(`aviso: datas com ${espalho} dias de distancia (${datas[0]} a ${datas[datas.length - 1]})`);
+    const dif = r2(somaMov + somaBaixar - valorBanco);
     let situacao;
     if (e && (e.status === 'S' || e.con)) situacao = 'CONCILIADO';
-    else if (semPar || parcelas.some(p => p.mega?.sem_movimento || p.mega?.conciliado) || (e && lista.some(m => m.conta !== e.conta)) || !lista.length) situacao = 'PENDENTE';
-    else if (Math.abs(dif) < 0.005 && !motivos.some(m => /datas/.test(m))) situacao = e ? 'PRONTO' : 'SEM_EXTRATO';
+    else if (semPar || parcelas.some(p => p.mega?.sem_movimento || p.mega?.conciliado) || (e && lista.some(m => m.conta !== e.conta)) || (e && baixas.some(b => b.org !== e.org)) || (!lista.length && !baixas.length && !decidir)) situacao = 'PENDENTE';
+    else if (decidir) situacao = 'DECIDIR';
+    else if (Math.abs(dif) < 0.005 && espalho <= 60) situacao = e ? 'PRONTO' : 'SEM_EXTRATO';
     else situacao = e ? 'DIFERENCA' : 'SEM_EXTRATO';
     if (situacao === 'DIFERENCA' && !motivos.length) motivos.push(`diferenca de ${dif.toFixed(2)} sem causa identificada`);
     if (situacao === 'CONCILIADO') motivos.length = 0;
     depositos.push({ chave: g.chave, data: g.data, bandeira: g.bandeira, modalidade: g.mod === 'D' ? 'debito' : 'credito', situacao,
       rede: { valor: valorRede, parcelas: parcelas.length, soma_parcelas: somaParc, status: g.rede.map(d => d.status).join(', ') },
-      extrato: e ? { cba: e.cba, conta: e.conta, data: e.data, valor: e.valor, historico: e.historico, status: e.status } : null,
-      mega: { movimentos: lista.length, soma: somaMov, org: lista[0]?.org || null, conta: lista[0]?.conta || null },
+      extrato: e ? { cba: e.cba, conta: e.conta, org: e.org, data: e.data, valor: e.valor, historico: e.historico, status: e.status } : null,
+      mega: { movimentos: lista.length, soma: somaMov, a_baixar: somaBaixar, org: lista[0]?.org || e?.org || null, conta: lista[0]?.conta || e?.conta || null },
+      baixas, janela_conc: Math.max(janela, espalho + 1),
       dif, tarifa_faltante: tarifaFalt, ajuste_rede: r2(somaParc - valorRede), motivos, parcelas,
       movs: lista.map(m => ({ seq: m.seq, lancto: m.lancto, valor: m.valor, data: m.data, conciliado: m.conciliado })) });
   }

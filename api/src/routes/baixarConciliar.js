@@ -762,11 +762,13 @@ export async function lerLogPorToken(token) {
 const falhaComunicacao = (e, oque) => ({ status: 'X', mensagem: `Falha de comunicacao com o Mega (${String(e.message || e).slice(0, 160)}). Confira ${oque} no Mega antes de tentar de novo.` });
 
 // executa UMA baixa (tipo P/R) - usado pela tela e pelo robo
-async function executarBaixa(item, ctx) {
+// [27/11/2026] conciliacao de cartao (sql/45): item.desc_acao = 956 (taxa em acao propria) e item.movs_conc = [{seq,lancto}] ja existentes na
+// mesma conciliacao. Sem eles = chamada de antes.
+export async function executarBaixa(item, ctx) {
   const token = crypto.randomUUID();
   const tits = item.titulos.map(t => `${num(t.seq)}:${num(t.lancto)}:${f2(t.valor)}:${f2(t.juros)}:${f2(t.multa)}:${f2(t.desconto)}`).join(';');
   const cbas = item.cbas.map(Number).join(',');
-  const plsql = `BEGIN MEGA.CCS_P_GFIN_BXC('${token}', '${item.tipo}', ${num(item.org)}, ${num(item.conta)}, ${dt(item.data)}, '${ascii(item.tpd_fin, 10)}', '${ascii(item.doc_fin, 30)}', '${ascii(item.hist, 400)}', ${ctx.usu}, '${ascii(ctx.login, 60)}', '${tits}', '${cbas}', '${ctx.origem}', '${ascii(item.arquivo, 120)}', ${item.comp_id ? num(item.comp_id) : 'NULL'}, '${ctx.simular ? 'S' : 'N'}'); END;`;
+  const plsql = `BEGIN MEGA.CCS_P_GFIN_BXC('${token}', '${item.tipo}', ${num(item.org)}, ${num(item.conta)}, ${dt(item.data)}, '${ascii(item.tpd_fin, 10)}', '${ascii(item.doc_fin, 30)}', '${ascii(item.hist, 400)}', ${ctx.usu}, '${ascii(ctx.login, 60)}', '${tits}', '${cbas}', '${ctx.origem}', '${ascii(item.arquivo, 120)}', ${item.comp_id ? num(item.comp_id) : 'NULL'}, '${ctx.simular ? 'S' : 'N'}'${item.desc_acao || item.movs_conc?.length ? `, ${item.desc_acao ? num(item.desc_acao) : 'NULL'}, ${item.movs_conc?.length ? `'${item.movs_conc.map(m => `${num(m.seq)}:${num(m.lancto)}`).join(',')}'` : 'NULL'}` : ''}); END;`;
   try {
     await megaExec(plsql);
     return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado desta baixa. Confira os titulos antes de tentar de novo.' };
@@ -778,7 +780,7 @@ export async function executarConc(item, ctx) {
   const token = crypto.randomUUID();
   const movs = item.movs.map(m => `${num(m.seq)}:${num(m.lancto)}`).join(';'), cbas = item.cbas.map(Number).join(',');
   try {
-    await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_CONC('${token}', ${num(item.org)}, ${num(item.conta)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', '${movs}', '${cbas}', '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}', '${item.tipo_conc === 'M' ? 'M' : 'A'}'); END;`);
+    await megaExec(`BEGIN MEGA.CCS_P_GFIN_BXC_CONC('${token}', ${num(item.org)}, ${num(item.conta)}, ${ctx.usu}, '${ascii(ctx.login, 60)}', '${movs}', '${cbas}', '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}', '${item.tipo_conc === 'M' ? 'M' : 'A'}'${item.janela ? `, ${num(item.janela)}` : ''}); END;`);
     return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado desta conciliacao.' };
   } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'a conciliacao'); }
 }

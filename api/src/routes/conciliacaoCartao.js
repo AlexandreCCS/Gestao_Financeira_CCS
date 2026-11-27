@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import { megaQuery, megaExec } from '../soap/mega.js';
 import { conferirCredito } from './cbcCredito.js';   // [19/11/2026] conferencia do credito (Rede x Mega), so leitura
 import { montarDepositos } from './cbcDeposito.js';   // [20/11/2026] perna do Mega: deposito Rede no extrato Itau x baixas
-import { executarConc } from './baixarConciliar.js';
+import { executarConc, executarBaixa } from './baixarConciliar.js';
 
 const MOD_OPERA = 'BAIXAS_CONCILIACAO';
 const EFETIVAR_LIGADO = false;   // [20/11/2026] POST /cbc/efetivar desligado (ver comentario na rota)
@@ -283,19 +283,29 @@ export default async function conciliacaoCartaoRoutes(app) {
   // [20/11/2026 - ALEXANDRE CARVALHO] PERNA DO MEGA: depositos da Rede no extrato do Itau x movimentos da baixa automatica (credito e debito). Ver cbcDeposito.js.
   // Conciliar = 1 linha do extrato x N movimentos 706, so quando a situacao e PRONTO (soma fecha no centavo, datas na janela). Recalcula no servidor.
   // Tarifa faltante / ajuste da Rede: so sinalizados (decisao 20/11), nada e lancado.
-  app.get('/cbc/depositos', opera, async (req) => montarDepositos(megaQuery, req.query.filial));
+  // [27/11/2026] escolhas = { "<NSU da parcela>": "seq:lancto" } (titulo escolhido nas parcelas DECIDIR), em JSON na query ou no corpo
+  const escolhasDe = v => { try { const o = typeof v === 'string' ? JSON.parse(v) : (v || {}); return Object.fromEntries(Object.entries(o).filter(([k, x]) => /^[\w-]{1,30}$/.test(k) && /^\d+:\d+$/.test(String(x)))); } catch { return {}; } };
+  app.get('/cbc/depositos', opera, async (req) => montarDepositos(megaQuery, req.query.filial, { escolhas: escolhasDe(req.query.escolhas) }));
   app.post('/cbc/depositos/conciliar', { ...opera, schema: { body: { type: 'object', required: ['filial', 'cbas'], properties: {
-    filial: { type: 'integer', minimum: 1 }, cbas: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'integer', minimum: 1 } }, simular: { type: 'boolean' } } } } }, async (req) => {
+    filial: { type: 'integer', minimum: 1 }, cbas: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'integer', minimum: 1 } }, simular: { type: 'boolean' },
+    escolhas: { type: 'object', additionalProperties: { type: 'string', maxLength: 30 } } } } } }, async (req) => {
     const fil = num(req.body.filial), simular = req.body.simular === true;
-    const r = await montarDepositos(megaQuery, fil);
+    const r = await montarDepositos(megaQuery, fil, { escolhas: escolhasDe(req.body.escolhas) });
     const ctx = { usu: num(req.user.sub), login: login(req), origem: 'T', simular };
     const resultados = [];
     for (const cba of [...new Set(req.body.cbas.map(Number))]) {
       const d = r.depositos.find(x => x.extrato?.cba === cba);
       if (!d) { resultados.push({ cba, status: 'X', mensagem: 'Linha do extrato nao encontrada entre os depositos da Rede desta filial.' }); continue; }
       if (d.situacao !== 'PRONTO') { resultados.push({ cba, status: 'X', mensagem: `Deposito nao esta pronto (${d.situacao}): ${d.motivos.join('; ') || 'confira'}` }); continue; }
-      const res = await executarConc({ org: d.mega.org, conta: d.extrato.conta, movs: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: [cba], tipo_conc: 'A' }, ctx);
-      resultados.push({ cba, data: d.data, bandeira: d.bandeira, modalidade: d.modalidade, valor: d.extrato.valor, movimentos: d.movs.length, ...res });
+      // [27/11/2026] com titulo a baixar: baixa (liquido no banco + taxa na acao 956) e concilia junto os ja baixados, numa transacao;
+      // sem titulo a baixar: so concilia (janela alargada para a parcela baixada a mao com outra data)
+      const res = d.baixas?.length
+        ? await executarBaixa({ tipo: 'R', org: d.extrato.org, conta: d.extrato.conta, data: d.extrato.data, tpd_fin: d.modalidade === 'debito' ? 'CARDEB' : 'CARCRED', doc_fin: String(cba),
+            hist: `REDE ${String(d.bandeira).toUpperCase()} ${d.modalidade === 'debito' ? 'DEBITO' : 'CREDITO'} DEPOSITO ${d.data.split('-').reverse().join('/')} (CONCILIACAO DE CARTAO - GESTOR FINANCEIRO)`,
+            titulos: d.baixas.map(b => ({ seq: b.seq, lancto: b.lancto, valor: b.valor, juros: 0, multa: 0, desconto: b.desconto })), cbas: [cba], arquivo: 'REDE',
+            desc_acao: 956, movs_conc: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })) }, ctx)
+        : await executarConc({ org: d.mega.org, conta: d.extrato.conta, movs: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })), cbas: [cba], tipo_conc: 'A', janela: d.janela_conc }, ctx);
+      resultados.push({ cba, data: d.data, bandeira: d.bandeira, modalidade: d.modalidade, valor: d.extrato.valor, movimentos: d.movs.length, baixas: d.baixas?.length || 0, ...res });
     }
     req.log.info({ gfin: 'cbc_dep_conciliar', fil, simular, usu: req.user.sub, ok: resultados.filter(x => x.status === 'B' || x.status === 'S').length, n: resultados.length }, 'conciliacao deposito Rede');
     return { filial: fil, simular, resultados };

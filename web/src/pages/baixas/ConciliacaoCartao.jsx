@@ -397,6 +397,64 @@ const SITD = {
   PRONTO: ['pronto para conciliar', 'var(--cb-ok)'], DECIDIR: ['escolher o título', 'var(--cb-warn)'], DIFERENCA: ['diferença (sinalizada)', 'var(--cb-warn)'], PENDENTE: ['pendente', 'var(--cb-err)'],
   CONCILIADO: ['já conciliado', 'var(--cb-muted)'], SEM_EXTRATO: ['aguardando extrato do Itaú', 'var(--cb-info)'], SO_EXTRATO: ['só no extrato', 'var(--cb-warn)'],
 };
+// [27/11/2026 - Alexandre Carvalho] "Buscar no contas a receber" na parcela da Rede sem titulo achado (ou com varios): mesma rota da conciliacao
+// normal (GET /bxc/titulos), filtrada pela filial e saldo >= liquido. Saldo maior que o bruto = baixa PARCIAL (parte no cartao, parte em dinheiro;
+// o restante fica em aberto - a baixa do dinheiro por esta tela esta no plano, Gestor_Financeiro_Conciliacao_Cartao.md §15).
+function BuscaTituloCartao({ alvo, fil, onEscolher, onClose }) {
+  const [nome, setNome] = useState(''); const [doc, setDoc] = useState('');
+  const [lista, setLista] = useState(null); const [erro, setErro] = useState(''); const [busy, setBusy] = useState(false);
+  const pode = doc.trim().length >= 2 || nome.trim().length >= 3;
+  const buscar = async () => {
+    if (!pode) return;
+    setBusy(true); setErro('');
+    try {
+      const r = await api.bxcTitulos({ tipo: 'R', org: alvo.org, fil, nome: nome.trim(), doc: doc.trim(), venc_ini: '2000-01-01', venc_fim: '2035-12-31', vmin: (alvo.liquido - 0.02).toFixed(2) });
+      setLista(r.titulos || []);
+    } catch (e) { setLista(null); setErro(e.detalhe || e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Buscar no contas a receber">
+      <div className={`${card} w-full max-w-4xl p-5 space-y-4 max-h-[90vh] overflow-y-auto`}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="font-semibold">Buscar no contas a receber</div>
+            <div className={`text-xs ${muted}`}>Parcela da Rede NSU {alvo.nsu} · venda {fmtBr(alvo.venda)} · bruto {fmt(alvo.bruto)} · taxa {fmt(alvo.mdr)} · líquido {fmt(alvo.liquido)} · filial {fil}</div>
+          </div>
+          <button className={btnSec} onClick={onClose} aria-label="Fechar"><X size={14} /></button>
+        </div>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs">Cliente (nome, fantasia ou CNPJ)<input className={`${campo} block w-72`} value={nome} onChange={e => setNome(e.target.value)} onKeyDown={e => e.key === 'Enter' && buscar()} autoFocus /></label>
+          <label className="text-xs">Documento<input className={`${campo} block w-40`} value={doc} onChange={e => setDoc(e.target.value)} onKeyDown={e => e.key === 'Enter' && buscar()} /></label>
+          <button className={btnPrim} disabled={!pode || busy} onClick={buscar}>{busy ? <Loader2 size={14} className="animate-spin" /> : null} Buscar</button>
+          {!pode && <span className={`text-xs ${muted}`}>Informe 3 letras do cliente ou 2 do documento.</span>}
+        </div>
+        {erro && <Aviso tipo="err">{erro}</Aviso>}
+        {lista && (lista.length === 0
+          ? <div className={`text-sm ${muted}`}>Nenhum título em aberto da filial {fil} com saldo a partir de {fmt(alvo.liquido)}.</div>
+          : <div className="overflow-x-auto rounded-xl border border-[var(--cb-line)]">
+              <table className="w-full text-sm">
+                <thead className={`text-xs ${muted} bg-[var(--cb-soft)]`}><tr>
+                  <th className="text-left px-3 py-2">Cliente</th><th className="text-left px-3 py-2">Documento</th><th className="text-left px-3 py-2">Vencimento</th>
+                  <th className="text-right px-3 py-2">Saldo</th><th className="text-left px-3 py-2">Baixa</th><th></th>
+                </tr></thead>
+                <tbody>{lista.map(t => {
+                  const parcial = t.saldo > alvo.bruto + 0.02, exato = Math.abs(t.saldo - alvo.bruto) <= 0.02 || Math.abs(t.saldo - alvo.liquido) <= 0.02;
+                  return (
+                    <tr key={t.id} className="border-t border-[var(--cb-line)]">
+                      <td className="px-3 py-2">{t.agn_nome}</td><td className="px-3 py-2">{t.doc}-{t.parcela} <span className={`text-xs ${muted}`}>{t.tpd}</span></td>
+                      <td className="px-3 py-2 tabular-nums">{fmtBr(t.venc)}</td><td className="px-3 py-2 text-right tabular-nums">{fmt(t.saldo)}</td>
+                      <td className="px-3 py-2 text-xs">{exato ? 'total' : parcial ? <span style={{ color: 'var(--cb-warn)' }}>parcial · ficam {fmt(t.saldo - alvo.bruto)} em aberto</span> : 'total (saldo entre líquido e bruto)'}</td>
+                      <td className="px-3 py-2 text-right"><button className={btnSec} onClick={() => onEscolher(`${t.seq}:${t.lancto}`)}>Usar este título</button></td>
+                    </tr>
+                  );
+                })}</tbody>
+              </table>
+            </div>)}
+      </div>
+    </div>
+  );
+}
+
 function DepositosItau({ filiais, filialInicial, tick }) {
   const [fil, setFil] = useState(filialInicial || '');
   const [dados, setDados] = useState(null); const [erro, setErro] = useState(''); const [carregando, setCarregando] = useState(false);
@@ -404,6 +462,7 @@ function DepositosItau({ filiais, filialInicial, tick }) {
   const [val, setVal] = useState(null); const [res, setRes] = useState(null); const [rodando, setRodando] = useState(false);
   // [27/11/2026] titulo escolhido nas parcelas DECIDIR (varios titulos em aberto com o mesmo valor): { nsu: 'seq:lancto' }
   const [escolhas, setEscolhas] = useState({});
+  const [buscar, setBuscar] = useState(null);   // [27/11/2026] parcela em busca no contas a receber
   useEffect(() => { if (filialInicial) setFil(filialInicial); }, [filialInicial, tick]);
   useEffect(() => { setEscolhas({}); }, [fil]);
   const carregar = async (f = fil, esc = escolhas) => {
@@ -448,6 +507,7 @@ function DepositosItau({ filiais, filialInicial, tick }) {
         </div>
       </div>
       {erro && <Aviso tipo="err">{erro}</Aviso>}
+      {buscar && <BuscaTituloCartao alvo={buscar} fil={Number(fil)} onClose={() => setBuscar(null)} onEscolher={id => { const nsu = buscar.nsu; setBuscar(null); escolher(nsu, id); }} />}
       {!fil && <div className={`${card} p-8 text-center ${muted}`}>Escolha a filial para montar os depósitos da Rede.</div>}
       {fil && carregando && !dados && <div className={`${card} p-8 text-center ${muted}`}><Loader2 className="inline animate-spin mr-2" size={16} />Montando os depósitos…</div>}
       {dados?.aviso && <Aviso tipo="info">{dados.aviso}</Aviso>}
@@ -535,6 +595,9 @@ function DepositosItau({ filiais, filialInicial, tick }) {
                                   </select>
                                 )}
                                 {p.acao !== 'BAIXAR' && p.acao !== 'DECIDIR' && (p.mega ? <>{p.acao === 'MANUAL' && <Chip cor="var(--cb-muted)">baixada à mão</Chip>} {p.mega.docs} · {p.mega.parcela}</> : '—')}
+                                {(!p.acao || p.acao === 'DECIDIR') && d.extrato && d.situacao !== 'CONCILIADO' && (
+                                  <button className="ml-2 inline-flex items-center gap-1 underline" onClick={() => setBuscar({ ...p, org: d.extrato.org })}>Buscar no contas a receber</button>
+                                )}
                               </td><td className="py-1 tabular-nums">{p.mega ? fmtBr(p.mega.baixa) : '—'}</td>
                               <td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.tarifa) : p.acao === 'BAIXAR' ? <span style={{ color: 'var(--cb-info)' }}>{fmt(p.mdr)}</span> : '—'}</td><td className="py-1 text-right tabular-nums">{p.mega ? fmt(p.mega.movimento) : p.acao === 'BAIXAR' ? <span style={{ color: 'var(--cb-info)' }}>{fmt(p.liquido)}</span> : '—'}</td>
                               <td className="py-1 text-right tabular-nums" style={{ color: p.dif ? 'var(--cb-warn)' : undefined }}>{p.dif == null ? '—' : p.dif ? fmt(p.dif) : '0,00'}</td>

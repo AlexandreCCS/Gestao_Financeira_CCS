@@ -119,21 +119,26 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       const orgs = [...new Set(ext.map(e => e.org))];
       // saldo do titulo = BRUTO (taxa ainda nao lancada: baixa liquido + 956) ou = LIQUIDO (a taxa 956 ja foi lancada a mao: baixa so o liquido)
       const bMin = Math.min(...faltam.map(r => r.liquido)) - TOL_VALOR, bMax = Math.max(...faltam.map(r => r.bruto)) + TOL_VALOR;
-      const abertos = (await megaQuery(`SELECT M.ORG_IN_CODIGO ORG, M.MOV_SEQ_IN_CODIGO SEQ, M.MOV_IN_NUMLANCTO LAN, M.MOV_ST_DOCUMENTO DOC, M.MOV_ST_PARCELA PARC, M.MOV_RE_SALDOCPACRE SALDO, M.AGN_IN_CODIGO AGN,
+      const sqlAbertos = filtro => `SELECT M.ORG_IN_CODIGO ORG, M.MOV_SEQ_IN_CODIGO SEQ, M.MOV_IN_NUMLANCTO LAN, M.MOV_ST_DOCUMENTO DOC, M.MOV_ST_PARCELA PARC, M.MOV_RE_SALDOCPACRE SALDO, M.AGN_IN_CODIGO AGN,
           TO_CHAR(M.MOV_DT_DATADOCTO,'YYYY-MM-DD') EMI, TO_CHAR(M.MOV_DT_VENCTO,'YYYY-MM-DD') VENC, M.TPD_ST_CODIGO TPD,
           (SELECT SUBSTR(MAX(A.AGN_ST_NOME),1,50) FROM MEGA.GLO_AGENTES A WHERE A.AGN_TAB_IN_CODIGO = M.AGN_TAB_IN_CODIGO AND A.AGN_PAD_IN_CODIGO = M.AGN_PAD_IN_CODIGO AND A.AGN_IN_CODIGO = M.AGN_IN_CODIGO) NOME
           FROM MEGA.FIN_MOVIMENTO M WHERE M.FIL_IN_CODIGO = ${fil} AND M.ORG_IN_CODIGO IN (${orgs.join(',')}) AND EXISTS (SELECT 1 FROM MEGA.FIN_CONTASRECEBER CR WHERE CR.ORG_IN_CODIGO = M.ORG_IN_CODIGO AND CR.MOV_TAB_IN_CODIGO = M.MOV_TAB_IN_CODIGO AND CR.MOV_SEQ_IN_CODIGO = M.MOV_SEQ_IN_CODIGO AND CR.MOV_IN_NUMLANCTO = M.MOV_IN_NUMLANCTO) AND NVL(M.MOV_BO_SALDOZERADO,'N') = 'N'
-            AND NVL(M.MOV_CH_SITUACAO,'N') <> 'C' AND NVL(M.MOV_BO_PREVISAO,'N') = 'N' AND M.MOV_RE_SALDOCPACRE BETWEEN ${bMin.toFixed(2)} AND ${bMax.toFixed(2)}
-            AND M.MOV_DT_DATADOCTO BETWEEN ${D(addDias(pIni, -150))} AND ${D(pFim)}`))
-        .map(x => ({ org: num(x.ORG), seq: num(x.SEQ), lancto: num(x.LAN), doc: x.DOC || '', parcela: x.PARC || '', saldo: r2(x.SALDO), cliente: num(x.AGN), nome: x.NOME || '', emissao: iso(x.EMI), vencto: iso(x.VENC), tpd: x.TPD || '' }));
+            AND NVL(M.MOV_CH_SITUACAO,'N') <> 'C' AND NVL(M.MOV_BO_PREVISAO,'N') = 'N' AND M.MOV_RE_SALDOCPACRE > 0 AND ${filtro}`;
+      const mapTit = x => ({ org: num(x.ORG), seq: num(x.SEQ), lancto: num(x.LAN), doc: x.DOC || '', parcela: x.PARC || '', saldo: r2(x.SALDO), cliente: num(x.AGN), nome: x.NOME || '', emissao: iso(x.EMI), vencto: iso(x.VENC), tpd: x.TPD || '' });
+      const abertos = (await megaQuery(sqlAbertos(`M.MOV_RE_SALDOCPACRE BETWEEN ${bMin.toFixed(2)} AND ${bMax.toFixed(2)} AND M.MOV_DT_DATADOCTO BETWEEN ${D(addDias(pIni, -150))} AND ${D(pFim)}`))).map(mapTit);
       const cands = r => abertos.filter(t => !t.usado && (Math.abs(t.saldo - r.bruto) <= TOL_VALOR + 1e-9 || Math.abs(t.saldo - r.liquido) <= TOL_VALOR + 1e-9) && (!r.venda || !t.emissao || t.emissao <= addDias(r.venda, 1)));
       const esc = opc.escolhas || {};
       // escolhas do usuario primeiro, depois as de candidato unico, por fim as ambiguas
+      // [27/11/2026] escolha da busca "Buscar no contas a receber": qualquer titulo em aberto da filial com saldo >= liquido. Saldo maior que o
+      // bruto = BAIXA PARCIAL (titulo pago parte no cartao, parte em dinheiro): baixa o liquido + taxa 956 e o resto fica em aberto.
       for (const r of faltam) {
         const e = esc[r.nsu]; if (!e) continue;
         const [sq, ln] = String(e).split(':').map(Number);
-        const t = cands(r).find(x => x.seq === sq && x.lancto === ln);
-        if (t) { t.usado = true; r.titulo = t; r.escolhido = true; }
+        if (!sq || !ln) continue;
+        let t = abertos.find(x => !x.usado && x.seq === sq && x.lancto === ln);
+        if (!t) t = (await megaQuery(sqlAbertos(`M.MOV_SEQ_IN_CODIGO = ${sq} AND M.MOV_IN_NUMLANCTO = ${ln}`))).map(mapTit)[0];
+        if (t && !t.usado && t.saldo >= r.liquido - TOL_VALOR) { t.usado = true; r.titulo = t; r.escolhido = true; }
+        else r.escolhaInvalida = true;
       }
       for (const r of faltam) { if (r.titulo) continue; const c = cands(r); if (c.length === 1) { c[0].usado = true; r.titulo = c[0]; } }
       for (const r of faltam) { if (r.titulo) continue; const c = cands(r); if (c.length > 1) r.candidatos = c.slice(0, 15); }
@@ -169,11 +174,15 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       }
       if (!ms.length && p.titulo) {
         const taxaJa = Math.abs(p.titulo.saldo - p.liquido) <= TOL_VALOR + 1e-9 && Math.abs(p.titulo.saldo - p.bruto) > TOL_VALOR + 1e-9;   // 956 ja lancada a mao
-        const desc = taxaJa ? 0 : r2(p.bruto - p.liquido);
+        // saldo entre o liquido e o bruto (taxa parcial?): nao da para saber o que falta, so baixa o liquido sem 956
+        const desc = taxaJa || p.titulo.saldo < p.bruto - TOL_VALOR ? 0 : r2(p.bruto - p.liquido);
+        const resta = r2(p.titulo.saldo - p.liquido - desc);
         baixas.push({ seq: p.titulo.seq, lancto: p.titulo.lancto, org: p.titulo.org, valor: p.liquido, desconto: desc, doc: p.titulo.doc, parcela: p.titulo.parcela, cliente: p.titulo.cliente, nsu: p.nsu });
         return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: 'BAIXAR',
           titulo: { seq: p.titulo.seq, lancto: p.titulo.lancto, doc: p.titulo.doc, parcela: p.titulo.parcela, saldo: p.titulo.saldo, cliente: p.titulo.cliente, nome: p.titulo.nome, emissao: p.titulo.emissao, escolhido: !!p.escolhido },
-          mega: null, taxa_ja_lancada: taxaJa, obs: `baixar ${p.titulo.doc}-${p.titulo.parcela} (${p.titulo.nome}): ${p.liquido.toFixed(2)} no banco` + (taxaJa ? ' (taxa 956 ja lancada no titulo)' : ` + taxa ${desc.toFixed(2)} na acao 956`), dif: 0, tarifa_faltante: 0 };
+          mega: null, taxa_ja_lancada: taxaJa, resta: resta > TOL_VALOR ? resta : 0,
+          obs: `baixar ${p.titulo.doc}-${p.titulo.parcela} (${p.titulo.nome}): ${p.liquido.toFixed(2)} no banco` + (taxaJa ? ' (taxa 956 ja lancada no titulo)' : desc ? ` + taxa ${desc.toFixed(2)} na acao 956` : '')
+            + (resta > TOL_VALOR ? ` · BAIXA PARCIAL: ficam ${resta.toFixed(2)} em aberto (ex.: parte em dinheiro)` : ''), dif: 0, tarifa_faltante: 0 };
       }
       if (!ms.length && p.candidatos) {
         return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: 'DECIDIR',
@@ -185,7 +194,7 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: ms.length ? 'AUTO' : null,
         mega: ms.length ? { docs: ms.map(m => m.doc).join(' + '), parcela: ms[0].parcela, valor: r2(ms.reduce((s, m) => s + m.valor, 0)), baixa: ms[0].baixa, tarifa: tarMega,
           movimento: valMov, lanctos: ms.map(m => m.mov?.lancto).filter(Boolean), sem_movimento: ms.some(m => !m.mov), conciliado: ms.some(m => m.mov?.conciliado) } : null,
-        obs: !ms.length ? 'sem baixa no Mega e nenhum titulo em aberto com este valor' : p.soma ? '1 parcela da Rede = 2 titulos do Mega' : p.semParcela ? 'casada sem o numero da parcela' : '',
+        obs: !ms.length ? (p.escolhaInvalida ? 'o titulo escolhido nao serve (ja usado, de outra filial ou com saldo menor que o liquido): busque outro' : 'sem baixa no Mega e nenhum titulo em aberto com este valor: use Buscar no contas a receber') : p.soma ? '1 parcela da Rede = 2 titulos do Mega' : p.semParcela ? 'casada sem o numero da parcela' : '',
         dif: ms.length ? r2(valMov - p.liquido) : null,
         tarifa_faltante: ms.length && tarMega === 0 && p.mdr > 0 && Math.abs(valMov - p.bruto) <= TOL_VALOR + 1e-9 ? p.mdr : 0 };
     });

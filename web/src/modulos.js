@@ -74,6 +74,15 @@ export const MODULOS = {
       { rota: '/baixas-conciliacao/calculadora', label: 'Calculadora de juros e multa' },
     ],
   },
+  // [27/11/2026 - Ronaldo Fajan] Conciliacao PIX I: permissao PROPRIA (sql/46, modulo PIX_CONCILIA), no mesmo dropdown
+  // "Baixas/Conciliação" (merge por label). Conta PIX sem extrato: o usuario marca os lancamentos pelo comprovante.
+  PIX_CONCILIA: {
+    label: 'Baixas/Conciliação',
+    rota:  '/baixas-conciliacao/pix',
+    submenus: [
+      { rota: '/baixas-conciliacao/pix', label: 'Conciliação PIX I' },
+    ],
+  },
   // [25/10/2026 - Alexandre Carvalho] Liberacao de Encargos: permissao PROPRIA (sql/29, modulo LIBERA_ENCARGOS; Odette a
   // principio), renderizada no mesmo dropdown "Liberação" (merge por label em modulosDoUsuario). Quem tem o modulo edita
   // juros/multa/desconto direto na baixa; quem nao tem pede e o pedido cai aqui.

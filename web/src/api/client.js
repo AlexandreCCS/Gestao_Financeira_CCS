@@ -172,6 +172,11 @@ export const api = {
   liberacaoBaixaTitulos: () => req('/liberacao-baixa/titulos'),
   // [26/11/2026] Calculadora de juros e multa: parcelas em aberto do documento, com cliente e encargos do titulo
   calcJurosTitulos: (doc) => req(`/calculadora-juros/titulos?doc=${encodeURIComponent(doc)}`),
+  // [27/11/2026 - Ronaldo Fajan] Conciliacao PIX I (sql/46)
+  pixPainel:    (grp, de, ate) => req(`/pix/painel?grp=${grp}${de ? `&de=${de}` : ''}${ate ? `&ate=${ate}` : ''}`),
+  pixConciliar: (dados) => req('/pix/conciliar', { method: 'POST', body: JSON.stringify(dados) }),
+  pixDesfazer:  (dados) => req('/pix/desfazer',  { method: 'POST', body: JSON.stringify(dados) }),
+  pixConfig:    (dados) => req('/pix/config',    { method: 'PUT',  body: JSON.stringify(dados) }),
   liberacaoBaixaLiberar: (dados) =>
     req('/liberacao-baixa/liberar', { method: 'POST', body: JSON.stringify(dados) }),
   liberacaoBaixaRevogar: (id) =>

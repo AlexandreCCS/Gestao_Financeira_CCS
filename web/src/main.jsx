@@ -31,6 +31,7 @@ import ConciliacaoCartao from './pages/baixas/ConciliacaoCartao.jsx';       // [
 import ConfigBaixarConciliar from './pages/baixas/ConfigBaixarConciliar.jsx';
 import LiberacaoEncargos from './pages/baixas/LiberacaoEncargos.jsx';
 import CalculadoraJuros from './pages/baixas/CalculadoraJuros.jsx';   // [26/11/2026] baixa parcial no Mega: Valor da Baixa pelo valor pago
+import ConciliacaoPix from './pages/baixas/ConciliacaoPix.jsx';       // [27/11/2026 - Ronaldo Fajan] conta PIX I conciliada pelo comprovante
 import BiFaturamento from './pages/bi/Faturamento.jsx';
 // [30/10/2026 - Alexandre Carvalho] Frete > 2a aprovacao (fluxo novo do frete)
 import AprovacaoFrete from './pages/frete/AprovacaoFrete.jsx';
@@ -106,6 +107,8 @@ createRoot(document.getElementById('root')).render(
       <Route path="/baixas-conciliacao/baixar" element={<Protect modulo="BAIXAS_CONCILIACAO"><BaixarConciliar /></Protect>} />
       {/* [26/11/2026 - Alexandre Carvalho] Calculadora: permissao propria CALC_JUROS (sql/45), separada da BAIXAS_CONCILIACAO */}
       <Route path="/baixas-conciliacao/calculadora" element={<Protect modulo="CALC_JUROS"><CalculadoraJuros /></Protect>} />
+      {/* [27/11/2026 - Ronaldo Fajan] Conciliacao PIX I: permissao propria PIX_CONCILIA (sql/46) */}
+      <Route path="/baixas-conciliacao/pix" element={<Protect modulo="PIX_CONCILIA"><ConciliacaoPix /></Protect>} />
       <Route path="/baixas-conciliacao/config" element={<Protect modulo="BAIXAS_CONCILIACAO" adminOnly><ConfigBaixarConciliar /></Protect>} />
       <Route path="/liberacao-encargos" element={<Protect modulo="LIBERA_ENCARGOS"><LiberacaoEncargos /></Protect>} />
       {/* [30/10/2026 - Alexandre Carvalho] menu Frete (Motoristas e Veiculos) saiu do Gestor: foi para o Portal de Dados da Industria, Expedicao > Motoristas / Veiculos (CCS_PCK_FRT_CAD_WEB, mesmas tabelas CCS_TB_GFIN_*) */}

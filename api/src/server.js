@@ -37,6 +37,8 @@ import baixarConciliarRoutes from './routes/baixarConciliar.js';
 import conciliacaoBancariaRoutes from './routes/conciliacaoBancaria.js';
 // [18/11/2026 - Alexandre Carvalho] Conciliacao bancaria - Cartao: importacao dos arquivos da Rede por filial
 import conciliacaoCartaoRoutes from './routes/conciliacaoCartao.js';
+// [27/11/2026 - Ronaldo Fajan] Conciliacao PIX I: lancamentos das contas PIX conciliados pelo comprovante (sql/46)
+import conciliacaoPixRoutes from './routes/conciliacaoPix.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -93,6 +95,7 @@ await app.register(freteAprovacaoRoutes);
 await app.register(baixarConciliarRoutes);
 await app.register(conciliacaoBancariaRoutes);
 await app.register(conciliacaoCartaoRoutes);
+await app.register(conciliacaoPixRoutes);
 
 const port = parseInt(process.env.PORT || '3000', 10);
 app.listen({ host: '0.0.0.0', port })

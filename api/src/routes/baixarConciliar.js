@@ -789,9 +789,11 @@ export async function executarConc(item, ctx) {
 export async function executarTx1(item, ctx) {
   const token = crypto.randomUUID();
   const movs = item.movs.map(m => `${num(m.seq)}:${num(m.lancto)}`).join(',');
-  const docs = item.docs.map(d => String(d).replace(/[^0-9A-Za-z]/g, '')).filter(Boolean).join(',');
+  const docs = (item.docs || []).map(d => String(d).replace(/[^0-9A-Za-z]/g, '')).filter(Boolean).join(',');
+  // [27/11/2026] taxa da Rede nunca lancada (sql/49): "seq:lancto:valor" do TITULO -> 710 classe 830 / CC 24
+  const taxas = (item.taxas || []).map(t => `${num(t.seq)}:${num(t.lancto)}:${f2(t.valor)}`).join(',');
   try {
-    await megaExec(`BEGIN MEGA.CCS_P_GFIN_CBC_TX1('${token}', ${num(item.org)}, ${num(item.cba)}, ${f2(item.valor)}, '${ascii(docs, 400)}', '${movs}', ${ctx.usu}, '${ascii(ctx.login, 60)}', '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}'); END;`);
+    await megaExec(`BEGIN MEGA.CCS_P_GFIN_CBC_TX1('${token}', ${num(item.org)}, ${num(item.cba)}, ${f2(item.valor || 0)}, ${docs ? `'${ascii(docs, 400)}'` : 'NULL'}, '${movs}', ${ctx.usu}, '${ascii(ctx.login, 60)}', '${ctx.origem}', '${ctx.simular ? 'S' : 'N'}', ${taxas ? `'${taxas}'` : 'NULL'}); END;`);
     return (await lerLogPorToken(token)) || { status: 'X', mensagem: 'O Mega nao devolveu o resultado deste ajuste.' };
   } catch (e) { return (await lerLogPorToken(token).catch(() => null)) || falhaComunicacao(e, 'o ajuste da taxa e a conciliacao'); }
 }

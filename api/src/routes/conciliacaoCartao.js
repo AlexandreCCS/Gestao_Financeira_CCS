@@ -305,7 +305,7 @@ export default async function conciliacaoCartaoRoutes(app) {
   // [27/11/2026] deposito com ajuste da taxa antecipada na 1a parcela (sql/48): 977 + conciliacao numa transacao. Se o deposito tambem tem
   // titulo a baixar, baixa antes (sem extrato, como o caminho B), remonta e concilia com o ajuste.
   async function conciliarDeposito(d, cba, ctx, remontar) {
-    if (d.ajuste_tx1?.valor > 0) {
+    if (d.ajuste_tx1?.valor > 0 || d.taxa_nao_lancada?.valor > 0) {
       if (d.baixas?.length) {
         if (ctx.simular) return { status: 'X', mensagem: 'Deposito com titulo a baixar e ajuste da taxa da 1a parcela: a simulacao nao cobre as duas etapas. Use Baixar e conciliar.' };
         for (const b of d.baixas) {
@@ -316,10 +316,10 @@ export default async function conciliacaoCartaoRoutes(app) {
           if (res.status !== 'B') return { ...res, mensagem: `Baixa do titulo ${b.doc}-${b.parcela} antes do ajuste: ${res.mensagem || res.status}` };
         }
         const d2 = remontar ? await remontar(cba) : null;
-        if (!d2 || d2.situacao !== 'PRONTO' || !d2.ajuste_tx1) return { status: 'X', mensagem: `Titulos baixados; o deposito nao ficou pronto para conciliar com o ajuste (${d2 ? d2.situacao + ': ' + d2.motivos.join('; ') : 'nao encontrado'}). Atualize a tela.` };
+        if (!d2 || d2.situacao !== 'PRONTO' || !(d2.ajuste_tx1 || d2.taxa_nao_lancada)) return { status: 'X', mensagem: `Titulos baixados; o deposito nao ficou pronto para conciliar com o ajuste (${d2 ? d2.situacao + ': ' + d2.motivos.join('; ') : 'nao encontrado'}). Atualize a tela.` };
         d = d2;
       }
-      return executarTx1({ org: d.extrato.org, cba, valor: d.ajuste_tx1.valor, docs: d.ajuste_tx1.docs, movs: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })) }, ctx);
+      return executarTx1({ org: d.extrato.org, cba, valor: d.ajuste_tx1?.valor || 0, docs: d.ajuste_tx1?.docs || [], taxas: d.taxa_nao_lancada?.itens || [], movs: d.movs.map(m => ({ seq: m.seq, lancto: m.lancto })) }, ctx);
     }
     return d.baixas?.length
       ? executarBaixa({ tipo: 'R', org: d.extrato.org, conta: d.extrato.conta, data: d.extrato.data, tpd_fin: d.modalidade === 'debito' ? 'CARDEB' : 'CARCRED', doc_fin: String(cba),
@@ -359,7 +359,7 @@ export default async function conciliacaoCartaoRoutes(app) {
       const baixasSel = (d.baixas || []).filter(b => !excl.has(String(b.nsu)));
       if (d.situacao === 'PRONTO' && d.extrato && baixasSel.length === (d.baixas || []).length) {
         const res = await conciliarDeposito(d, d.extrato.cba, ctx, async cba => (await montarDepositos(megaQuery, fil, { escolhas: escolhasDe(req.body.escolhas), ...periodoDe(req.body) })).depositos.find(x => x.extrato?.cba === cba));
-        resultados.push({ ...base, acao: d.ajuste_tx1 ? 'conciliacao_ajuste_tx1' : d.baixas?.length ? 'baixa_conciliacao' : 'conciliacao', valor: d.extrato.valor, movimentos: d.movs.length, baixas: d.baixas?.length || 0, ...res });
+        resultados.push({ ...base, acao: d.ajuste_tx1 || d.taxa_nao_lancada ? 'conciliacao_ajuste_tx1' : d.baixas?.length ? 'baixa_conciliacao' : 'conciliacao', valor: d.extrato.valor, movimentos: d.movs.length, baixas: d.baixas?.length || 0, ...res });
       } else if (baixasSel.length) {
         if (!r.conta_loja) { resultados.push({ ...base, status: 'X', mensagem: 'Filial sem uma unica conta de loja ativa (Configurar > Loja).' }); continue; }
         for (const x of await baixarSemExtrato(d, baixasSel, r.conta_loja.conta, ctx)) resultados.push({ ...base, acao: 'baixa_sem_extrato', ...x });

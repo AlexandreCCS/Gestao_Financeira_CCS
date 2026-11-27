@@ -73,6 +73,7 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       F.MOV_SEQ_IN_CODIGO FSEQ, F.MOV_IN_NUMLANCTO FLAN, F.AGN_IN_CODIGO FAGN, F.MOV_RE_VALOR FVLR, TO_CHAR(F.MOV_DT_DATADOCTO,'YYYY-MM-DD') FDT, NVL(F.MOV_CH_CONCILIADO,'N') FCONC, F.TPD_ST_CODIGO FTPD,
       (SELECT NVL(SUM(T.MOV_RE_VALORMOE),0) FROM MEGA.FIN_MOVIMENTO T WHERE T.ORG_IN_CODIGO = B.ORG_IN_CODIGO AND T.FIL_IN_CODIGO = B.FIL_IN_CODIGO AND T.ACAO_IN_CODIGO = 956
           AND T.MOV_ST_DOCUMENTO = B.MOV_ST_DOCUMENTO AND T.MOV_ST_PARCELA = B.MOV_ST_PARCELA AND TRUNC(T.MOV_DT_DATADOCTO) = TRUNC(B.DT_BAIXA)) TARIFA
+      , M.MOV_SEQ_IN_CODIGO TSEQ, M.MOV_IN_NUMLANCTO TLAN, M.AGN_IN_CODIGO TAGN   -- [27/11/2026] titulo (taxa nao lancada, sql/49)
       FROM MEGA.CCS_TB_LOG_BAIXA_AUTO B
       JOIN MEGA.FIN_MOVIMENTO M ON M.MOV_IN_NUMLANCTO = B.MOV_IN_NUMLANCTO AND M.ORG_IN_CODIGO = B.ORG_IN_CODIGO
       LEFT JOIN MEGA.FIN_MOVIMENTO F ON F.ORG_IN_CODIGO = B.ORG_IN_CODIGO AND F.MOV_IN_NUMLANCTO = B.LANCTO_FIN AND F.ACAO_IN_CODIGO = 706
@@ -80,7 +81,7 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       WHERE B.FIL_IN_CODIGO = ${fil} AND NVL(B.ESTORNADO,'N') <> 'S' AND (UPPER(B.FORMA_PAGAMENTO) LIKE 'CREDITO%' OR UPPER(B.FORMA_PAGAMENTO) LIKE 'DEBITO%')
         AND B.DT_BAIXA BETWEEN ${D(pIni)} AND ${D(pFim)}`)).map(x => ({
     id: num(x.ID), doc: x.DOC || '', parcela: num(String(x.PARC || '').replace(/\D/g, '')) || 1, valor: r2(x.VLR), mod: /^DEB/i.test(x.FORMA || '') ? 'D' : 'C', forma: x.FORMA || '',
-    org: num(x.ORG), venda: iso(x.VENDA), baixa: iso(x.BX), cliente: num(x.CLI), tarifa: r2(x.TARIFA), usada: false,
+    org: num(x.ORG), venda: iso(x.VENDA), baixa: iso(x.BX), cliente: num(x.CLI), tarifa: r2(x.TARIFA), usada: false, tit: { seq: num(x.TSEQ), lancto: num(x.TLAN), agn: num(x.TAGN) },
     mov: x.FLAN ? { seq: num(x.FSEQ), lancto: num(x.FLAN), conta: num(x.FAGN), valor: r2(x.FVLR), data: iso(x.FDT), conciliado: x.FCONC === 'S', tpd: x.FTPD } : null }));
   // ---------------------------------------------------------------- casamento parcela da Rede x baixa do Mega (por modalidade)
   const melhor = (r, comParcela) => {
@@ -104,6 +105,15 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     const ms = mega.filter(m => !m.usada && m.mod === r.mod && m.parcela === r.parcela && perto(m.venda, r.venda));
     achou: for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++)
       if (Math.abs(ms[i].valor + ms[j].valor - r.bruto) <= TOL_SOMA) { ms[i].usada = ms[j].usada = true; r.ms = [ms[i], ms[j]]; r.soma = true; break achou; }
+  }
+  // [27/11/2026] taxa da Rede NUNCA lancada (sql/49): venda antiga (emitida ate CBC_TX0_EMI_ATE) sem nenhuma 956 -> 710 automatica na conciliacao
+  const tx0Emi = (await megaQuery(`SELECT TO_CHAR(TO_DATE(TO_CHAR(MAX(PARAM_RE_VALOR)),'YYYYMMDD'),'YYYY-MM-DD') D FROM MEGA.CCS_TB_GFIN_PARAM WHERE PARAM_ST_CHAVE = 'CBC_TX0_EMI_ATE'`).catch(() => []))[0]?.D || null;
+  const candTx0 = mega.filter(m => m.usada && m.mov && !m.mov.conciliado && m.tarifa === 0 && tx0Emi && m.venda && m.venda <= tx0Emi && !tx1Docs.has(String(m.doc)));
+  const com956 = new Set();
+  for (let i = 0; i < candTx0.length; i += 200) {
+    const lote = candTx0.slice(i, i + 200);
+    for (const x of await megaQuery(`SELECT DISTINCT D.MOV_ST_DOCUMENTO DOC, D.AGN_IN_CODIGO AGN FROM MEGA.FIN_MOVIMENTO D WHERE D.FIL_IN_CODIGO = ${fil} AND D.ACAO_IN_CODIGO = 956 AND NVL(D.MOV_CH_SITUACAO,'N') <> 'C'
+        AND D.MOV_ST_DOCUMENTO IN (${[...new Set(lote.map(m => `'${String(m.doc).replace(/'/g, '')}'`))].join(',')})`)) com956.add(`${x.DOC}|${num(x.AGN)}`);
   }
   // ---------------------------------------------------------------- [27/11/2026] parcela sem baixa automatica: baixa a mao ou titulo em aberto
   // conta e org da loja tambem pelo cadastro (Configurar > Loja; org = PAI da filial): deposito sem extrato importado ainda acha os titulos
@@ -214,6 +224,15 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
           mega: { docs: ms[0].doc, parcela: ms[0].parcela, valor: ms[0].valor, baixa: ms[0].baixa, tarifa: 0, movimento: valMov, lanctos: [ms[0].mov.lancto], sem_movimento: false, conciliado: false },
           tx1: { valor: ajTx1, doc: String(ms[0].doc) }, obs: `taxa antecipada na 1a parcela: ajuste ${ajTx1.toFixed(2)} (acao 977, nao contabil) na conciliacao`, dif: 0, tarifa_faltante: 0 };
       }
+      // [27/11/2026] venda antiga sem NENHUMA 956: a taxa da parcela (bruto - liquido) vira 710 (classe 830 / CC 24) na conciliacao (sql/49)
+      const m0 = ms[0];
+      if (ms.length === 1 && m0.mov && !m0.mov.conciliado && tarMega === 0 && tx0Emi && m0.venda && m0.venda <= tx0Emi && tx1Ate && g.data <= tx1Ate && !tx1Docs.has(String(m0.doc))
+          && !com956.has(`${m0.doc}|${m0.tit.agn}`) && m0.tit.lancto && Math.abs(valMov - p.bruto) <= TOL_VALOR + 1e-9 && ajTx1 > 0.005 && ajTx1 <= r2(p.mdr + TOL_VALOR)) {
+        return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: 'AUTO',
+          mega: { docs: m0.doc, parcela: m0.parcela, valor: m0.valor, baixa: m0.baixa, tarifa: 0, movimento: valMov, lanctos: [m0.mov.lancto], sem_movimento: false, conciliado: false },
+          tx0: { valor: ajTx1, doc: String(m0.doc), parcela: m0.parcela, seq: m0.tit.seq, lancto: m0.tit.lancto },
+          obs: `taxa da Rede nunca lancada: ${ajTx1.toFixed(2)} vira saida 710 (classe 830 / CC 24) na conciliacao`, dif: 0, tarifa_faltante: 0 };
+      }
       return { venda: p.venda, parcela: p.parcela, parcelas: p.parcelas, nsu: p.nsu, bruto: p.bruto, mdr: p.mdr, liquido: p.liquido, acao: ms.length ? 'AUTO' : null,
         mega: ms.length ? { docs: ms.map(m => m.doc).join(' + '), parcela: ms[0].parcela, valor: r2(ms.reduce((s, m) => s + m.valor, 0)), baixa: ms[0].baixa, tarifa: tarMega,
           movimento: valMov, lanctos: ms.map(m => m.mov?.lancto).filter(Boolean), sem_movimento: ms.some(m => !m.mov), conciliado: ms.some(m => m.mov?.conciliado) } : null,
@@ -225,6 +244,8 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     const somaMov = r2(lista.reduce((s, m) => s + m.valor, 0));
     const somaBaixar = r2(baixas.reduce((s, b) => s + b.valor, 0));
     const tx1Parc = parcelas.filter(p => p.tx1);
+    const tx0Parc = parcelas.filter(p => p.tx0);
+    const taxaNl = tx0Parc.length ? { valor: r2(tx0Parc.reduce((s, p) => s + p.tx0.valor, 0)), itens: tx0Parc.map(p => ({ ...p.tx0, nsu: p.nsu })) } : null;
     const ajusteTx1 = tx1Parc.length ? { valor: r2(tx1Parc.reduce((s, p) => s + p.tx1.valor, 0)), docs: [...new Set(tx1Parc.map(p => p.tx1.doc))], parcelas: tx1Parc.length } : null;
     const ajustesDia = ajustes.filter(a => a.data === g.data);
     const valorBanco = e ? e.valor : valorRede;
@@ -248,7 +269,8 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
     // [27/11/2026] diferenca de data so avisa (parcela baixada a mao com outra data concilia do mesmo jeito; janela da conciliacao ate 60 dias)
     if (espalho > janela) motivos.push(`aviso: datas com ${espalho} dias de distancia (${datas[0]} a ${datas[datas.length - 1]})`);
     if (ajusteTx1) motivos.push(`ajuste da taxa antecipada na 1a parcela: ${ajusteTx1.valor.toFixed(2)} (acao 977, NF ${ajusteTx1.docs.join(', ')})` + (baixas.length ? ' · com titulo a baixar: baixa primeiro (sem extrato) e concilia em seguida' : ''));
-    const dif = r2(somaMov + somaBaixar - (ajusteTx1 ? ajusteTx1.valor : 0) - valorBanco);
+    if (taxaNl) motivos.push(`taxa da Rede nunca lancada: ${taxaNl.valor.toFixed(2)} (saida 710, classe 830 / CC 24, NF ${taxaNl.itens.map(t => t.doc + '/' + t.parcela).join(', ')})` + (baixas.length ? ' · com titulo a baixar: baixa primeiro (sem extrato) e concilia em seguida' : ''));
+    const dif = r2(somaMov + somaBaixar - (ajusteTx1 ? ajusteTx1.valor : 0) - (taxaNl ? taxaNl.valor : 0) - valorBanco);
     let situacao;
     if (e && (e.status === 'S' || e.con)) situacao = 'CONCILIADO';
     else if (ignDep.get(g.chave)) situacao = 'IGNORADO';
@@ -263,7 +285,7 @@ export async function montarDepositos(megaQuery, fil, opc = {}) {
       rede: { valor: valorRede, parcelas: parcelas.length, soma_parcelas: somaParc, status: g.rede.map(d => d.status).join(', ') },
       extrato: e ? { cba: e.cba, conta: e.conta, org: e.org, data: e.data, valor: e.valor, historico: e.historico, status: e.status } : null,
       mega: { movimentos: lista.length, soma: somaMov, a_baixar: somaBaixar, org: lista[0]?.org || e?.org || null, conta: lista[0]?.conta || e?.conta || null },
-      baixas, ajuste_tx1: ajusteTx1, janela_conc: Math.max(janela, espalho + 1),
+      baixas, ajuste_tx1: ajusteTx1, taxa_nao_lancada: taxaNl, janela_conc: Math.max(janela, espalho + 1),
       dif, tarifa_faltante: tarifaFalt, ajuste_rede: r2(somaParc - valorRede), motivos, parcelas,
       movs: lista.map(m => ({ seq: m.seq, lancto: m.lancto, valor: m.valor, data: m.data, conciliado: m.conciliado })) });
   }

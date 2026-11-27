@@ -14,6 +14,7 @@ CREATE OR REPLACE PROCEDURE MEGA.CCS_P_GFIN_BXC_ESTORNO_X (
     TYPE T_NUM IS TABLE OF NUMBER INDEX BY PLS_INTEGER;
     MOVS T_NUM; CBAS T_NUM;
     W_N NUMBER; W_ITEM VARCHAR2(60); W_LISTA VARCHAR2(2100);
+    W_NCRIADOS NUMBER := 0; -- [27/11/2026] movimentos criados pela operacao dentro da conciliacao (sql/49: 977 + 710)
     W_NEXTRA NUMBER := 0;   -- [27/11/2026] movimentos ja existentes conciliados junto (sql/45, LOG_ST_MOVS_CONC): so desconcilia, nao apaga
     E_OCUPADO EXCEPTION; PRAGMA EXCEPTION_INIT(E_OCUPADO, -54);
     PROCEDURE DESATUALIZA(R MEGA.FIN_MOVIMENTO%ROWTYPE) IS
@@ -78,7 +79,13 @@ BEGIN
     /* CONCILIACAO INTACTA? os mesmos movimentos e as mesmas linhas, nada a mais */
     IF L.CON_IN_SEQUENCIAL IS NOT NULL THEN   -- [27/11/2026] baixa sem extrato nao tem conciliacao
     SELECT COUNT(*) INTO W_N FROM MEGA.FIN_MOVIMENTO M WHERE M.CON_IN_SEQUENCIAL = L.CON_IN_SEQUENCIAL;
-    IF W_N <> (CASE WHEN L.LOG_CH_TIPO = 'C' THEN MOVS.COUNT ELSE 1 + W_NEXTRA END) THEN
+    -- [27/11/2026] conciliacao de cartao (sql/49): a operacao pode criar mais de um movimento conciliado (977 + 710 por parcela);
+    -- conta os criados por ela que estao nesta conciliacao (antes era sempre 1)
+    SELECT COUNT(*) INTO W_NCRIADOS FROM MEGA.FIN_MOVIMENTO M
+     WHERE M.CON_IN_SEQUENCIAL = L.CON_IN_SEQUENCIAL AND M.ORG_IN_CODIGO = L.ORG_IN_CODIGO AND M.MOV_SEQ_IN_CODIGO = L.MOV_SEQ_IN_CODIGO
+       AND INSTR(',' || L.LOG_ST_MOVS || ',', ',' || M.MOV_IN_NUMLANCTO || ',') > 0;
+    IF L.LOG_CH_TIPO <> 'C' AND W_NCRIADOS < 1 THEN RAISE_APPLICATION_ERROR(-20100, 'A conciliacao foi alterada no Mega (lancamento da operacao fora dela). Desfaca pelo Mega.'); END IF;
+    IF W_N <> (CASE WHEN L.LOG_CH_TIPO = 'C' THEN MOVS.COUNT ELSE W_NCRIADOS + W_NEXTRA END) THEN
         RAISE_APPLICATION_ERROR(-20100, 'A conciliacao foi alterada no Mega (' || W_N || ' lancamento(s) ligados). Desfaca pelo Mega.');
     END IF;
     SELECT COUNT(*) INTO W_N FROM MEGA.FIN_CONCILIACAO B WHERE B.CON_IN_SEQUENCIAL = L.CON_IN_SEQUENCIAL;

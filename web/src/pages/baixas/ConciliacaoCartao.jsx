@@ -664,7 +664,7 @@ function DepositosItau({ filiais, filialInicial, tick }) {
             <div className="space-y-1">
               {resultados.map((r, i) => (
                 <div key={i} className="text-sm flex flex-wrap gap-2 items-center">
-                  <Chip cor={r.status === 'B' ? 'var(--cb-ok)' : r.status === 'S' ? 'var(--cb-info)' : 'var(--cb-err)'}>{r.status === 'B' ? (r.acao === 'baixa_sem_extrato' ? 'baixado (concilia depois)' : r.acao === 'baixa_conciliacao' ? 'baixado e conciliado' : r.acao === 'conciliacao_ajuste_tx1' ? 'conciliado com ajuste Tx 1ª parc.' : 'conciliado') : r.status === 'S' ? 'validado' : 'recusado'}</Chip>
+                  <Chip cor={r.status === 'B' ? 'var(--cb-ok)' : r.status === 'S' ? 'var(--cb-info)' : 'var(--cb-err)'}>{r.status === 'B' ? (r.acao === 'baixa_sem_extrato' ? 'baixado (concilia depois)' : r.acao === 'baixa_conciliacao' ? 'baixado e conciliado' : r.acao === 'conciliacao_ajuste_tx1' ? 'conciliado com ajuste de taxa' : 'conciliado') : r.status === 'S' ? 'validado' : 'recusado'}</Chip>
                   <span className="tabular-nums">{fmtBr(r.data)} · {r.bandeira} {r.modalidade}{r.titulo ? ` · ${r.titulo} ${fmt(r.valor)}${r.desconto ? ` + taxa ${fmt(r.desconto)}` : ''}` : r.valor ? ` · ${fmt(r.valor)}` : ''}</span>
                   {r.mensagem && <span className={muted}>{r.mensagem}</span>}
                 </div>

@@ -22,6 +22,21 @@ const ascii = v => String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, 
 // m/d/aa (vendas) ou dd/mm/aaaa (recebimentos)
 const dataUS = v => { const m = txt(v).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/); if (!m) return ''; const y = m[3].length === 2 ? `20${m[3]}` : m[3]; return `${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`; };
 const dataBR = v => { const m = txt(v).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/); if (!m) return ''; const y = m[3].length === 2 ? `20${m[3]}` : m[3]; return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; };
+// [27/11/2026] o relatorio de recebimentos da Rede vem ora em dd/mm/aaaa (exportado em 18/11), ora em m/d/aa (exportado em 26/11: "11/18/26")
+// -> ORA-01843 "nao e um mes valido". O formato e decidido pelo proprio arquivo: dia > 12 na 1a posicao = BR; na 2a = US; ano com 2 digitos = US.
+function formatoDatas(wb, abas) {
+  let br = 0, us = 0, ano2 = 0;
+  for (const sn of abas) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: false, defval: '' });
+    for (const r of rows) for (const c of r) {
+      const m = String(c || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+      if (!m) continue;
+      if (+m[1] > 12) br++; else if (+m[2] > 12) us++;
+      if (m[3].length === 2) ano2++;
+    }
+  }
+  return br > us ? 'BR' : us > br ? 'US' : ano2 ? 'US' : 'BR';
+}
 const dataOk = s => /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s));
 const hora = v => { const m = txt(v).match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/); return m ? `${m[1].padStart(2, '0')}:${m[2]}:${m[3] || '00'}` : ''; };
 // cabecalho das abas: "PERIODO: 01-10-2026 A 31-10-2026 / DATA DE EMISSAO: 06-11-2026 09:31:04"
@@ -110,6 +125,8 @@ const ABAS_R = [
 ];
 function lerRecebimentos(wb, nome) {
   const linhas = []; const abasLidas = []; let cab = { periodo: null, emissao: null }; let invalidas = 0;
+  const abasR = ABAS_R.map(def => wb.SheetNames.find(s => norm(s) === def.nome || norm(s) === def.nome.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))).filter(Boolean);
+  const dataR = formatoDatas(wb, abasR) === 'US' ? dataUS : dataBR;
   for (const def of ABAS_R) {
     const sn0 = wb.SheetNames.find(s => norm(s) === def.nome || norm(s) === def.nome.normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
     if (!sn0) continue;
@@ -121,26 +138,26 @@ function lerRecebimentos(wb, nome) {
       const base = { aba: def.aba, estab_nome: txt(col(r, 'nome do estabelecimento')), cnpj: '', situacao: 'nova', motivo: '', descricao: '' };
       let l;
       if (def.aba === 'P' || def.aba === 'F') {
-        const data = dataBR(col(r, 'data do recebimento', 'data prevista do recebimento'));
-        l = { ...base, data, dt_venda: dataBR(col(r, 'data original da venda')) || null, dt_vencto: dataBR(col(r, 'data original de vencimento')) || null,
+        const data = dataR(col(r, 'data do recebimento', 'data prevista do recebimento'));
+        l = { ...base, data, dt_venda: dataR(col(r, 'data original da venda')) || null, dt_vencto: dataR(col(r, 'data original de vencimento')) || null,
           bruto: num(col(r, 'valor bruto da parcela original')), bruto_atual: num(col(r, 'valor bruto da parcela atualizada')), taxa_mdr: num(col(r, 'taxa mdr')), mdr: num(col(r, 'valor mdr descontado')),
           liquido: num(col(r, 'valor líquido da parcela', 'valor liquido da parcela')), nsu: txt(col(r, 'nsu/cv')), tid: txt(col(r, 'tid')), pedido: txt(col(r, 'número do pedido', 'numero do pedido')),
           autorizacao: txt(col(r, 'número da autorização', 'numero da autorizacao', 'número de autorização', 'numero de autorizacao')), lote: txt(col(r, 'resumo de vendas/número do lote', 'resumo de vendas/numero do lote')),
           estab: digitos(col(r, 'estabelecimento')), cartao: txt(col(r, 'número do cartão', 'numero do cartao')), modalidade: norm(col(r, 'modalidade')), bandeira: txt(col(r, 'bandeira')),
           parcelas: inteiro(col(r, 'número de parcelas', 'numero de parcelas')), parcela: inteiro(col(r, 'parcela')), banco: txt(col(r, 'banco')), agencia: txt(col(r, 'agência', 'agencia')), conta: txt(col(r, 'conta-corrente', 'conta corrente')),
-          status: norm(col(r, 'status')), cancelada: vazio(col(r, 'cancelamento/contestação', 'cancelamento/contestacao')) ? null : 'S', dt_cancel: dataBR(col(r, 'data do cancelamento')) || null };
+          status: norm(col(r, 'status')), cancelada: vazio(col(r, 'cancelamento/contestação', 'cancelamento/contestacao')) ? null : 'S', dt_cancel: dataR(col(r, 'data do cancelamento')) || null };
         l.taxas = l.mdr; l.chave = ascii(`${def.aba}|${l.estab}|${l.nsu}|${l.parcela ?? ''}|${l.data}|${(l.bruto ?? 0).toFixed(2)}`);
         if (!dataOk(data) || l.bruto == null || !l.estab) { l.situacao = 'erro'; l.motivo = !dataOk(data) ? 'Data do recebimento inválida' : l.bruto == null ? 'Valor inválido' : 'Sem estabelecimento'; }
       } else if (def.aba === 'D') {
-        const data = dataBR(col(r, 'data'));
+        const data = dataR(col(r, 'data'));
         l = { ...base, data, bruto: num(col(r, 'valor depositado')), liquido: num(col(r, 'valor depositado')), bandeira: txt(col(r, 'bandeira')), modalidade: norm(col(r, 'modalidade')),
           banco: txt(col(r, 'banco domicilio', 'banco domicílio')), estab: digitos(col(r, 'estabelecimento')), status: norm(col(r, 'status')), descricao: txt(col(r, 'negociadas')) };
         l.chave = ascii(`D|${l.estab}|${l.data}|${l.bandeira}|${l.modalidade}|${(l.bruto ?? 0).toFixed(2)}`);
         if (!dataOk(data) || l.bruto == null || !l.estab) { l.situacao = 'erro'; l.motivo = 'Data, valor ou estabelecimento inválido'; }
       } else if (def.aba === 'A') {
-        const data = dataBR(col(r, 'data do ajuste'));
+        const data = dataR(col(r, 'data do ajuste'));
         const id = txt(col(r, 'id ajuste'));
-        l = { ...base, data, dt_venda: dataBR(col(r, 'data do lançamento', 'data do lancamento')) || null, bruto: num(col(r, 'valor total original do ajuste')), liquido: num(col(r, 'valor cobrado nesta data')),
+        l = { ...base, data, dt_venda: dataR(col(r, 'data do lançamento', 'data do lancamento')) || null, bruto: num(col(r, 'valor total original do ajuste')), liquido: num(col(r, 'valor cobrado nesta data')),
           bruto_atual: num(col(r, 'valor creditado nesta data')), bandeira: txt(col(r, 'bandeira ajustada')), lote: txt(col(r, 'resumo de vendas/número do lote ajustado', 'resumo de vendas/numero do lote ajustado')),
           estab: digitos(col(r, 'número do estabelecimento cobrado', 'numero do estabelecimento cobrado')), estab_nome: txt(col(r, 'nome do estabelecimento cobrado')),
           banco: txt(col(r, 'banco')), agencia: txt(col(r, 'agência', 'agencia')), conta: txt(col(r, 'conta-corrente', 'conta corrente')), nsu: id, status: norm(col(r, 'tipo do ajuste')),
@@ -148,8 +165,8 @@ function lerRecebimentos(wb, nome) {
         l.chave = ascii(`A|${l.estab}|${id}|${l.data}`);
         if (!dataOk(data) || !l.estab) { l.situacao = 'erro'; l.motivo = 'Data ou estabelecimento inválido'; }
       } else {
-        const data = dataBR(col(r, 'data do débito', 'data do debito'));
-        l = { ...base, data, dt_venda: dataBR(col(r, 'data original da venda')) || null, bruto: num(col(r, 'valor original da venda')), liquido: num(col(r, 'valor descontado')),
+        const data = dataR(col(r, 'data do débito', 'data do debito'));
+        l = { ...base, data, dt_venda: dataR(col(r, 'data original da venda')) || null, bruto: num(col(r, 'valor original da venda')), liquido: num(col(r, 'valor descontado')),
           modalidade: norm(col(r, 'modalidade da venda')), bandeira: txt(col(r, 'bandeira da venda')), parcelas: inteiro(col(r, 'número de parcelas', 'numero de parcelas')),
           estab: digitos(col(r, 'estabelecimento da venda')), estab_nome: txt(col(r, 'nome do estabelecimento da venda')), nsu: txt(col(r, 'nsu/cv')), tid: txt(col(r, 'tid')),
           autorizacao: txt(col(r, 'número da autorização', 'numero da autorizacao')), lote: txt(col(r, 'resumo de vendas/número do lote da venda', 'resumo de vendas/numero do lote da venda')),

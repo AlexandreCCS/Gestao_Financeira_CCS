@@ -1,0 +1,218 @@
+/* =====================================================================================================================
+   [18/11/2026 - CRIADO POR ALEXANDRE CARVALHO] CONCILIACAO BANCARIA - CARTAO: IMPORTACAO DOS ARQUIVOS DA REDE (Quality, OCPDB493)
+   Copia do desenho da conciliacao bancaria (sql/34): o Gestor le o .xlsx da Rede no navegador (web/src/pages/baixas/rede.js),
+   a API grava as linhas aqui e a procedure CCS_P_GFIN_CBC_IMPORTA confirma (tudo ou nada por arquivo e filial).
+   Dois layouts da Rede: V = extrato de VENDAS (aba "vendas": cada transacao na maquininha/link, inclusive pix, negadas e
+   expiradas) e R = relatorio de RECEBIMENTOS (abas pagamentos / pagamentos futuros / recebidos / ajustes / cancelamentos).
+   Tudo e POR FILIAL: o estabelecimento da Rede vira filial pelo de-para CCS_TB_GFIN_CBC_ESTAB (ou pelo CNPJ da planilha x
+   GLO_AGENTES.AGN_ST_CGC). Um ARQUIVO por (arquivo, filial); duplicidade por linha pela LIN_ST_CHAVE dentro da filial.
+   Nada aqui grava em tabela nativa do Mega. Deploy pelo gateway SOAP: blocos separados por linha "/", DDL sem ";" final. Somente ASCII.
+   ===================================================================================================================== */
+CREATE TABLE MEGA.CCS_TB_GFIN_CBC_ESTAB (
+  ESTAB_ST_NUMERO    VARCHAR2(20)  NOT NULL,
+  ESTAB_ST_CNPJ      VARCHAR2(14),
+  FIL_IN_CODIGO      NUMBER(7)     NOT NULL,
+  ESTAB_ST_NOME      VARCHAR2(80),
+  ESTAB_CH_ATIVO     CHAR(1)       DEFAULT 'S' NOT NULL,
+  ESTAB_DT_INCLUSAO  DATE          DEFAULT SYSDATE NOT NULL,
+  USU_ST_LOGIN       VARCHAR2(60),
+  CONSTRAINT PK_CCS_GFIN_CBC_ESTAB PRIMARY KEY (ESTAB_ST_NUMERO),
+  CONSTRAINT CK_CCS_GFIN_CBC_ESTAB_AT CHECK (ESTAB_CH_ATIVO IN ('S', 'N'))
+)
+/
+MERGE INTO MEGA.CCS_TB_GFIN_CBC_ESTAB D
+USING (SELECT '97490237' NUM, '35623534000582' CNPJ, 401 FIL, 'FREEDOM CASA DO SERRALHEIRO (CARUARU)' NOME FROM DUAL
+       UNION ALL SELECT '97490431', '35623534000744', 402, 'FREEDOM CASA DO ALUMINIO (GARANHUNS)' FROM DUAL
+       UNION ALL SELECT '97490555', '35623534000663', 403, 'FREEDOM ARCOVERDE ALUMINIO' FROM DUAL
+       UNION ALL SELECT '102574383', '35623534000825', 404, 'GRAVATA ALUMINIO' FROM DUAL
+       UNION ALL SELECT '108946312', '35623534000400', 460, 'FREEDOM CD' FROM DUAL) S
+ON (D.ESTAB_ST_NUMERO = S.NUM)
+WHEN NOT MATCHED THEN INSERT (ESTAB_ST_NUMERO, ESTAB_ST_CNPJ, FIL_IN_CODIGO, ESTAB_ST_NOME, USU_ST_LOGIN) VALUES (S.NUM, S.CNPJ, S.FIL, S.NOME, 'SEED 18/11/2026')
+/
+CREATE TABLE MEGA.CCS_TB_GFIN_CBC_ARQUIVO (
+  ARQ_IN_CODIGO      NUMBER        NOT NULL,
+  ARQ_ST_TOKEN       VARCHAR2(40)  NOT NULL,
+  ARQ_ST_HASH        VARCHAR2(64)  NOT NULL,
+  ARQ_ST_NOME        VARCHAR2(228) NOT NULL,
+  ARQ_CH_TIPO        CHAR(1)       NOT NULL,
+  ARQ_DT_EMISSAO     DATE,
+  ARQ_DT_INI         DATE,
+  ARQ_DT_FIM         DATE,
+  FIL_IN_CODIGO      NUMBER(7)     NOT NULL,
+  ORG_IN_CODIGO      NUMBER(7),
+  ESTAB_ST_NUMERO    VARCHAR2(20),
+  ESTAB_ST_NOME      VARCHAR2(80),
+  ARQ_IN_QT_LIDAS    NUMBER,
+  ARQ_IN_QT_NOVAS    NUMBER,
+  ARQ_IN_QT_JA       NUMBER,
+  ARQ_IN_QT_ERRO     NUMBER,
+  ARQ_RE_BRUTO       NUMBER,
+  ARQ_RE_TAXAS       NUMBER,
+  ARQ_RE_LIQUIDO     NUMBER,
+  ARQ_CH_STATUS      CHAR(1)       NOT NULL,
+  ARQ_ST_MENSAGEM    VARCHAR2(1500),
+  USU_IN_CODIGO      NUMBER,
+  USU_ST_LOGIN       VARCHAR2(60),
+  ARQ_DT_INCLUSAO    DATE          DEFAULT SYSDATE NOT NULL,
+  ARQ_DT_PROCESSADO  DATE,
+  CONSTRAINT PK_CCS_GFIN_CBC_ARQUIVO PRIMARY KEY (ARQ_IN_CODIGO),
+  CONSTRAINT CK_CCS_GFIN_CBC_ARQ_ST CHECK (ARQ_CH_STATUS IN ('P', 'I', 'X')),
+  CONSTRAINT CK_CCS_GFIN_CBC_ARQ_TP CHECK (ARQ_CH_TIPO IN ('V', 'R'))
+)
+/
+CREATE UNIQUE INDEX MEGA.UK_CCS_GFIN_CBC_ARQ_TOKEN ON MEGA.CCS_TB_GFIN_CBC_ARQUIVO (ARQ_ST_TOKEN)
+/
+CREATE INDEX MEGA.IX_CCS_GFIN_CBC_ARQ_HASH ON MEGA.CCS_TB_GFIN_CBC_ARQUIVO (FIL_IN_CODIGO, ARQ_ST_HASH)
+/
+CREATE SEQUENCE MEGA.CCS_SEQ_GFIN_CBC_ARQUIVO START WITH 1 INCREMENT BY 1 NOCACHE
+/
+CREATE TABLE MEGA.CCS_TB_GFIN_CBC_LINHA (
+  ARQ_IN_CODIGO      NUMBER        NOT NULL,
+  LIN_IN_ORDEM       NUMBER        NOT NULL,
+  FIL_IN_CODIGO      NUMBER(7)     NOT NULL,
+  ESTAB_ST_NUMERO    VARCHAR2(20),
+  LIN_CH_ABA         CHAR(1)       NOT NULL,
+  LIN_ST_CHAVE       VARCHAR2(200) NOT NULL,
+  LIN_DT_DATA        DATE          NOT NULL,
+  LIN_ST_HORA        VARCHAR2(8),
+  LIN_DT_VENDA       DATE,
+  LIN_DT_VENCTO      DATE,
+  LIN_ST_STATUS      VARCHAR2(40),
+  LIN_ST_MODALIDADE  VARCHAR2(30),
+  LIN_ST_TIPO        VARCHAR2(40),
+  LIN_ST_BANDEIRA    VARCHAR2(30),
+  LIN_IN_PARCELAS    NUMBER(3),
+  LIN_IN_PARCELA     NUMBER(3),
+  LIN_RE_BRUTO       NUMBER,
+  LIN_RE_BRUTO_ATUAL NUMBER,
+  LIN_RE_TAXA_MDR    NUMBER,
+  LIN_RE_MDR         NUMBER,
+  LIN_RE_TAXA_RA     NUMBER,
+  LIN_RE_RA          NUMBER,
+  LIN_RE_TAXAS       NUMBER,
+  LIN_RE_LIQUIDO     NUMBER,
+  LIN_ST_NSU         VARCHAR2(30),
+  LIN_ST_AUTORIZACAO VARCHAR2(20),
+  LIN_ST_LOTE        VARCHAR2(30),
+  LIN_ST_TID         VARCHAR2(60),
+  LIN_ST_PEDIDO      VARCHAR2(60),
+  LIN_ST_ID_TRANSACAO VARCHAR2(80),
+  LIN_ST_CARTAO      VARCHAR2(30),
+  LIN_ST_MEIO        VARCHAR2(40),
+  LIN_ST_MAQUININHA  VARCHAR2(30),
+  LIN_ST_PRAZO       VARCHAR2(30),
+  LIN_CH_CANCELADA   CHAR(1),
+  LIN_DT_CANCEL      DATE,
+  LIN_RE_CANCELADO   NUMBER,
+  LIN_CH_CHARGEBACK  CHAR(1),
+  LIN_ST_BANCO       VARCHAR2(40),
+  LIN_ST_AGENCIA     VARCHAR2(10),
+  LIN_ST_CONTA       VARCHAR2(20),
+  LIN_ST_DESCRICAO   VARCHAR2(300),
+  LIN_CH_SITUACAO    CHAR(1)       NOT NULL,
+  LIN_ST_MOTIVO      VARCHAR2(300),
+  CONSTRAINT PK_CCS_GFIN_CBC_LINHA PRIMARY KEY (ARQ_IN_CODIGO, LIN_IN_ORDEM),
+  CONSTRAINT CK_CCS_GFIN_CBC_LIN_SIT CHECK (LIN_CH_SITUACAO IN ('N', 'J', 'E', 'I')),
+  CONSTRAINT CK_CCS_GFIN_CBC_LIN_ABA CHECK (LIN_CH_ABA IN ('V', 'P', 'F', 'D', 'A', 'C'))
+)
+/
+CREATE INDEX MEGA.IX_CCS_GFIN_CBC_LIN_CHAVE ON MEGA.CCS_TB_GFIN_CBC_LINHA (FIL_IN_CODIGO, LIN_ST_CHAVE)
+/
+CREATE INDEX MEGA.IX_CCS_GFIN_CBC_LIN_DATA ON MEGA.CCS_TB_GFIN_CBC_LINHA (FIL_IN_CODIGO, LIN_DT_DATA)
+/
+CREATE OR REPLACE PROCEDURE MEGA.CCS_P_GFIN_CBC_IMPORTA_X (
+    P_ARQ IN NUMBER
+) IS
+    /* [18/11/2026 - Alexandre Carvalho] NUCLEO DA IMPORTACAO DOS ARQUIVOS DA REDE (NAO COMITA). Le CCS_TB_GFIN_CBC_ARQUIVO P_ARQ
+       (status P) e as linhas N/J dele, refaz a duplicidade com a filial travada e marca as linhas I (importada) ou J (ja havia).
+       Linhas: N nova | J ja existia (mesma chave numa importacao I desta filial) | E erro (nao entra) | I importada. */
+    C_TAB CONSTANT NUMBER := 53; C_PAD CONSTANT NUMBER := 1;
+    A MEGA.CCS_TB_GFIN_CBC_ARQUIVO%ROWTYPE;
+    W_ORG NUMBER; W_N NUMBER; W_EXIST NUMBER; W_NOVAS NUMBER := 0; W_JA NUMBER := 0;
+    W_BRUTO NUMBER := 0; W_TAXAS NUMBER := 0; W_LIQ NUMBER := 0;
+    E_OCUPADO EXCEPTION; PRAGMA EXCEPTION_INIT(E_OCUPADO, -54);
+BEGIN
+    SELECT X.* INTO A FROM MEGA.CCS_TB_GFIN_CBC_ARQUIVO X WHERE X.ARQ_IN_CODIGO = P_ARQ FOR UPDATE;
+    IF A.ARQ_CH_STATUS <> 'P' THEN RAISE_APPLICATION_ERROR(-20120, 'Esta importacao ja foi processada (situacao ' || A.ARQ_CH_STATUS || ').'); END IF;
+
+    -- filial valida e empresa = organizacao-mae (200 -> 10, 400 -> 30, 800 -> 20)
+    BEGIN
+        SELECT O.PAI_ORG_IN_CODIGO INTO W_ORG FROM MEGA.GLO_VW_ORGANIZACAO O
+         WHERE O.ORG_TAB_IN_CODIGO = C_TAB AND O.ORG_PAD_IN_CODIGO = C_PAD AND O.ORG_IN_CODIGO = A.FIL_IN_CODIGO AND ROWNUM = 1;
+    EXCEPTION WHEN NO_DATA_FOUND THEN RAISE_APPLICATION_ERROR(-20120, 'Filial ' || A.FIL_IN_CODIGO || ' nao encontrada no Mega.');
+    END;
+
+    -- uma importacao por estabelecimento de cada vez (o de-para e a trava; sem de-para, a API grava antes de chamar aqui)
+    IF A.ESTAB_ST_NUMERO IS NOT NULL THEN
+        BEGIN
+            SELECT 1 INTO W_N FROM MEGA.CCS_TB_GFIN_CBC_ESTAB E WHERE E.ESTAB_ST_NUMERO = A.ESTAB_ST_NUMERO FOR UPDATE NOWAIT;
+        EXCEPTION
+            WHEN NO_DATA_FOUND THEN NULL;
+            WHEN E_OCUPADO THEN RAISE_APPLICATION_ERROR(-20120, 'Outra importacao deste estabelecimento esta em andamento. Tente de novo em alguns segundos.');
+        END;
+    END IF;
+
+    -- mesmo arquivo (SHA-256) ja importado nesta filial
+    SELECT COUNT(*) INTO W_N FROM MEGA.CCS_TB_GFIN_CBC_ARQUIVO X
+     WHERE X.FIL_IN_CODIGO = A.FIL_IN_CODIGO AND X.ARQ_ST_HASH = A.ARQ_ST_HASH AND X.ARQ_CH_STATUS = 'I' AND X.ARQ_IN_CODIGO <> P_ARQ;
+    IF W_N > 0 THEN RAISE_APPLICATION_ERROR(-20120, 'Este arquivo ja foi importado nesta filial pelo Gestor. Nada novo a gravar.'); END IF;
+
+    FOR L IN (SELECT X.*, ROW_NUMBER() OVER (PARTITION BY X.LIN_ST_CHAVE ORDER BY X.LIN_IN_ORDEM) RN
+                FROM MEGA.CCS_TB_GFIN_CBC_LINHA X WHERE X.ARQ_IN_CODIGO = P_ARQ AND X.LIN_CH_SITUACAO IN ('N', 'J') ORDER BY X.LIN_IN_ORDEM) LOOP
+        IF L.LIN_DT_DATA > TRUNC(SYSDATE) + 400 OR L.LIN_DT_DATA < DATE '2020-01-01' THEN
+            RAISE_APPLICATION_ERROR(-20120, 'Linha ' || L.LIN_IN_ORDEM || ': data ' || TO_CHAR(L.LIN_DT_DATA, 'DD/MM/YYYY') || ' fora do esperado.');
+        END IF;
+        IF L.FIL_IN_CODIGO <> A.FIL_IN_CODIGO THEN RAISE_APPLICATION_ERROR(-20120, 'Linha ' || L.LIN_IN_ORDEM || ': filial diferente da do arquivo.'); END IF;
+        -- quantas linhas com a mesma chave a filial ja tem (de importacoes I; fora as desta)
+        SELECT COUNT(*) INTO W_EXIST FROM MEGA.CCS_TB_GFIN_CBC_LINHA B, MEGA.CCS_TB_GFIN_CBC_ARQUIVO BA
+         WHERE B.FIL_IN_CODIGO = A.FIL_IN_CODIGO AND B.LIN_ST_CHAVE = L.LIN_ST_CHAVE AND B.LIN_CH_SITUACAO = 'I'
+           AND BA.ARQ_IN_CODIGO = B.ARQ_IN_CODIGO AND BA.ARQ_CH_STATUS = 'I' AND B.ARQ_IN_CODIGO <> P_ARQ;
+        IF L.RN <= W_EXIST THEN
+            UPDATE MEGA.CCS_TB_GFIN_CBC_LINHA SET LIN_CH_SITUACAO = 'J', LIN_ST_MOTIVO = 'Ja importada antes (mesma chave nesta filial)'
+             WHERE ARQ_IN_CODIGO = P_ARQ AND LIN_IN_ORDEM = L.LIN_IN_ORDEM;
+            W_JA := W_JA + 1;
+        ELSE
+            UPDATE MEGA.CCS_TB_GFIN_CBC_LINHA SET LIN_CH_SITUACAO = 'I', LIN_ST_MOTIVO = NULL
+             WHERE ARQ_IN_CODIGO = P_ARQ AND LIN_IN_ORDEM = L.LIN_IN_ORDEM;
+            W_NOVAS := W_NOVAS + 1;
+            -- totais do que entrou: vendas aprovadas/pagas (V) e parcelas pagas (P)
+            IF (L.LIN_CH_ABA = 'V' AND L.LIN_ST_STATUS IN ('aprovada', 'pago')) OR L.LIN_CH_ABA = 'P' THEN
+                W_BRUTO := W_BRUTO + NVL(L.LIN_RE_BRUTO, 0); W_TAXAS := W_TAXAS + NVL(L.LIN_RE_TAXAS, 0); W_LIQ := W_LIQ + NVL(L.LIN_RE_LIQUIDO, 0);
+            END IF;
+        END IF;
+    END LOOP;
+    SELECT COUNT(*) INTO W_N FROM MEGA.CCS_TB_GFIN_CBC_LINHA X WHERE X.ARQ_IN_CODIGO = P_ARQ AND X.LIN_CH_SITUACAO = 'E';
+    UPDATE MEGA.CCS_TB_GFIN_CBC_ARQUIVO SET ORG_IN_CODIGO = W_ORG, ARQ_IN_QT_NOVAS = W_NOVAS, ARQ_IN_QT_JA = W_JA, ARQ_IN_QT_ERRO = W_N,
+           ARQ_RE_BRUTO = ROUND(W_BRUTO, 2), ARQ_RE_TAXAS = ROUND(W_TAXAS, 2), ARQ_RE_LIQUIDO = ROUND(W_LIQ, 2)
+     WHERE ARQ_IN_CODIGO = P_ARQ;
+END CCS_P_GFIN_CBC_IMPORTA_X;
+/
+CREATE OR REPLACE PROCEDURE MEGA.CCS_P_GFIN_CBC_IMPORTA (
+    P_ARQ     IN NUMBER,
+    P_SIMULAR IN VARCHAR2 DEFAULT 'N'
+) IS
+    /* [18/11/2026 - Alexandre Carvalho] WRAPPER: tudo ou nada. Simular = roda inteiro e desfaz; o arquivo continua P (pendente)
+       com a mensagem da validacao. Situacao: P | I importado | X recusado. */
+    W_ST CHAR(1); W_MSG VARCHAR2(1500); W_NOVAS NUMBER; W_JA NUMBER; W_ERRO NUMBER;
+BEGIN
+    SAVEPOINT SP_GFIN_CBC_IMP;
+    BEGIN
+        MEGA.CCS_P_GFIN_CBC_IMPORTA_X(P_ARQ);
+        SELECT ARQ_IN_QT_NOVAS, ARQ_IN_QT_JA, ARQ_IN_QT_ERRO INTO W_NOVAS, W_JA, W_ERRO FROM MEGA.CCS_TB_GFIN_CBC_ARQUIVO WHERE ARQ_IN_CODIGO = P_ARQ;
+        IF NVL(P_SIMULAR, 'N') = 'S' THEN
+            ROLLBACK TO SP_GFIN_CBC_IMP; W_ST := 'P';
+            W_MSG := 'Validacao sem erro: ' || W_NOVAS || ' linha(s) seriam importadas, ' || W_JA || ' ja estavam importadas' ||
+                     CASE WHEN W_ERRO > 0 THEN ', ' || W_ERRO || ' com erro ficam de fora' END || '. Nada foi gravado.';
+        ELSE
+            W_ST := 'I';
+            W_MSG := W_NOVAS || ' linha(s) importada(s); ' || W_JA || ' ja estavam importadas' || CASE WHEN W_ERRO > 0 THEN '; ' || W_ERRO || ' com erro ficaram de fora' END || '.';
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            W_MSG := SUBSTR(REGEXP_REPLACE(SQLERRM, '^ORA-20120: ', ''), 1, 1500);
+            ROLLBACK TO SP_GFIN_CBC_IMP; W_ST := 'X';
+    END;
+    UPDATE MEGA.CCS_TB_GFIN_CBC_ARQUIVO SET ARQ_CH_STATUS = W_ST, ARQ_ST_MENSAGEM = W_MSG, ARQ_DT_PROCESSADO = SYSDATE WHERE ARQ_IN_CODIGO = P_ARQ;
+    COMMIT;
+END CCS_P_GFIN_CBC_IMPORTA;
+/

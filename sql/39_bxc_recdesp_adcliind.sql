@@ -1,0 +1,30 @@
+/* =====================================================================================================================
+   [03/11/2026 - Alexandre Carvalho] GESTOR FINANCEIRO - BAIXAR E CONCILIAR (QUALITY): LANCAMENTO PELO EXTRATO DE
+   RECUPERACAO DE DESPESAS (711) E ADIANTAMENTO DE CLIENTE - RECEBIMENTO INDEVIDO (721).
+   Pegadas: 711 ORG 20 / ACAOM 6576880 (AVCRED conta + CREDITO AVISTA agente 2400, classe 571 CC 135); 721 ORG 10 / ACAOM 91685666
+   (ADCLI conta + CREDITO ADIANT cliente, classe 813 CC 196). Tipos RECDESP e ADCLIIND do CCS_P_GFIN_BXC_LANC_X (sql/35 de 03/11).
+   Regras de classe da recuperacao por "historico contem" (tela Configurar). 711 ja mapeado (MVFIN 7/8). SO ASCII. Blocos separados por "/".
+   ===================================================================================================================== */
+MERGE INTO MEGA.CCS_TB_GFIN_BXC_CONT C USING (
+  SELECT 721 ACAO, '-' TREF, 'MVFIN' TAC, 3 SEQ, 'recebimento indevido: mov da conta (ADCLI) [03/11/2026]' OBS FROM DUAL UNION ALL
+  SELECT 721, 'ADIANT', 'MVFIN', 4, 'recebimento indevido: CREDITO no cliente [03/11/2026]' FROM DUAL
+) X ON (C.ACAO_IN_CODIGO = X.ACAO AND C.TREF_ST_CODIGO = X.TREF)
+WHEN NOT MATCHED THEN INSERT (ACAO_IN_CODIGO, TREF_ST_CODIGO, CONT_TAC_ST_CODIGO, CONT_CON_IN_SEQUENCIA, CONT_ST_OBS) VALUES (X.ACAO, X.TREF, X.TAC, X.SEQ, X.OBS)
+/
+CREATE TABLE MEGA.CCS_TB_GFIN_BXC_RECDESP_REGRA (
+    REG_IN_CODIGO     NUMBER        NOT NULL,
+    REG_ST_HIST_LIKE  VARCHAR2(60)  NOT NULL,
+    CLA_IN_REDUZIDO   NUMBER        NOT NULL,
+    CCF_IN_REDUZIDO   NUMBER        NOT NULL,
+    AGN_IN_CODIGO     NUMBER,
+    REG_ST_DESCRICAO  VARCHAR2(120),
+    REG_CH_ATIVO      CHAR(1)       DEFAULT 'S' NOT NULL,
+    REG_DT_ALTERACAO  DATE          DEFAULT SYSDATE NOT NULL,
+    REG_IN_USU        NUMBER,
+    REG_ST_USU        VARCHAR2(60),
+    CONSTRAINT CCS_PK_GFIN_BXC_RECDESP_REGRA PRIMARY KEY (REG_IN_CODIGO),
+    CONSTRAINT CCS_CK_GFIN_BXC_RECDESP_AT CHECK (REG_CH_ATIVO IN ('S','N'))
+)
+/
+CREATE SEQUENCE MEGA.CCS_SEQ_GFIN_BXC_RECDESP_REGRA START WITH 1 INCREMENT BY 1 NOCACHE
+/

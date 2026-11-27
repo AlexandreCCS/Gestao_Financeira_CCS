@@ -129,3 +129,27 @@ export async function loginMega(login, senha) {
   }
   return rowsD[0];
 }
+
+// [14/05/2026 - Alexandre Carvalho] Modulos que o usuario enxerga no portal.
+// Admin (perm='A') ve todos os modulos ativos; usuario ('U') so os liberados
+// em CCS_TB_GFIN_PERM_USU. Retorna [{codigo,nome,ordem}].
+export async function getModulosUsuario(gruIn, perm) {
+  const sql = perm === 'A'
+    ? `SELECT M.MOD_ST_CODIGO, M.MOD_ST_NOME, M.MOD_IN_ORDEM
+         FROM MEGA.CCS_TB_GFIN_MODULO M
+        WHERE M.MOD_CH_ATIVO = 'S'
+        ORDER BY M.MOD_IN_ORDEM`
+    : `SELECT M.MOD_ST_CODIGO, M.MOD_ST_NOME, M.MOD_IN_ORDEM
+         FROM MEGA.CCS_TB_GFIN_MODULO   M,
+              MEGA.CCS_TB_GFIN_PERM_USU P
+        WHERE P.MOD_ST_CODIGO = M.MOD_ST_CODIGO
+          AND M.MOD_CH_ATIVO  = 'S'
+          AND P.GRU_IN_CODIGO = ${Number(gruIn)}
+        ORDER BY M.MOD_IN_ORDEM`;
+  const rows = await megaQuery(sql);
+  return rows.map(r => ({
+    codigo: r.MOD_ST_CODIGO,
+    nome:   r.MOD_ST_NOME,
+    ordem:  Number(r.MOD_IN_ORDEM)
+  }));
+}
